@@ -14,12 +14,6 @@ It provides a single async-sequence API that:
 - iOS 18+
 - macOS 15+
 
-## Installation (SwiftPM)
-
-```swift
-.package(url: "https://github.com/lynnswap/ObservationsCompat.git", exact: "0.1.0")
-```
-
 ## Basic Usage
 
 ```swift
