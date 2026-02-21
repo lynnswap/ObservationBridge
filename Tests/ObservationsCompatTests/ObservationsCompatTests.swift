@@ -1,4 +1,5 @@
 import Observation
+import Foundation
 import Testing
 @testable import ObservationsCompat
 
@@ -37,8 +38,45 @@ private actor DeinitFlag {
     }
 }
 
+private actor ValueQueue<Value: Sendable> {
+    private var buffered: [Value] = []
+    private var waiters: [UUID: CheckedContinuation<Value?, Never>] = [:]
+
+    func push(_ value: Value) {
+        if let key = waiters.keys.first, let waiter = waiters.removeValue(forKey: key) {
+            waiter.resume(returning: value)
+            return
+        }
+        buffered.append(value)
+    }
+
+    func next() async -> Value? {
+        if !buffered.isEmpty {
+            return buffered.removeFirst()
+        }
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiters[id] = continuation
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id: id)
+            }
+        }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let waiter = waiters.removeValue(forKey: id) else {
+            return
+        }
+        waiter.resume(returning: nil)
+    }
+}
+
 private func waitWithTimeout<T: Sendable>(
-    nanoseconds: UInt64 = 1_000_000_000,
+    nanoseconds: UInt64 = 5_000_000_000,
     _ operation: @escaping @Sendable () async -> T
 ) async -> T? {
     await withTaskGroup(of: T?.self) { group in
@@ -55,6 +93,15 @@ private func waitWithTimeout<T: Sendable>(
     }
 }
 
+private func nextWithTimeout<Value: Sendable>(
+    from queue: ValueQueue<Value>,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Value? {
+    await waitWithTimeout(nanoseconds: nanoseconds) {
+        await queue.next()
+    } ?? nil
+}
+
 @MainActor
 @Suite(.serialized)
 struct ObservationsCompatTests {
@@ -64,17 +111,25 @@ struct ObservationsCompatTests {
         let stream = makeObservationsCompatStream(backend: .legacy) {
             model.value
         }
-        var iterator = stream.makeAsyncIterator()
-        #expect(await iterator.next() == 0)
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 1
-        #expect(await iterator.next() == 1)
+        #expect(await nextWithTimeout(from: queue) == 1)
 
         await Task.yield()
         model.value = 1
         await Task.yield()
         model.value = 2
-        #expect(await iterator.next() == 2)
+        #expect(await nextWithTimeout(from: queue) == 2)
     }
 
     @Test
@@ -83,14 +138,19 @@ struct ObservationsCompatTests {
         let stream = makeObservationsCompatStream(backend: .native) {
             model.value
         }
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
 
-        var iterator = stream.makeAsyncIterator()
-        let first = await iterator.next()
-        #expect(first == 0)
+        #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 7
-        let second = await iterator.next()
-        #expect(second == 7)
+        #expect(await nextWithTimeout(from: queue) == 7)
     }
 
     @Test
@@ -99,14 +159,19 @@ struct ObservationsCompatTests {
         let stream = makeObservationsCompatStream(backend: .legacy) {
             model.value
         }
+        let queue = ValueQueue<Int?>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
 
-        var iterator = stream.makeAsyncIterator()
-        let first = await iterator.next()
-        #expect(first == .some(nil))
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
 
         model.value = 3
-        let second = await iterator.next()
-        #expect(second == .some(3))
+        #expect(await nextWithTimeout(from: queue) == 3)
     }
 
     @Test
