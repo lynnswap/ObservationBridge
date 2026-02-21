@@ -32,10 +32,9 @@ public struct ObservationsCompatStream<Value: Sendable & Equatable>: AsyncSequen
     }
 }
 
-@MainActor
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     backend: ObservationsCompatBackend = .automatic,
-    _ observe: @escaping @MainActor () -> Value
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompatStream<Value> {
     switch resolveBackend(backend) {
     case .legacy:
@@ -50,7 +49,6 @@ public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     }
 }
 
-@MainActor
 private func resolveBackend(_ backend: ObservationsCompatBackend) -> ObservationsCompatBackend {
     switch backend {
     case .automatic:
@@ -68,13 +66,12 @@ private func resolveBackend(_ backend: ObservationsCompatBackend) -> Observation
     }
 }
 
-@MainActor
 private func makeLegacyStream<Value: Sendable & Equatable>(
-    _ observe: @escaping @MainActor () -> Value
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompatStream<Value> {
     let stream = AsyncStream<Value> { continuation in
         let (changes, changeSignal) = AsyncStream<Void>.makeStream()
-        Task { @MainActor in
+        Task {
             var latestValue: Value?
             var hasLatestValue = false
 
@@ -88,14 +85,17 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
             }
 
             func registerTracking() {
-                withObservationTracking({
-                    let value = MainActor.assumeIsolated {
-                        observe()
-                    }
-                    emitIfNeeded(value)
+                let result = withObservationTracking({
+                    Result(catching: observe)
                 }, onChange: {
                     changeSignal.yield(())
                 })
+                switch result {
+                case .success(let value):
+                    emitIfNeeded(value)
+                case .failure:
+                    preconditionFailure("observe closure unexpectedly threw")
+                }
             }
 
             registerTracking()
@@ -117,15 +117,15 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
 }
 
 @available(iOS 26.0, macOS 26.0, *)
-@MainActor
 private func makeNativeStream<Value: Sendable & Equatable>(
-    _ observe: @escaping @MainActor () -> Value
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompatStream<Value> {
     let stream = AsyncStream<Value> { continuation in
-        let task = Task { @MainActor in
+        let task = Task {
             var previousValue: Value?
             var hasPreviousValue = false
-            for await value in Observations({ observe() }) {
+            let observations = Observations(observe)
+            for await value in observations {
                 if Task.isCancelled {
                     break
                 }
