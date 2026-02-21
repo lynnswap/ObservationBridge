@@ -86,7 +86,9 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
 
             func registerTracking() {
                 let result = withObservationTracking({
-                    Result(catching: observe)
+                    Result(catching: {
+                        invokeIsolatedObserve(observe)
+                    })
                 }, onChange: {
                     changeSignal.yield(())
                 })
@@ -114,6 +116,16 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
         }
     }
     return ObservationsCompatStream(stream: stream)
+}
+
+@inline(__always)
+private func invokeIsolatedObserve<Value: Sendable>(
+    _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> Value {
+    typealias IsolatedObserve = @isolated(any) @Sendable () -> Value
+    typealias NonisolatedObserve = @Sendable () -> Value
+    let raw = unsafeBitCast(observe as IsolatedObserve, to: NonisolatedObserve.self)
+    return raw()
 }
 
 @available(iOS 26.0, macOS 26.0, *)
