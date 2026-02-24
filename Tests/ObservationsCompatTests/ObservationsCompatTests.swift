@@ -108,7 +108,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
         let model = CounterModel()
-        let stream = makeObservationsCompatStream(backend: .legacy) {
+        let stream = ObservationsCompat(backend: .legacy) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -135,7 +135,7 @@ struct ObservationsCompatTests {
     @Test
     func nativeBackendFallsBackToLegacyOnUnsupportedOS() async {
         let model = CounterModel()
-        let stream = makeObservationsCompatStream(backend: .native) {
+        let stream = ObservationsCompat(backend: .native) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -156,7 +156,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendEmitsInitialOptionalNilValue() async {
         let model = OptionalCounterModel()
-        let stream = makeObservationsCompatStream(backend: .legacy) {
+        let stream = ObservationsCompat(backend: .legacy) {
             model.value
         }
         let queue = ValueQueue<Int?>()
@@ -183,7 +183,7 @@ struct ObservationsCompatTests {
         }
         let observe: @isolated(any) @Sendable () -> Int = observeOnMainActor
         let stream = await Task.detached {
-            makeObservationsCompatStream(backend: .legacy, observe)
+            ObservationsCompat(backend: .legacy, observe)
         }.value
         let queue = ValueQueue<Int>()
         let consumer = Task.detached(priority: nil) {
@@ -203,7 +203,7 @@ struct ObservationsCompatTests {
     @Test
     func streamCanBeCancelledSafely() async {
         let model = CounterModel()
-        let stream = makeObservationsCompatStream(backend: .legacy) {
+        let stream = ObservationsCompat(backend: .legacy) {
             model.value
         }
 
@@ -239,7 +239,7 @@ struct ObservationsCompatTests {
             }
             weakModel = model
 
-            var stream: ObservationsCompatStream<Int>? = makeObservationsCompatStream(backend: .legacy) {
+            var stream: ObservationsCompat<Int>? = ObservationsCompat(backend: .legacy) {
                 model.value
             }
 
