@@ -19,7 +19,7 @@ It provides a single async-sequence API that:
 ```swift
 import ObservationsCompat
 
-let stream = makeObservationsCompatStream {
+let stream = ObservationsCompat {
     model.count
 }
 

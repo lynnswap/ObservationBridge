@@ -16,11 +16,21 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ObservationsCompat"
+            name: "ObservationsCompat",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .defaultIsolation(nil),
+                .strictMemorySafety(),
+            ]
         ),
         .testTarget(
             name: "ObservationsCompatTests",
-            dependencies: ["ObservationsCompat"]
+            dependencies: ["ObservationsCompat"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .defaultIsolation(nil),
+                .strictMemorySafety(),
+            ]
         )
     ]
 )

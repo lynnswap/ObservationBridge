@@ -7,7 +7,7 @@ public enum ObservationsCompatBackend: Sendable {
     case legacy
 }
 
-public struct ObservationsCompatStream<Value: Sendable & Equatable>: AsyncSequence, Sendable {
+public struct ObservationsCompat<Value: Sendable & Equatable>: AsyncSequence, Sendable {
     public typealias Element = Value
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -24,6 +24,13 @@ public struct ObservationsCompatStream<Value: Sendable & Equatable>: AsyncSequen
 
     private let stream: AsyncStream<Value>
 
+    public init(
+        backend: ObservationsCompatBackend = .automatic,
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self = makeObservationsCompat(backend: backend, observe)
+    }
+
     fileprivate init(stream: AsyncStream<Value>) {
         self.stream = stream
     }
@@ -33,10 +40,21 @@ public struct ObservationsCompatStream<Value: Sendable & Equatable>: AsyncSequen
     }
 }
 
+@available(*, deprecated, renamed: "ObservationsCompat")
+public typealias ObservationsCompatStream<Value> = ObservationsCompat<Value> where Value: Sendable, Value: Equatable
+
+@available(*, deprecated, message: "Use ObservationsCompat(backend:_:) instead.")
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     backend: ObservationsCompatBackend = .automatic,
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompatStream<Value> {
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(backend: backend, observe)
+}
+
+private func makeObservationsCompat<Value: Sendable & Equatable>(
+    backend: ObservationsCompatBackend = .automatic,
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationsCompat<Value> {
     switch resolveBackend(backend) {
     case .legacy:
         return makeLegacyStream(observe)
@@ -69,7 +87,7 @@ private func resolveBackend(_ backend: ObservationsCompatBackend) -> Observation
 
 private func makeLegacyStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompatStream<Value> {
+) -> ObservationsCompat<Value> {
     let stream = AsyncStream<Value> { continuation in
         let pendingChanges = PendingChangeCounter()
         let (changeWakes, changeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -90,7 +108,7 @@ private func makeLegacyStream<Value: Sendable & Equatable>(
             changeSignal.finish()
         }
     }
-    return ObservationsCompatStream(stream: stream)
+    return ObservationsCompat(stream: stream)
 }
 
 private func runLegacyProducer<Value: Sendable & Equatable>(
@@ -182,7 +200,7 @@ private final class PendingChangeCounter: Sendable {
 @available(iOS 26.0, macOS 26.0, *)
 private func makeNativeStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompatStream<Value> {
+) -> ObservationsCompat<Value> {
     let stream = AsyncStream<Value> { continuation in
         let task = Task {
             var previousValue: Value?
@@ -206,5 +224,5 @@ private func makeNativeStream<Value: Sendable & Equatable>(
             task.cancel()
         }
     }
-    return ObservationsCompatStream(stream: stream)
+    return ObservationsCompat(stream: stream)
 }
