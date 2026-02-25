@@ -6,8 +6,11 @@ private enum OwnerValueEmission<Value: Sendable>: Sendable {
     case ownerGone
 }
 
-private struct ObserveTaskExecutionState: Sendable {
-    var activeTask: Task<Void, Never>? = nil
+private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
+    var activeOperationTask: Task<Void, Never>? = nil
+    var activeOperationID: UInt64? = nil
+    var nextOperationID: UInt64 = 0
+    var pendingLatestValue: Value? = nil
     var isCancelled = false
 }
 
@@ -67,7 +70,111 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         duplicateFilter: duplicateFilter,
         of: value
     )
-    let observeTaskState = Mutex(ObserveTaskExecutionState())
+    let observeTaskState = Mutex(ObserveTaskExecutionState<Value>())
+    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+
+    let operationDidFinish: @Sendable (UInt64) -> Void = { operationID in
+        let shouldWake = observeTaskState.withLock { state in
+            guard state.activeOperationID == operationID else {
+                return false
+            }
+
+            state.activeOperationTask = nil
+            state.activeOperationID = nil
+            guard !state.isCancelled else {
+                return false
+            }
+            return state.pendingLatestValue != nil
+        }
+
+        if shouldWake {
+            operationWakeSignal.yield(())
+        }
+    }
+
+    let shutdownObserveTaskExecution: @Sendable () -> Void = {
+        let activeTask: Task<Void, Never>? = observeTaskState.withLock { state -> Task<Void, Never>? in
+            guard !state.isCancelled else {
+                return nil
+            }
+
+            state.isCancelled = true
+            state.pendingLatestValue = nil
+            state.activeOperationID = nil
+            let activeTask = state.activeOperationTask
+            state.activeOperationTask = nil
+            return activeTask
+        }
+
+        activeTask?.cancel()
+        operationWakeSignal.finish()
+    }
+
+    let enqueueLatestValue: @Sendable (Value) -> Bool = { observedValue in
+        let transition: (accepted: Bool, activeTask: Task<Void, Never>?) = observeTaskState.withLock { state -> (accepted: Bool, activeTask: Task<Void, Never>?) in
+            guard !state.isCancelled else {
+                return (accepted: false, activeTask: nil)
+            }
+
+            state.pendingLatestValue = observedValue
+            let activeTask = state.activeOperationTask
+            if activeTask != nil {
+                state.activeOperationTask = nil
+                state.activeOperationID = nil
+            }
+            return (accepted: true, activeTask: activeTask)
+        }
+
+        guard transition.accepted else {
+            return false
+        }
+
+        transition.activeTask?.cancel()
+        operationWakeSignal.yield(())
+        return true
+    }
+
+    let drainTask = Task {
+        for await _ in operationWakeStream {
+            guard !Task.isCancelled else {
+                break
+            }
+
+            while true {
+                let startedOperation: Bool = observeTaskState.withLock { state -> Bool in
+                    guard !state.isCancelled else {
+                        return false
+                    }
+                    guard state.activeOperationTask == nil, let nextValue = state.pendingLatestValue else {
+                        return false
+                    }
+
+                    state.pendingLatestValue = nil
+                    let operationID = state.nextOperationID
+                    state.nextOperationID &+= 1
+                    let operation = Task {
+                        await task(nextValue)
+                        operationDidFinish(operationID)
+                    }
+                    state.activeOperationID = operationID
+                    state.activeOperationTask = operation
+                    return true
+                }
+
+                guard startedOperation else {
+                    break
+                }
+            }
+        }
+
+        let remainingTask: Task<Void, Never>? = observeTaskState.withLock { state -> Task<Void, Never>? in
+            let remainingTask = state.activeOperationTask
+            state.activeOperationTask = nil
+            state.activeOperationID = nil
+            return remainingTask
+        }
+        remainingTask?.cancel()
+    }
 
     let monitorTask = Task {
         observationLoop: for await emission in stream {
@@ -83,44 +190,18 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 observedValue = value
             }
 
-            let transition = observeTaskState.withLock { state in
-                if state.isCancelled {
-                    return (previous: Task<Void, Never>?(nil), installed: false)
-                }
-
-                let previousTask = state.activeTask
-                let nextTask = Task {
-                    await task(observedValue)
-                }
-                state.activeTask = nextTask
-                return (previous: previousTask, installed: true)
-            }
-
-            guard transition.installed else {
+            guard enqueueLatestValue(observedValue) else {
                 break observationLoop
             }
-            transition.previous?.cancel()
         }
 
-        let remainingTask = observeTaskState.withLock { state in
-            state.isCancelled = true
-            let remainingTask = state.activeTask
-            state.activeTask = nil
-            return remainingTask
-        }
-        remainingTask?.cancel()
+        shutdownObserveTaskExecution()
     }
 
     let handle = ObservationHandle {
         monitorTask.cancel()
-
-        let remainingTask = observeTaskState.withLock { state in
-            state.isCancelled = true
-            let remainingTask = state.activeTask
-            state.activeTask = nil
-            return remainingTask
-        }
-        remainingTask?.cancel()
+        drainTask.cancel()
+        shutdownObserveTaskExecution()
     }
     handle.box.addCancellationHandler {
         WeakOwnerRegistry.removeToken(ownerToken)

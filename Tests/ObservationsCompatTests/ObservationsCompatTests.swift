@@ -325,7 +325,7 @@ private func runRandomizedObservationStress(
 }
 
 @MainActor
-@Suite(.serialized)
+@Suite
 struct ObservationsCompatTests {
     @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
@@ -353,6 +353,66 @@ struct ObservationsCompatTests {
         await Task.yield()
         model.value = 2
         #expect(await nextWithTimeout(from: queue) == 2)
+    }
+
+    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
+    @Test
+    func legacyBackendCoalescesBurstAndEventuallyEmitsLatestValue() async {
+        let model = CounterModel()
+        let stream = ObservationsCompat(backend: .legacy) {
+            model.value
+        }
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        let latestValue = 500
+        for value in 1...latestValue {
+            model.value = value
+        }
+
+        let sawLatest = await waitWithTimeout(nanoseconds: 2_000_000_000) {
+            while let value = await queue.next() {
+                if value == latestValue {
+                    return true
+                }
+            }
+            return false
+        }
+        #expect(sawLatest == true)
+    }
+
+    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
+    @Test
+    func legacyBackendSuppressesHighFrequencyDuplicateValues() async {
+        let model = CounterModel()
+        let stream = ObservationsCompat(backend: .legacy) {
+            model.value
+        }
+        let queue = ValueQueue<Int>()
+        let consumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await queue.push(value)
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        for _ in 0..<1_000 {
+            model.value = 1
+        }
+
+        #expect(await nextWithTimeout(from: queue) == 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
     @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
@@ -690,9 +750,32 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func nativeBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
+    func legacyBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
+        let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
+            model.observeTask(\.value, backend: .legacy, retention: .manual) { value in
+                onObserved(value)
+            }
+        }
+
+        if !result.completed || result.firstFailure != nil {
+            Issue.record(
+                "stress seed: \(seed), workers: \(result.workers), failure: \(result.firstFailure ?? "none")"
+            )
+        }
+        #expect(result.completed)
+        #expect(result.firstFailure == nil)
+    }
+
+    @Test
+    func nativeBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let iterations = 1_000_000
+        let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
             model.observeTask(\.value, backend: .native, retention: .manual) { value in
                 onObserved(value)
@@ -701,7 +784,7 @@ struct ObservationsCompatTests {
 
         if !result.completed || result.firstFailure != nil {
             Issue.record(
-                "stress seed: \(seed), workers: \(result.workers), failure: \(result.firstFailure ?? "none")"
+                "native stress seed: \(seed), workers: \(result.workers), failure: \(result.firstFailure ?? "none")"
             )
         }
         #expect(result.completed)

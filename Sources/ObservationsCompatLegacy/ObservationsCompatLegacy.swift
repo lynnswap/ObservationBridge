@@ -6,24 +6,21 @@ package func makeLegacyObservationStream<Value: Sendable>(
     isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
-        let pendingChanges = PendingChangeCounter()
-        let (changeWakes, changeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let changeGate = LegacyChangeGate()
         let observeIsolation = observe.isolation
         let task = Task {
             await runLegacyProducer(
                 observe: observe,
                 observeIsolation: observeIsolation,
-                changeWakes: changeWakes,
-                pendingChanges: pendingChanges,
-                changeSignal: changeSignal,
+                changeGate: changeGate,
                 isDuplicate: isDuplicate,
                 continuation: continuation
             )
         }
 
         continuation.onTermination = { _ in
+            changeGate.terminate()
             task.cancel()
-            changeSignal.finish()
         }
     }
 }
@@ -31,9 +28,7 @@ package func makeLegacyObservationStream<Value: Sendable>(
 private func runLegacyProducer<Value: Sendable>(
     observe: @escaping @isolated(any) @Sendable () -> Value,
     observeIsolation: (any Actor)?,
-    changeWakes: AsyncStream<Void>,
-    pendingChanges: PendingChangeCounter,
-    changeSignal: AsyncStream<Void>.Continuation,
+    changeGate: LegacyChangeGate,
     isDuplicate: (@Sendable (Value, Value) -> Bool)?,
     continuation: AsyncStream<Value>.Continuation
 ) async {
@@ -52,26 +47,20 @@ private func runLegacyProducer<Value: Sendable>(
         let value = await trackLegacyValue(
             isolation: observeIsolation,
             observe: observe,
-            pendingChanges: pendingChanges,
-            changeSignal: changeSignal
+            changeGate: changeGate
         )
         emitIfNeeded(value)
     }
 
     await registerTracking()
-    for await _ in changeWakes {
-        if Task.isCancelled {
+    while await changeGate.waitForChange() {
+        guard !Task.isCancelled else {
             break
         }
-
-        var remaining = pendingChanges.takeAll()
-        while remaining > 0 {
-            await registerTracking()
-            remaining -= 1
-        }
+        await registerTracking()
     }
 
-    changeSignal.finish()
+    changeGate.terminate()
     continuation.finish()
 }
 
@@ -83,8 +72,7 @@ private enum LatestObservedValue<Value> {
 private func trackLegacyValue<Value: Sendable>(
     isolation _: isolated (any Actor)?,
     observe: @escaping @isolated(any) @Sendable () -> Value,
-    pendingChanges: PendingChangeCounter,
-    changeSignal: AsyncStream<Void>.Continuation
+    changeGate: LegacyChangeGate
 ) -> Value {
     // Keep this aligned with Swift stdlib Observation (`Observations.swift`):
     // `Result(catching:)` inside `withObservationTracking` currently emits an
@@ -92,8 +80,7 @@ private func trackLegacyValue<Value: Sendable>(
     let result = withObservationTracking({
         Result(catching: observe)
     }, onChange: {
-        pendingChanges.increment()
-        changeSignal.yield(())
+        changeGate.signalChange()
     })
 
     switch result {
@@ -104,20 +91,96 @@ private func trackLegacyValue<Value: Sendable>(
     }
 }
 
-private final class PendingChangeCounter: Sendable {
-    private let count = Mutex(0)
-
-    func increment() {
-        count.withLock { value in
-            value += 1
-        }
+private final class LegacyChangeGate: Sendable {
+    private struct State {
+        var dirty = false
+        var terminated = false
+        var waiter: CheckedContinuation<Void, Never>? = nil
     }
 
-    func takeAll() -> Int {
-        count.withLock { value in
-            let current = value
-            value = 0
-            return current
+    private enum WaitSetup {
+        case changed
+        case terminated
+        case wait
+    }
+
+    private let state = Mutex(State())
+
+    func signalChange() {
+        let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+            guard !state.terminated else {
+                return nil
+            }
+
+            state.dirty = true
+            let waiter = state.waiter
+            state.waiter = nil
+            return waiter
+        }
+        waiter?.resume()
+    }
+
+    func terminate() {
+        let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+            guard !state.terminated else {
+                return nil
+            }
+
+            state.terminated = true
+            state.dirty = false
+            let waiter = state.waiter
+            state.waiter = nil
+            return waiter
+        }
+        waiter?.resume()
+    }
+
+    func waitForChange() async -> Bool {
+        let setup = state.withLock { state in
+            if state.terminated {
+                return WaitSetup.terminated
+            }
+            if state.dirty {
+                state.dirty = false
+                return WaitSetup.changed
+            }
+            return WaitSetup.wait
+        }
+
+        switch setup {
+        case .changed:
+            return true
+        case .terminated:
+            return false
+        case .wait:
+            break
+        }
+
+        await withCheckedContinuation { continuation in
+            let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+                if state.terminated {
+                    return continuation
+                }
+                if state.dirty {
+                    state.dirty = false
+                    return continuation
+                }
+
+                precondition(state.waiter == nil, "LegacyChangeGate supports a single waiter")
+                state.waiter = continuation
+                return nil
+            }
+            waiter?.resume()
+        }
+
+        return state.withLock { state in
+            if state.terminated {
+                return false
+            }
+            if state.dirty {
+                state.dirty = false
+            }
+            return true
         }
     }
 }

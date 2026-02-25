@@ -14,6 +14,11 @@ Both APIs:
 - auto-cancel when the owner is released (`retention: .automatic`, default)
 - optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
 
+Legacy backend behavior note:
+
+- legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
+- native uses Swift `Observations` transaction semantics on supported OS versions; both backends preserve `latest wins` cancellation for `observeTask`
+
 Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
 
 ## Requirements
