@@ -1,3 +1,4 @@
+import Observation
 import ObservationsCompatLegacy
 import Synchronization
 
@@ -23,24 +24,19 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     onChange: @escaping @Sendable (Value) -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-    let stream = makeOwnerValueStream(
-        ownerToken: ownerToken,
-        backend: backend,
-        duplicateFilter: duplicateFilter,
-        of: value
-    )
-
     let monitorTask = Task {
-        observationLoop: for await emission in stream {
-            if Task.isCancelled {
-                break
-            }
-
+        await forEachOwnerValueEmission(
+            ownerToken: ownerToken,
+            backend: backend,
+            duplicateFilter: duplicateFilter,
+            of: value
+        ) { emission in
             switch emission {
             case .ownerGone:
-                break observationLoop
+                return false
             case .value(let observedValue):
                 onChange(observedValue)
+                return true
             }
         }
     }
@@ -64,12 +60,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     task: @escaping @Sendable (Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-    let stream = makeOwnerValueStream(
-        ownerToken: ownerToken,
-        backend: backend,
-        duplicateFilter: duplicateFilter,
-        of: value
-    )
     let observeTaskState = Mutex(ObserveTaskExecutionState<Value>())
     let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
 
@@ -177,22 +167,21 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     }
 
     let monitorTask = Task {
-        observationLoop: for await emission in stream {
-            if Task.isCancelled {
-                break
-            }
-
+        await forEachOwnerValueEmission(
+            ownerToken: ownerToken,
+            backend: backend,
+            duplicateFilter: duplicateFilter,
+            of: value
+        ) { emission in
             let observedValue: Value
             switch emission {
             case .ownerGone:
-                break observationLoop
+                return false
             case .value(let value):
                 observedValue = value
             }
 
-            guard enqueueLatestValue(observedValue) else {
-                break observationLoop
-            }
+            return enqueueLatestValue(observedValue)
         }
 
         shutdownObserveTaskExecution()
@@ -210,12 +199,13 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     return applyRetention(handle, owner: owner, retention: retention)
 }
 
-private func makeOwnerValueStream<Owner: AnyObject, Value: Sendable>(
+private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     backend: ObservationsCompatBackend,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
-    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
-) -> AsyncStream<OwnerValueEmission<Value>> {
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
+) async {
     let optionalDuplicateFilter: (@Sendable (OwnerValueEmission<Value>, OwnerValueEmission<Value>) -> Bool)? = duplicateFilter.map { duplicateFilter in
         { @Sendable (lhs: OwnerValueEmission<Value>, rhs: OwnerValueEmission<Value>) -> Bool in
             switch (lhs, rhs) {
@@ -241,7 +231,58 @@ private func makeOwnerValueStream<Owner: AnyObject, Value: Sendable>(
         }
     }
 
-    return makeObservationStream(backend: backend, observeOwnerValue, isDuplicate: optionalDuplicateFilter)
+    switch resolveBackend(backend) {
+    case .native:
+        if #available(iOS 26.0, macOS 26.0, *) {
+            await forEachNativeEmission(
+                observeOwnerValue,
+                isDuplicate: optionalDuplicateFilter,
+                consume: consume
+            )
+            return
+        }
+        fallthrough
+    case .legacy, .automatic:
+        let stream = makeLegacyObservationStream(
+            observeOwnerValue,
+            isDuplicate: optionalDuplicateFilter
+        )
+        for await emission in stream {
+            guard !Task.isCancelled else {
+                break
+            }
+            guard await consume(emission) else {
+                break
+            }
+        }
+    }
+}
+
+@available(iOS 26.0, macOS 26.0, *)
+private func forEachNativeEmission<Value: Sendable>(
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> OwnerValueEmission<Value>,
+    isDuplicate: (@Sendable (OwnerValueEmission<Value>, OwnerValueEmission<Value>) -> Bool)?,
+    consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
+) async {
+    var previousValue: OwnerValueEmission<Value>?
+    var hasPreviousValue = false
+    let observations = Observations(observe)
+
+    for await value in observations {
+        guard !Task.isCancelled else {
+            break
+        }
+
+        if hasPreviousValue, let previousValue, let isDuplicate, isDuplicate(previousValue, value) {
+            continue
+        }
+
+        hasPreviousValue = true
+        previousValue = value
+        guard await consume(value) else {
+            break
+        }
+    }
 }
 
 private func applyRetention(
