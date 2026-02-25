@@ -18,7 +18,6 @@ private final class PlainCounterModel {
     var value: Int = 0
 }
 
-@available(iOS 18.0, macOS 15.0, *)
 @Observable
 private final class LockedCounterModel: Sendable {
     @ObservationIgnored
@@ -207,7 +206,6 @@ private func waitUntilCount<Value: Sendable>(
     return reached == true
 }
 
-@available(iOS 26.0, macOS 26.0, *)
 private actor StressFailureRecorder {
     private var firstFailureMessage: String?
 
@@ -222,15 +220,12 @@ private actor StressFailureRecorder {
     }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
 private struct StressRunOutcome: Sendable {
     let firstFailure: String?
 }
 
-@available(iOS 26.0, macOS 26.0, *)
 private typealias NativeStressRegistrar = @Sendable (LockedCounterModel, @escaping @Sendable (Int) -> Void) -> ObservationHandle
 
-@available(iOS 26.0, macOS 26.0, *)
 private func runTwoThreadWriteAndReadRound(
     model: LockedCounterModel,
     first: Int,
@@ -265,7 +260,6 @@ private func runTwoThreadWriteAndReadRound(
     }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
 private func runRandomizedObservationStress(
     iterations: Int,
     seed: UInt64,
@@ -697,10 +691,6 @@ struct ObservationsCompatTests {
 
     @Test
     func nativeBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
-        guard #available(iOS 26.0, macOS 26.0, *) else {
-            return
-        }
-
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
