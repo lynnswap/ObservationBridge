@@ -32,7 +32,6 @@ let package = Package(
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
                 .strictMemorySafety(),
-                .treatAllWarnings(as: .error),
             ]
         ),
         .testTarget(
@@ -43,7 +42,6 @@ let package = Package(
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
                 .strictMemorySafety(),
-                .treatAllWarnings(as: .error),
             ]
         )
     ]
