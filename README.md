@@ -1,12 +1,18 @@
 # ObservationsCompat
 
-`ObservationsCompat` is a lightweight compatibility layer for Swift Observations.
+`ObservationsCompat` is a lightweight compatibility layer for Swift Observation.
 
-It provides a single async-sequence API that:
+It now provides owner-bound APIs designed to remove manual `Task` and `weak self` management:
 
-- uses native `Observations` on supported OS versions
-- falls back to a legacy `withObservationTracking`-based stream on older OS versions
-- suppresses duplicate consecutive values (`Equatable`)
+- `model.observe(...)` for synchronous handlers
+- `model.observeTask(...)` for async handlers (`latest wins` cancellation)
+
+Both APIs:
+
+- use native `Observations` on supported OS versions
+- fall back to legacy `withObservationTracking` on older OS versions
+- auto-cancel when the owner is released (`retention: .automatic`, default)
+- optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
 
 ## Requirements
 
@@ -16,21 +22,55 @@ It provides a single async-sequence API that:
 
 ## Basic Usage
 
+### Synchronous updates (`observe`)
+
 ```swift
 import ObservationsCompat
 
-let stream = ObservationsCompat {
-    model.count
-}
-
-Task {
-    for await value in stream {
-        print(value)
-    }
+model.observe(\.count) { value in
+    print("count = \(value)")
 }
 ```
 
-## Notes
+### Async work (`observeTask`)
 
-- The API is designed to keep app code the same across OS versions.
-- Cancel the consuming task when the stream is no longer needed.
+```swift
+import ObservationsCompat
+
+model.observeTask(\.count) { value in
+    await analytics.trackCount(value)
+}
+```
+
+### Multiple key paths
+
+```swift
+model.observeTask([\.count, \.retryCount]) { values in
+    await analytics.trackCounts(values)
+}
+```
+
+### Duplicate suppression (`Equatable` only)
+
+```swift
+let handle = model.observe(
+    \.count,
+    retention: .manual,
+    removeDuplicates: true
+) { value in
+    print(value)
+}
+
+handle.cancel()
+```
+
+### Advanced backend control
+
+```swift
+model.observeTask(
+    \.count,
+    backend: .native
+) { value in
+    await process(value)
+}
+```
