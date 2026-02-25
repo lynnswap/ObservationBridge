@@ -14,6 +14,8 @@ Both APIs:
 - auto-cancel when the owner is released (`retention: .automatic`, default)
 - optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
 
+Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
+
 ## Requirements
 
 - Swift 6.2

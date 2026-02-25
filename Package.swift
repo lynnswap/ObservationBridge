@@ -16,10 +16,6 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ObservationsCompatObjC",
-            publicHeadersPath: "include"
-        ),
-        .target(
             name: "ObservationsCompatLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -29,7 +25,7 @@ let package = Package(
         ),
         .target(
             name: "ObservationsCompat",
-            dependencies: ["ObservationsCompatLegacy", "ObservationsCompatObjC"],
+            dependencies: ["ObservationsCompatLegacy"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),

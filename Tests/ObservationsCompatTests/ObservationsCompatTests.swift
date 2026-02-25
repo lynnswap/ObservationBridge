@@ -590,6 +590,9 @@ struct ObservationsCompatTests {
 
     @Test
     func observeTaskAutomaticRetentionKeepsObservationWithoutHandle() async {
+#if !canImport(ObjectiveC)
+        return
+#endif
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
@@ -668,6 +671,9 @@ struct ObservationsCompatTests {
 
     @Test
     func observeTaskAutomaticRetentionDoesNotPreventOwnerDeinit() async {
+#if !canImport(ObjectiveC)
+        return
+#endif
         let deinitFlag = DeinitFlag()
         weak var weakModel: DeinitProbeCounterModel?
 

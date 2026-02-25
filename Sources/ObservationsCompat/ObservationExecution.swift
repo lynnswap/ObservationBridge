@@ -1,5 +1,4 @@
 import ObservationsCompatLegacy
-import ObservationsCompatObjC
 import Synchronization
 
 private enum OwnerValueEmission<Value: Sendable>: Sendable {
@@ -20,7 +19,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     onChange: @escaping @Sendable (Value) -> Void
 ) -> ObservationHandle {
-    let ownerToken = ObservationsCompatCreateWeakOwnerToken(owner)
+    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let stream = makeOwnerValueStream(
         ownerToken: ownerToken,
         backend: backend,
@@ -47,7 +46,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         monitorTask.cancel()
     }
     handle.box.addCancellationHandler {
-        ObservationsCompatRemoveWeakOwnerToken(ownerToken)
+        WeakOwnerRegistry.removeToken(ownerToken)
     }
 
     return applyRetention(handle, owner: owner, retention: retention)
@@ -61,7 +60,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     task: @escaping @Sendable (Value) async -> Void
 ) -> ObservationHandle {
-    let ownerToken = ObservationsCompatCreateWeakOwnerToken(owner)
+    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let stream = makeOwnerValueStream(
         ownerToken: ownerToken,
         backend: backend,
@@ -124,7 +123,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         remainingTask?.cancel()
     }
     handle.box.addCancellationHandler {
-        ObservationsCompatRemoveWeakOwnerToken(ownerToken)
+        WeakOwnerRegistry.removeToken(ownerToken)
     }
 
     return applyRetention(handle, owner: owner, retention: retention)
@@ -150,7 +149,7 @@ private func makeOwnerValueStream<Owner: AnyObject, Value: Sendable>(
     }
 
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<Value> = {
-        guard let owner = ObservationsCompatGetWeakOwner(ownerToken) as? Owner else {
+        guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
             return .ownerGone
         }
         switch ObservationsCompatLegacy.legacyEvaluateObservedOwnerValue(owner: owner, value: value) {
@@ -164,9 +163,9 @@ private func makeOwnerValueStream<Owner: AnyObject, Value: Sendable>(
     return makeObservationStream(backend: backend, observeOwnerValue, isDuplicate: optionalDuplicateFilter)
 }
 
-private func applyRetention<Owner: AnyObject>(
+private func applyRetention(
     _ handle: ObservationHandle,
-    owner: Owner,
+    owner: AnyObject,
     retention: ObservationRetention
 ) -> ObservationHandle {
     guard retention == .automatic else {
