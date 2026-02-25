@@ -1,0 +1,410 @@
+//
+//  ContentView.swift
+//  MiniApp
+//
+//  Created by Kazuki Nakashima on 2026/02/25.
+//
+
+import Foundation
+import Observation
+import ObservationsCompat
+import Synchronization
+import SwiftUI
+
+struct ContentView: View {
+    @State private var isRunning = false
+    @State private var runningBackend: ObservationsCompatBackend?
+    @State private var legacyElapsedSeconds: Double?
+    @State private var nativeElapsedSeconds: Double?
+    @State private var runningTask: Task<Void, Never>?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Run") {
+                    LabeledContent("Status") {
+                        if isRunning, let runningBackend {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Running (\(backendTitle(runningBackend)))")
+                            }
+                        } else {
+                            Text("Idle")
+                        }
+                    }
+
+                    Button("Run Legacy") {
+                        startRun(requestedBackend: .legacy)
+                    }
+                    .disabled(isRunning)
+
+                    Button("Run Native") {
+                        startRun(requestedBackend: .native)
+                    }
+                    .disabled(isRunning)
+
+                    if isRunning {
+                        Button("Cancel", role: .destructive) {
+                            cancelRun()
+                        }
+                    }
+                }
+
+                Section("Elapsed Time") {
+                    LabeledContent("Legacy") {
+                        Text(formattedElapsed(legacyElapsedSeconds))
+                            .monospacedDigit()
+                    }
+                    LabeledContent("Native") {
+                        Text(formattedElapsed(nativeElapsedSeconds))
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .navigationTitle("Stress Runner")
+        }
+    }
+
+    private func formattedElapsed(_ seconds: Double?) -> String {
+        guard let seconds else {
+            return "-"
+        }
+        return Measurement(value: seconds, unit: UnitDuration.seconds)
+            .formatted(
+                .measurement(
+                    width: .abbreviated,
+                    usage: .asProvided,
+                    numberFormatStyle: .number.precision(.fractionLength(3))
+                )
+            )
+    }
+
+    private func startRun(requestedBackend: ObservationsCompatBackend) {
+        guard !isRunning else {
+            return
+        }
+
+        let iterations = 1_000_000
+        let seed: UInt64
+        switch requestedBackend {
+        case .legacy:
+            seed = 0x26_00_00_00_00_00_00_01
+        case .native:
+            seed = 0x26_00_00_00_00_00_00_02
+        case .automatic:
+            seed = 0x26_00_00_00_00_00_00_03
+        }
+
+        isRunning = true
+        runningBackend = requestedBackend
+
+        runningTask = Task {
+            let result = await StressBenchmarkRunner.run(
+                requestedBackend: requestedBackend,
+                iterations: iterations,
+                seed: seed
+            )
+
+            if Task.isCancelled {
+                return
+            }
+
+            await MainActor.run {
+                switch requestedBackend {
+                case .legacy:
+                    legacyElapsedSeconds = result.elapsedSeconds
+                case .native:
+                    nativeElapsedSeconds = result.elapsedSeconds
+                case .automatic:
+                    break
+                }
+
+                isRunning = false
+                runningBackend = nil
+                runningTask = nil
+            }
+        }
+    }
+
+    private func cancelRun() {
+        runningTask?.cancel()
+        runningTask = nil
+        isRunning = false
+        runningBackend = nil
+    }
+
+    private func backendTitle(_ backend: ObservationsCompatBackend) -> String {
+        switch backend {
+        case .legacy:
+            return "legacy"
+        case .native:
+            return "native"
+        case .automatic:
+            return "automatic"
+        }
+    }
+}
+
+@Observable
+private final class StressLockedCounterModel: Sendable {
+    @ObservationIgnored
+    private let valueStorage = Mutex<Int>(0)
+
+    nonisolated var value: Int {
+        get {
+            access(keyPath: \.value)
+            return valueStorage.withLock { $0 }
+        }
+        set {
+            withMutation(keyPath: \.value) {
+                valueStorage.withLock { $0 = newValue }
+            }
+        }
+    }
+
+    nonisolated func writeAndRead(_ newValue: Int) -> Int {
+        withMutation(keyPath: \.value) {
+            valueStorage.withLock {
+                $0 = newValue
+                return $0
+            }
+        }
+    }
+}
+
+private struct StressRNG: Sendable {
+    private var state: UInt64
+
+    nonisolated init(seed: UInt64) {
+        if seed == 0 {
+            state = 0xA5A5_A5A5_A5A5_A5A5
+        } else {
+            state = seed
+        }
+    }
+
+    nonisolated mutating func nextUInt64() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return state
+    }
+
+    nonisolated mutating func nextBool() -> Bool {
+        (nextUInt64() & 1) == 0
+    }
+
+    nonisolated mutating func nextInt(upperBound: Int) -> Int {
+        precondition(upperBound > 0)
+        return Int(nextUInt64() % UInt64(upperBound))
+    }
+}
+
+private actor StressFailureRecorder {
+    private var firstFailureMessage: String?
+
+    func record(_ message: String) {
+        if firstFailureMessage == nil {
+            firstFailureMessage = message
+        }
+    }
+
+    func firstFailure() -> String? {
+        firstFailureMessage
+    }
+}
+
+private struct StressRunOutcome: Sendable {
+    let firstFailure: String?
+}
+
+private struct StressRunResult: Sendable {
+    let requestedBackend: ObservationsCompatBackend
+    let effectiveBackend: ObservationsCompatBackend
+    let iterations: Int
+    let workers: Int
+    let seed: UInt64
+    let completed: Bool
+    let firstFailure: String?
+    let elapsedSeconds: Double
+}
+
+private enum StressBenchmarkRunner {
+    private typealias RegisterObservation = @Sendable (
+        StressLockedCounterModel,
+        @escaping @Sendable (Int) -> Void
+    ) -> ObservationHandle
+
+    static func run(
+        requestedBackend: ObservationsCompatBackend,
+        iterations: Int,
+        seed: UInt64
+    ) async -> StressRunResult {
+        let startNanos = DispatchTime.now().uptimeNanoseconds
+        let result = await runRandomizedObservationStress(
+            iterations: iterations,
+            seed: seed
+        ) { model, onObserved in
+            model.observeTask(\.value, backend: requestedBackend, retention: .manual) { value in
+                onObserved(value)
+            }
+        }
+        let endNanos = DispatchTime.now().uptimeNanoseconds
+        let elapsedSeconds = Double(endNanos - startNanos) / 1_000_000_000
+
+        return StressRunResult(
+            requestedBackend: requestedBackend,
+            effectiveBackend: resolvedBackend(for: requestedBackend),
+            iterations: iterations,
+            workers: result.workers,
+            seed: seed,
+            completed: result.completed,
+            firstFailure: result.firstFailure,
+            elapsedSeconds: elapsedSeconds
+        )
+    }
+
+    private static func resolvedBackend(for backend: ObservationsCompatBackend) -> ObservationsCompatBackend {
+        switch backend {
+        case .legacy:
+            return .legacy
+        case .automatic, .native:
+            if #available(iOS 26.0, macOS 26.0, *) {
+                return .native
+            }
+            return .legacy
+        }
+    }
+
+    private static func runTwoThreadWriteAndReadRound(
+        model: StressLockedCounterModel,
+        first: Int,
+        second: Int,
+        firstYields: Int,
+        secondYields: Int,
+        swapOrder: Bool
+    ) async -> [Int] {
+        await withTaskGroup(of: Int.self) { group in
+            let firstOperation: (Int, Int)
+            let secondOperation: (Int, Int)
+
+            if swapOrder {
+                firstOperation = (second, secondYields)
+                secondOperation = (first, firstYields)
+            } else {
+                firstOperation = (first, firstYields)
+                secondOperation = (second, secondYields)
+            }
+
+            group.addTask {
+                for _ in 0..<firstOperation.1 {
+                    await Task.yield()
+                }
+                return model.writeAndRead(firstOperation.0)
+            }
+            group.addTask {
+                for _ in 0..<secondOperation.1 {
+                    await Task.yield()
+                }
+                return model.writeAndRead(secondOperation.0)
+            }
+
+            var values: [Int] = []
+            values.reserveCapacity(2)
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+    }
+
+    private static func waitWithTimeout<T: Sendable>(
+        nanoseconds: UInt64 = 180_000_000_000,
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask {
+                await operation()
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private static func runRandomizedObservationStress(
+        iterations: Int,
+        seed: UInt64,
+        register: @escaping RegisterObservation
+    ) async -> (completed: Bool, workers: Int, firstFailure: String?) {
+        let workers = max(2, min(ProcessInfo.processInfo.activeProcessorCount, 8))
+        let outcome = await waitWithTimeout {
+            let failureRecorder = StressFailureRecorder()
+            let baseIterationsPerWorker = iterations / workers
+            let extraIterations = iterations % workers
+
+            await withTaskGroup(of: Void.self) { group in
+                for workerIndex in 0..<workers {
+                    let workerIterations = baseIterationsPerWorker + (workerIndex < extraIterations ? 1 : 0)
+                    let workerSeed = seed &+ (UInt64(workerIndex) &* 0x9E37_79B1_85EB_CA87)
+
+                    group.addTask {
+                        var rng = StressRNG(seed: workerSeed)
+                        let model = StressLockedCounterModel()
+                        let observedFlag = Mutex(false)
+                        let handle = register(model) { _ in
+                            observedFlag.withLock { $0 = true }
+                        }
+                        defer { handle.cancel() }
+
+                        for iteration in 0..<workerIterations {
+                            if Task.isCancelled {
+                                await failureRecorder.record("cancelled")
+                                return
+                            }
+
+                            let first = rng.nextInt(upperBound: 1_000_000_000)
+                            let second = rng.nextInt(upperBound: 1_000_000_000) ^ 0x55AA_55AA
+                            let firstYields = rng.nextInt(upperBound: 4)
+                            let secondYields = rng.nextInt(upperBound: 4)
+                            let swapOrder = rng.nextBool()
+
+                            let values = await runTwoThreadWriteAndReadRound(
+                                model: model,
+                                first: first,
+                                second: second,
+                                firstYields: firstYields,
+                                secondYields: secondYields,
+                                swapOrder: swapOrder
+                            )
+                            let expected = Set([first, second])
+                            if Set(values) != expected {
+                                await failureRecorder.record(
+                                    "worker=\(workerIndex), iteration=\(iteration), expected=\(expected), actual=\(values)"
+                                )
+                                return
+                            }
+                        }
+
+                        if !observedFlag.withLock({ $0 }) {
+                            await failureRecorder.record("worker=\(workerIndex), observation callback did not run")
+                        }
+                    }
+                }
+            }
+
+            return StressRunOutcome(firstFailure: await failureRecorder.firstFailure())
+        }
+
+        guard let outcome else {
+            return (false, workers, "timed out")
+        }
+        return (true, workers, outcome.firstFailure)
+    }
+}
+
+#Preview {
+    ContentView()
+}

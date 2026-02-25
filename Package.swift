@@ -16,20 +16,34 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ObservationsCompat",
+            name: "ObservationsCompatLegacy",
+            path: "ObservationsCompat/Sources/ObservationsCompatLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
                 .strictMemorySafety(),
             ]
         ),
-        .testTarget(
-            name: "ObservationsCompatTests",
-            dependencies: ["ObservationsCompat"],
+        .target(
+            name: "ObservationsCompat",
+            dependencies: ["ObservationsCompatLegacy"],
+            path: "ObservationsCompat/Sources/ObservationsCompat",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
                 .strictMemorySafety(),
+                .treatAllWarnings(as: .error),
+            ]
+        ),
+        .testTarget(
+            name: "ObservationsCompatTests",
+            dependencies: ["ObservationsCompat"],
+            path: "ObservationsCompat/Tests/ObservationsCompatTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .defaultIsolation(nil),
+                .strictMemorySafety(),
+                .treatAllWarnings(as: .error),
             ]
         )
     ]
