@@ -327,7 +327,6 @@ private func runRandomizedObservationStress(
 @MainActor
 @Suite
 struct ObservationsCompatTests {
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
         let model = CounterModel()
@@ -355,7 +354,6 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == 2)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendCoalescesBurstAndEventuallyEmitsLatestValue() async {
         let model = CounterModel()
@@ -389,7 +387,6 @@ struct ObservationsCompatTests {
         #expect(sawLatest == true)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendSuppressesHighFrequencyDuplicateValues() async {
         let model = CounterModel()
@@ -415,7 +412,6 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func nativeBackendFallsBackToLegacyOnUnsupportedOS() async {
         let model = CounterModel()
@@ -437,7 +433,6 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == 7)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendEmitsInitialOptionalNilValue() async {
         let model = OptionalCounterModel()
@@ -459,7 +454,6 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == 3)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendPreservesObserveIsolationAcrossDetachedCreation() async {
         let model = CounterModel()
@@ -486,7 +480,6 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == 11)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func streamCanBeCancelledSafely() async {
         let model = CounterModel()
@@ -513,7 +506,6 @@ struct ObservationsCompatTests {
         #expect(model.value == 2)
     }
 
-    @available(*, deprecated, message: "Uses deprecated stream API for compatibility verification.")
     @Test
     func legacyBackendReleasesObservedModelAfterTermination() async {
         let deinitFlag = DeinitFlag()

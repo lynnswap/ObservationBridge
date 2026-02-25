@@ -339,7 +339,6 @@ private func makeNativeStream<Value: Sendable>(
     }
 }
 
-@available(*, deprecated, message: "Use Observable.observe(_:onChange:) or Observable.observeTask(_:task:) instead.")
 public struct ObservationsCompat<Value: Sendable & Equatable>: AsyncSequence, Sendable {
     public typealias Element = Value
 
@@ -372,7 +371,6 @@ public struct ObservationsCompat<Value: Sendable & Equatable>: AsyncSequence, Se
 @available(*, deprecated, renamed: "ObservationsCompat")
 public typealias ObservationsCompatStream<Value> = ObservationsCompat<Value> where Value: Sendable, Value: Equatable
 
-@available(*, deprecated, message: "Use Observable.observe(_:onChange:) or Observable.observeTask(_:task:) instead.")
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     backend: ObservationsCompatBackend = .automatic,
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value

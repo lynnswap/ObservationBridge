@@ -1,25 +1,11 @@
 # ObservationsCompat
 
-`ObservationsCompat` is a lightweight compatibility layer for Swift Observation.
+`ObservationsCompat` is a compatibility layer for Swift Observation.
 
-It now provides owner-bound APIs designed to remove manual `Task` and `weak self` management:
+It provides two usage styles:
 
-- `model.observe(...)` for synchronous handlers
-- `model.observeTask(...)` for async handlers (`latest wins` cancellation)
-
-Both APIs:
-
-- use native `Observations` on supported OS versions
-- fall back to legacy `withObservationTracking` on older OS versions
-- auto-cancel when the owner is released (`retention: .automatic`, default)
-- optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
-
-Legacy backend behavior note:
-
-- legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
-- native uses Swift `Observations` transaction semantics on supported OS versions; both backends preserve `latest wins` cancellation for `observeTask`
-
-Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
+- owner-bound callbacks: `observe` / `observeTask`
+- `AsyncSequence` wrappers: `ObservationsCompat` / `makeObservationsCompatStream`
 
 ## Requirements
 
@@ -39,7 +25,7 @@ model.observe(\.count) { value in
 }
 ```
 
-### Async work (`observeTask`)
+### Async updates (`observeTask`)
 
 ```swift
 import ObservationsCompat
@@ -49,7 +35,7 @@ model.observeTask(\.count) { value in
 }
 ```
 
-### Multiple key paths
+### Multiple key paths (trigger-only)
 
 ```swift
 model.observeTask([\.count, \.isEnabled]) {
@@ -57,7 +43,18 @@ model.observeTask([\.count, \.isEnabled]) {
 }
 ```
 
-### Duplicate suppression (`Equatable` only)
+### Duplicate suppression (`Equatable` values)
+
+```swift
+model.observe(
+    \.count,
+    removeDuplicates: true
+) { value in
+    print(value)
+}
+```
+
+If you need explicit lifecycle control, use `.manual` retention and keep the returned handle:
 
 ```swift
 let handle = model.observe(
@@ -71,13 +68,46 @@ let handle = model.observe(
 handle.cancel()
 ```
 
-### Advanced backend control
+## AsyncSequence Style
+
+### `ObservationsCompat`
 
 ```swift
-model.observeTask(
-    \.count,
-    backend: .native
-) { value in
-    await process(value)
+import ObservationsCompat
+
+let stream = ObservationsCompat {
+    model.count
+}
+
+for await value in stream {
+    print("count = \(value)")
 }
 ```
+
+### `makeObservationsCompatStream`
+
+```swift
+let stream = makeObservationsCompatStream(backend: .legacy) {
+    model.count
+}
+
+for await value in stream {
+    print(value)
+}
+```
+
+## Behavior Notes
+
+Both APIs:
+
+- use native `Observations` on supported OS versions
+- fall back to legacy `withObservationTracking` on older OS versions
+- auto-cancel when the owner is released (`retention: .automatic`, default)
+- optionally support duplicate suppression for `Equatable` values (`removeDuplicates: true`)
+
+Legacy backend behavior note:
+
+- legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
+- native uses Swift `Observations` transaction semantics on supported OS versions; both backends preserve `latest wins` cancellation for `observeTask`
+
+Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
