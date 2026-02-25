@@ -21,7 +21,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
-    onChange: @escaping @Sendable (Value) -> Void
+    @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let monitorTask = Task {
@@ -35,7 +35,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
             case .ownerGone:
                 return false
             case .value(let observedValue):
-                onChange(observedValue)
+                await onChange(observedValue)
                 return true
             }
         }
@@ -57,7 +57,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
-    task: @escaping @Sendable (Value) async -> Void
+    @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let observeTaskState = Mutex(ObserveTaskExecutionState<Value>())

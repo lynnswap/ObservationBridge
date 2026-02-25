@@ -10,10 +10,10 @@ public enum ObservationsCompatBackend: Sendable {
 public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable (Value) -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observe(
             keyPath,
@@ -26,10 +26,10 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observe<Value: Sendable & Equatable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable (Value) -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observe(
             keyPath,
@@ -42,10 +42,10 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observeTask<Value: Sendable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable (Value) async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTask(
             keyPath,
@@ -58,10 +58,10 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable (Value) async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTask(
             keyPath,
@@ -74,10 +74,10 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observe(
-        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
+        _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable () -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
     ) -> ObservationHandle {
         observe(
             keyPaths,
@@ -90,10 +90,10 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observeTask(
-        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
+        _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable () async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
     ) -> ObservationHandle {
         observeTask(
             keyPaths,
@@ -106,11 +106,11 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observe<Value: Sendable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable (Value) -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
             preconditionFailure("removeDuplicates requires Value to conform to Equatable")
@@ -128,11 +128,11 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observe<Value: Sendable & Equatable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable (Value) -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observeImpl(
             owner: self,
@@ -146,11 +146,11 @@ public extension Observable where Self: AnyObject {
 
     @discardableResult
     func observeTask<Value: Sendable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable (Value) async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
             preconditionFailure("removeDuplicates requires Value to conform to Equatable")
@@ -162,17 +162,17 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             of: makeKeyPathGetter(keyPath),
-            task: makeTaskAdapter(task)
+            task: task
         )
     }
 
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
-        _ keyPath: sending any KeyPath<Self, Value> & Sendable,
+        _ keyPath: sending KeyPath<Self, Value>,
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable (Value) async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTaskImpl(
             owner: self,
@@ -180,17 +180,17 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: removeDuplicates ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             of: makeKeyPathGetter(keyPath),
-            task: makeTaskAdapter(task)
+            task: task
         )
     }
 
     @discardableResult
     func observe(
-        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
+        _ keyPaths: sending [PartialKeyPath<Self>],
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        onChange: @escaping @Sendable () -> Void
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
             preconditionFailure("removeDuplicates is not supported for multiple key path trigger observation")
@@ -203,18 +203,18 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
-                onChange()
+                await onChange()
             }
         )
     }
 
     @discardableResult
     func observeTask(
-        _ keyPaths: sending [any PartialKeyPath<Self> & Sendable],
+        _ keyPaths: sending [PartialKeyPath<Self>],
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         removeDuplicates: Bool = false,
-        task: @escaping @Sendable () async -> Void
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
     ) -> ObservationHandle {
         if removeDuplicates {
             preconditionFailure("removeDuplicates is not supported for multiple key path trigger observation")
@@ -233,39 +233,40 @@ public extension Observable where Self: AnyObject {
     }
 }
 
+// KeyPath / PartialKeyPath are immutable metadata; wrapping allows safe capture in @Sendable closures.
+private struct _UncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Sendable {
+    let keyPath: KeyPath<Owner, Value>
+}
+
+private struct _UncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked Sendable {
+    let keyPaths: [PartialKeyPath<Owner>]
+}
+
 private func makeKeyPathGetter<Owner: AnyObject, Value: Sendable>(
-    _ keyPath: sending any KeyPath<Owner, Value> & Sendable
+    _ keyPath: sending KeyPath<Owner, Value>
 ) -> @isolated(any) @Sendable (Owner) -> Value {
-    let keyPath = keyPath
+    let keyPath = _UncheckedSendableKeyPath(keyPath: keyPath)
     return { owner in
-        owner[keyPath: keyPath]
+        owner[keyPath: keyPath.keyPath]
     }
 }
 
 private func makeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
-    _ keyPaths: sending [any PartialKeyPath<Owner> & Sendable]
+    _ keyPaths: sending [PartialKeyPath<Owner>]
 ) -> @isolated(any) @Sendable (Owner) -> Void {
-    let keyPaths = keyPaths
+    let keyPaths = _UncheckedSendablePartialKeyPaths(keyPaths: keyPaths)
     return { owner in
-        for keyPath in keyPaths {
+        for keyPath in keyPaths.keyPaths {
             _ = owner[keyPath: keyPath]
         }
     }
 }
 
 private func makeOnChangeAdapter<Value>(
-    _ onChange: @escaping @Sendable (Value) -> Void
-) -> @Sendable (Value) -> Void {
+    _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
+) -> @isolated(any) @Sendable (sending Value) async -> Void {
     { value in
-        onChange(value)
-    }
-}
-
-private func makeTaskAdapter<Value>(
-    _ task: @escaping @Sendable (Value) async -> Void
-) -> @Sendable (Value) async -> Void {
-    { value in
-        await task(value)
+        await onChange(value)
     }
 }
 
