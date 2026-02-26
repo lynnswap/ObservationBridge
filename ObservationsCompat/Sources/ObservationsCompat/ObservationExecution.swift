@@ -21,6 +21,31 @@ private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var isCancelled = false
 }
 
+private struct DuplicateEmissionState<Value: Sendable>: Sendable {
+    private enum Previous: Sendable {
+        case none
+        case value(Value)
+    }
+
+    private var previous: Previous = .none
+    let isDuplicate: (@Sendable (Value, Value) -> Bool)?
+
+    init(isDuplicate: (@Sendable (Value, Value) -> Bool)?) {
+        self.isDuplicate = isDuplicate
+    }
+
+    mutating func shouldEmit(_ value: Value) -> Bool {
+        if case let .value(previousValue) = previous,
+           let isDuplicate,
+           isDuplicate(previousValue, value)
+        {
+            return false
+        }
+        previous = .value(value)
+        return true
+    }
+}
+
 func observeImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
     backend: ObservationsCompatBackend,
@@ -36,7 +61,6 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             backend: backend,
-            duplicateFilter: duplicateFilter,
             of: value
         )
         defer {
@@ -44,15 +68,20 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
             observedValues.channel.finish()
         }
 
+        var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
+
         if let debounce {
-            let debouncedStream = makeDebouncedValueStream(
+            let debouncedValues = makeDebouncedValueStream(
                 observedValues.channel,
                 debounce: debounce,
                 debounceClock: debounceClock
             )
-            for await observedValue in debouncedStream {
+            for await observedValue in debouncedValues {
                 guard !Task.isCancelled else {
                     break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
                 }
                 await onChange(observedValue)
             }
@@ -60,6 +89,9 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
             for await observedValue in observedValues.channel {
                 guard !Task.isCancelled else {
                     break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
                 }
                 await onChange(observedValue)
             }
@@ -197,7 +229,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             backend: backend,
-            duplicateFilter: duplicateFilter,
             of: value
         )
         defer {
@@ -205,15 +236,20 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             observedValues.channel.finish()
         }
 
+        var duplicateState = DuplicateEmissionState(isDuplicate: duplicateFilter)
+
         if let debounce {
-            let debouncedStream = makeDebouncedValueStream(
+            let debouncedValues = makeDebouncedValueStream(
                 observedValues.channel,
                 debounce: debounce,
                 debounceClock: debounceClock
             )
-            for await observedValue in debouncedStream {
+            for await observedValue in debouncedValues {
                 guard !Task.isCancelled else {
                     break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
                 }
                 guard enqueueLatestValue(observedValue) else {
                     break
@@ -223,6 +259,9 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             for await observedValue in observedValues.channel {
                 guard !Task.isCancelled else {
                     break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
                 }
                 guard enqueueLatestValue(observedValue) else {
                     break
@@ -248,7 +287,6 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     backend: ObservationsCompatBackend,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
 ) -> ObservedValueChannel<Value> {
     let channel = AsyncChannel<Value>()
@@ -256,7 +294,6 @@ private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
         await forEachOwnerValueEmission(
             ownerToken: ownerToken,
             backend: backend,
-            duplicateFilter: duplicateFilter,
             of: value
         ) { emission in
             switch emission {
@@ -374,23 +411,9 @@ private func makeDebouncedValueStream<Value: Sendable, C: Clock<Duration>>(
 private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     backend: ObservationsCompatBackend,
-    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
-    let optionalDuplicateFilter: (@Sendable (OwnerValueEmission<Value>, OwnerValueEmission<Value>) -> Bool)? = duplicateFilter.map { duplicateFilter in
-        { @Sendable (lhs: OwnerValueEmission<Value>, rhs: OwnerValueEmission<Value>) -> Bool in
-            switch (lhs, rhs) {
-            case let (.value(lhs), .value(rhs)):
-                return duplicateFilter(lhs, rhs)
-            case (.ownerGone, .ownerGone):
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<Value> = {
         guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
             return .ownerGone
@@ -408,7 +431,6 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
         if #available(iOS 26.0, macOS 26.0, *) {
             await forEachNativeEmission(
                 observeOwnerValue,
-                isDuplicate: optionalDuplicateFilter,
                 consume: consume
             )
             return
@@ -417,7 +439,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     case .legacy, .automatic:
         let stream = makeLegacyObservationStream(
             observeOwnerValue,
-            isDuplicate: optionalDuplicateFilter
+            isDuplicate: nil
         )
         for await emission in stream {
             guard !Task.isCancelled else {
@@ -433,24 +455,14 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
 @available(iOS 26.0, macOS 26.0, *)
 private func forEachNativeEmission<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> OwnerValueEmission<Value>,
-    isDuplicate: (@Sendable (OwnerValueEmission<Value>, OwnerValueEmission<Value>) -> Bool)?,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
-    var previousValue: OwnerValueEmission<Value>?
-    var hasPreviousValue = false
     let observations = Observations(observe)
 
     for await value in observations {
         guard !Task.isCancelled else {
             break
         }
-
-        if hasPreviousValue, let previousValue, let isDuplicate, isDuplicate(previousValue, value) {
-            continue
-        }
-
-        hasPreviousValue = true
-        previousValue = value
         guard await consume(value) else {
             break
         }

@@ -162,6 +162,7 @@ Both APIs:
 - optionally support duplicate suppression for `Equatable` values (`options: [.removeDuplicates]`)
 - optionally support debounce (`options: [.debounce(ObservationDebounce(...))]`)
 - debounce time progression follows `clock` (`ContinuousClock` by default)
+- when both `.removeDuplicates` and `.debounce` are enabled, duplicate suppression is applied to debounced outputs
 
 Legacy backend behavior note:
 

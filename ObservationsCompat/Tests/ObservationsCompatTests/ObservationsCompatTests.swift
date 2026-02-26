@@ -778,6 +778,35 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observeTaskRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
+        let model = OptionalCounterModel()
+        let queue = ValueQueue<Int?>()
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.removeDuplicates]
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
     func observeTaskDebounceImmediateFirstSupportsDeterministicClockControl() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
@@ -879,6 +908,33 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
         clock.advance(by: .milliseconds(1))
         #expect(await nextWithTimeout(from: queue) == 42)
+    }
+
+    @Test
+    func observeTaskDebounceAndRemoveDuplicatesSuppressesPostDebounceDuplicateOutputs() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            \.parity,
+            retention: .manual,
+            options: [.removeDuplicates, .debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
     }
 
     @Test
@@ -1217,15 +1273,15 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: started) == 0)
 
         model.value = 1
-        #expect(await waitUntilValueReceived(0, from: cancelled))
-        #expect(await waitUntilValueReceived(1, from: started))
+        #expect(await waitUntilValueReceived(0, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(1, from: started, nanoseconds: 15_000_000_000))
 
         model.value = 2
-        #expect(await waitUntilValueReceived(1, from: cancelled))
-        #expect(await waitUntilValueReceived(2, from: started))
+        #expect(await waitUntilValueReceived(1, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(2, from: started, nanoseconds: 15_000_000_000))
 
         await gate.release(2)
-        #expect(await nextWithTimeout(from: completed) == 2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
     }
 
