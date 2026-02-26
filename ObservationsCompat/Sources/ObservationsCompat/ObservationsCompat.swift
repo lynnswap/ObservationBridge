@@ -100,6 +100,17 @@ public struct ObservationOptions: OptionSet, Sendable {
         debounceConfiguration
     }
 
+    var hasDebounceConflict: Bool {
+        hasConflictingDebounce
+    }
+
+    var debounceForObservation: ObservationDebounce? {
+        guard !hasDebounceConflict else {
+            preconditionFailure("Conflicting debounce options are not supported when starting observation")
+        }
+        return debounceConfiguration
+    }
+
     public func contains(_ member: ObservationOptions) -> Bool {
         let ownMembership = rawValue & Self.membershipMask
         let memberMembership = member.rawValue & Self.membershipMask
@@ -566,7 +577,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
@@ -587,7 +598,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
@@ -612,7 +623,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             task: task
@@ -633,7 +644,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             task: task
@@ -658,7 +669,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
@@ -685,7 +696,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             task: { _ in
@@ -713,7 +724,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
@@ -735,7 +746,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
@@ -761,7 +772,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
@@ -783,7 +794,7 @@ public extension Observable where Self: AnyObject {
             backend: backend,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
-            debounce: options.debounce,
+            debounce: options.debounceForObservation,
             debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task

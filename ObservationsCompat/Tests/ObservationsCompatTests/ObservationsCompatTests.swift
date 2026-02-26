@@ -980,11 +980,15 @@ struct ObservationsCompatTests {
         let conflictingUnionAB = a.union(b)
         let conflictingUnionBA = b.union(a)
         #expect(conflictingUnionAB == conflictingUnionBA)
+        #expect(conflictingUnionAB.hasDebounceConflict)
+        #expect(!a.hasDebounceConflict)
+        #expect(!b.hasDebounceConflict)
         #expect(conflictingUnionAB.debounce == nil)
         #expect(!conflictingUnionAB.contains(a))
         #expect(!conflictingUnionAB.contains(b))
 
         let literalMerged: ObservationOptions = [.debounce(debounce), .debounce(otherDebounce)]
+        #expect(literalMerged.hasDebounceConflict)
         #expect(literalMerged.debounce == nil)
         #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
 
