@@ -20,7 +20,7 @@ It provides two usage styles:
 ```swift
 import ObservationsCompat
 
-model.observe(\.count, options: []) { value in
+model.observe(\.count) { value in
     print("count = \(value)")
 }
 ```
@@ -30,7 +30,7 @@ model.observe(\.count, options: []) { value in
 ```swift
 import ObservationsCompat
 
-model.observeTask(\.count, options: []) { value in
+model.observeTask(\.count) { value in
     await analytics.trackCount(value)
 }
 ```
@@ -38,7 +38,7 @@ model.observeTask(\.count, options: []) { value in
 ### Multiple key paths (trigger-only)
 
 ```swift
-model.observeTask([\.count, \.isEnabled], options: []) {
+model.observeTask([\.count, \.isEnabled]) {
     await analytics.trackStateChanged()
 }
 ```
