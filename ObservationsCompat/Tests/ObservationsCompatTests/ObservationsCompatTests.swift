@@ -50,6 +50,11 @@ private final class OptionalCounterModel {
     var value: Int? = nil
 }
 
+private struct CounterSnapshot: Sendable, Equatable {
+    let value: Int
+    let isEnabled: Bool
+}
+
 @Observable
 private final class DeinitProbeCounterModel {
     var value: Int = 0
@@ -162,6 +167,165 @@ private final class ValueRecorder<Value: Sendable>: Sendable {
     }
 }
 
+private final class TestDebounceClock: Clock, @unchecked Sendable {
+    typealias Instant = ContinuousClock.Instant
+    typealias Duration = Swift.Duration
+
+    private struct SleepWaiter {
+        let deadline: Instant
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private struct SuspensionWaiter {
+        let minimumSleepers: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private struct State {
+        var now: Instant
+        var sleepers: [UInt64: SleepWaiter] = [:]
+        var nextSleepToken: UInt64 = 0
+        var suspensionWaiters: [UInt64: SuspensionWaiter] = [:]
+        var nextSuspensionToken: UInt64 = 0
+    }
+
+    private let state: Mutex<State>
+
+    var now: Instant {
+        state.withLock { $0.now }
+    }
+
+    var minimumResolution: Duration {
+        .nanoseconds(1)
+    }
+
+    init(now: Instant = ContinuousClock().now) {
+        state = Mutex(State(now: now))
+    }
+
+    func sleep(until deadline: Instant, tolerance _: Duration? = nil) async throws {
+        if deadline <= now {
+            return
+        }
+        try Task.checkCancellation()
+
+        let sleepToken = state.withLock { state in
+            let token = state.nextSleepToken
+            state.nextSleepToken &+= 1
+            return token
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let suspensionContinuations: [CheckedContinuation<Void, Never>] = state.withLock { state in
+                    if deadline <= state.now {
+                        continuation.resume(returning: ())
+                        return []
+                    }
+
+                    state.sleepers[sleepToken] = SleepWaiter(
+                        deadline: deadline,
+                        continuation: continuation
+                    )
+                    return Self.popReadySuspensionWaiters(state: &state)
+                }
+                for suspensionContinuation in suspensionContinuations {
+                    suspensionContinuation.resume()
+                }
+            }
+        } onCancel: {
+            let cancellationContinuation: CheckedContinuation<Void, Error>? = state.withLock { state in
+                state.sleepers.removeValue(forKey: sleepToken)?.continuation
+            }
+            cancellationContinuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    func advance(by duration: Duration) {
+        precondition(duration >= .zero, "duration must be non-negative")
+
+        let readyContinuations: [CheckedContinuation<Void, Error>] = state.withLock { state in
+            state.now = state.now.advanced(by: duration)
+
+            let readySleepTokens = state.sleepers.compactMap { token, waiter in
+                waiter.deadline <= state.now ? token : nil
+            }
+
+            return readySleepTokens.compactMap { token in
+                state.sleepers.removeValue(forKey: token)?.continuation
+            }
+        }
+
+        for continuation in readyContinuations {
+            continuation.resume(returning: ())
+        }
+    }
+
+    func sleep(untilSuspendedBy minimumSleepers: Int = 1) async {
+        precondition(minimumSleepers > 0, "minimumSleepers must be positive")
+
+        await withCheckedContinuation { continuation in
+            let shouldResumeImmediately = state.withLock { state in
+                if state.sleepers.count >= minimumSleepers {
+                    return true
+                }
+
+                let token = state.nextSuspensionToken
+                state.nextSuspensionToken &+= 1
+                state.suspensionWaiters[token] = SuspensionWaiter(
+                    minimumSleepers: minimumSleepers,
+                    continuation: continuation
+                )
+                return false
+            }
+
+            if shouldResumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func popReadySuspensionWaiters(state: inout State) -> [CheckedContinuation<Void, Never>] {
+        let readyTokens = state.suspensionWaiters.compactMap { token, waiter in
+            state.sleepers.count >= waiter.minimumSleepers ? token : nil
+        }
+
+        return readyTokens.compactMap { token in
+            state.suspensionWaiters.removeValue(forKey: token)?.continuation
+        }
+    }
+}
+
+private actor OperationGate {
+    private var permits: Set<Int> = []
+    private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
+
+    func wait(for value: Int) async {
+        if permits.remove(value) != nil {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters[value, default: []].append(continuation)
+        }
+    }
+
+    func release(_ value: Int) {
+        guard var valueWaiters = waiters[value], !valueWaiters.isEmpty else {
+            permits.insert(value)
+            return
+        }
+
+        let continuation = valueWaiters.removeFirst()
+        if valueWaiters.isEmpty {
+            waiters[value] = nil
+        } else {
+            waiters[value] = valueWaiters
+        }
+        continuation.resume()
+    }
+}
+
 private func waitWithTimeout<T: Sendable>(
     nanoseconds: UInt64 = 5_000_000_000,
     _ operation: @escaping @Sendable () async -> T
@@ -202,6 +366,24 @@ private func waitUntilCount<Value: Sendable>(
             await Task.yield()
         }
         return true
+    }
+    return reached == true
+}
+
+private func waitUntilValueReceived<Value: Sendable & Equatable>(
+    _ expected: Value,
+    from queue: ValueQueue<Value>,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Bool {
+    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
+        while true {
+            guard let next = await queue.next() else {
+                return false
+            }
+            if next == expected {
+                return true
+            }
+        }
     }
     return reached == true
 }
@@ -548,7 +730,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.parity, retention: .manual) { value in
+        let handle = model.observeTask(\.parity, retention: .manual, options: []) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
@@ -571,7 +753,7 @@ struct ObservationsCompatTests {
         let handle = model.observe(
             \.parity,
             retention: .manual,
-            removeDuplicates: true
+            options: [.removeDuplicates]
         ) { value in
             recorder.append(value)
         }
@@ -596,11 +778,408 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observeTaskRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
+        let model = OptionalCounterModel()
+        let queue = ValueQueue<Int?>()
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.removeDuplicates]
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.value = nil
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskDebounceImmediateFirstSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        model.value = 3
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 3)
+    }
+
+    @Test
+    func observeTaskDebounceDelayedFirstSupportsDeterministicClockControl() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        await clock.sleep(untilSuspendedBy: 1)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 10
+        model.value = 11
+        await clock.sleep(untilSuspendedBy: 1)
+
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 11)
+    }
+
+    @Test
+    func observeTaskDebounceWithToleranceSupportsDeterministicClockBoundaryChecks() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(
+            interval: .milliseconds(300),
+            tolerance: .milliseconds(50),
+            mode: .delayedFirst
+        )
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(299))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 42
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(299))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 42)
+    }
+
+    @Test
+    func observeTaskDebounceAndRemoveDuplicatesSuppressesPostDebounceDuplicateOutputs() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            \.parity,
+            retention: .manual,
+            options: [.removeDuplicates, .debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        model.value = 2
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(200))
+
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+    }
+
+    @Test
+    func observationOptionsSetAlgebraPreservesDebounceMetadata() {
+        let debounce = ObservationDebounce(
+            interval: .milliseconds(100),
+            tolerance: .milliseconds(20),
+            mode: .immediateFirst
+        )
+
+        let debounceOnly: ObservationOptions = [.debounce(debounce)]
+        #expect(debounceOnly.debounce?.interval == .milliseconds(100))
+        #expect(debounceOnly.debounce?.tolerance == .milliseconds(20))
+        #expect(debounceOnly.debounce?.mode == .immediateFirst)
+
+        let sameDebounce = ObservationOptions.debounce(debounce)
+        #expect(sameDebounce.rawValue == debounceOnly.rawValue)
+        #expect(sameDebounce == debounceOnly)
+
+        let roundTrippedDebounce = ObservationOptions(rawValue: debounceOnly.rawValue)
+        #expect(roundTrippedDebounce.debounce?.interval == .milliseconds(100))
+        #expect(roundTrippedDebounce.debounce?.tolerance == .milliseconds(20))
+        #expect(roundTrippedDebounce.debounce?.mode == .immediateFirst)
+
+        let withFlag = debounceOnly.union([.removeDuplicates])
+        #expect(withFlag.contains(.removeDuplicates))
+        #expect(withFlag.debounce?.interval == .milliseconds(100))
+
+        let roundTrippedWithFlag = ObservationOptions(rawValue: withFlag.rawValue)
+        #expect(roundTrippedWithFlag.contains(.removeDuplicates))
+        #expect(roundTrippedWithFlag.debounce?.interval == .milliseconds(100))
+
+        let otherDebounce = ObservationDebounce(interval: .milliseconds(150), mode: .delayedFirst)
+        #expect(!withFlag.contains(.debounce(otherDebounce)))
+
+        var unchanged = withFlag
+        let removedDifferentDebounce = unchanged.remove(.debounce(otherDebounce))
+        #expect(removedDifferentDebounce == nil)
+        #expect(unchanged.debounce?.interval == .milliseconds(100))
+
+        let a = ObservationOptions.debounce(debounce)
+        let b = ObservationOptions.debounce(otherDebounce)
+        let conflictingUnionAB = a.union(b)
+        let conflictingUnionBA = b.union(a)
+        #expect(conflictingUnionAB == conflictingUnionBA)
+        #expect(conflictingUnionAB.hasDebounceConflict)
+        #expect(!a.hasDebounceConflict)
+        #expect(!b.hasDebounceConflict)
+        #expect(conflictingUnionAB.debounce == nil)
+        #expect(!conflictingUnionAB.contains(a))
+        #expect(!conflictingUnionAB.contains(b))
+
+        let literalMerged: ObservationOptions = [.debounce(debounce), .debounce(otherDebounce)]
+        #expect(literalMerged.hasDebounceConflict)
+        #expect(literalMerged.debounce == nil)
+        #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
+
+        let subtractSpecificFromConflict = literalMerged.subtracting([.debounce(debounce)])
+        #expect(subtractSpecificFromConflict == literalMerged)
+
+        let clearedConflict = literalMerged.subtracting(literalMerged)
+        #expect(clearedConflict == ObservationOptions())
+
+        let thirdDebounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let c = ObservationOptions.debounce(thirdDebounce)
+        let mergedLeftAssociative = a.union(b).union(c)
+        let mergedRightAssociative = a.union(b.union(c))
+        #expect(mergedLeftAssociative == mergedRightAssociative)
+        #expect(mergedLeftAssociative.debounce == nil)
+        #expect(!mergedLeftAssociative.contains(c))
+
+        let symmetricAB = a.symmetricDifference(b)
+        let symmetricBA = b.symmetricDifference(a)
+        #expect(symmetricAB == symmetricBA)
+        #expect(symmetricAB.debounce == nil)
+
+        let intersected = withFlag.intersection([.debounce(debounce)])
+        #expect(!intersected.contains(.removeDuplicates))
+        #expect(intersected.debounce?.interval == .milliseconds(100))
+
+        let withoutFlag = withFlag.subtracting([.removeDuplicates])
+        #expect(!withoutFlag.contains(.removeDuplicates))
+        #expect(withoutFlag.debounce?.interval == .milliseconds(100))
+
+        var removedFlag = withFlag
+        let removed = removedFlag.remove(.removeDuplicates)
+        #expect(removed != nil)
+        #expect(!removedFlag.contains(.removeDuplicates))
+        #expect(removedFlag.debounce?.interval == .milliseconds(100))
+
+        let clearedDebounce = withFlag.subtracting([.debounce(debounce)])
+        #expect(clearedDebounce.debounce == nil)
+    }
+
+    @Test
+    func observationOptionsDebounceNormalizesSubmillisecondDurations() {
+        let submillisecondDebounce = ObservationDebounce(
+            interval: .microseconds(1_400),
+            tolerance: .microseconds(1_600),
+            mode: .delayedFirst
+        )
+        let canonicalDebounce = ObservationDebounce(
+            interval: .milliseconds(1),
+            tolerance: .milliseconds(2),
+            mode: .delayedFirst
+        )
+
+        let submillisecondOptions = ObservationOptions.debounce(submillisecondDebounce)
+        let canonicalOptions: ObservationOptions = [.debounce(canonicalDebounce)]
+
+        #expect(submillisecondOptions.debounce?.interval == .milliseconds(1))
+        #expect(submillisecondOptions.debounce?.tolerance == .milliseconds(2))
+        #expect(submillisecondOptions.contains(canonicalOptions))
+        #expect(canonicalOptions.contains(submillisecondOptions))
+        #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
+    }
+
+    @Test
+    func observeMultipleKeyPathValueProjectionSupportsRemoveDuplicates() async {
+        let model = CounterModel()
+        let recorder = ValueRecorder<CounterSnapshot>()
+
+        let handle = model.observe(
+            [\.value, \.isEnabled],
+            retention: .manual,
+            options: [.removeDuplicates],
+            of: { owner in
+                CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
+            }
+        ) { snapshot in
+            recorder.append(snapshot)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot() == [CounterSnapshot(value: 0, isEnabled: false)])
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(
+            recorder.snapshot().prefix(2).elementsEqual([
+                CounterSnapshot(value: 0, isEnabled: false),
+                CounterSnapshot(value: 1, isEnabled: false)
+            ])
+        )
+
+        model.value = 1
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 2)
+
+        model.isEnabled = true
+        #expect(await waitUntilCount(3, in: recorder))
+        #expect(
+            recorder.snapshot().prefix(3).elementsEqual([
+                CounterSnapshot(value: 0, isEnabled: false),
+                CounterSnapshot(value: 1, isEnabled: false),
+                CounterSnapshot(value: 1, isEnabled: true)
+            ])
+        )
+    }
+
+    @Test
+    func observeTaskMultipleKeyPathValueProjectionSupportsDebounce() async {
+        let model = CounterModel()
+        let queue = ValueQueue<CounterSnapshot>()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            [\.value, \.isEnabled],
+            retention: .manual,
+            options: [.debounce(debounce)],
+            of: { owner in
+                CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
+            }
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == CounterSnapshot(value: 0, isEnabled: false))
+
+        model.value = 1
+        model.isEnabled = true
+        model.value = 2
+
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 2_000_000_000) == CounterSnapshot(value: 2, isEnabled: true))
+    }
+
+    @Test
+    func observeTaskMultipleKeyPathValueProjectionSupportsOptionalNilValues() async {
+        let model = CounterModel()
+        let queue = ValueQueue<String?>()
+
+        let handle = model.observeTask(
+            [\.name, \.isEnabled],
+            retention: .manual,
+            options: [],
+            of: { owner in
+                owner.isEnabled ? owner.name : nil
+            }
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == .some(nil))
+
+        model.name = "hello"
+        model.isEnabled = true
+        #expect(await waitUntilValueReceived(.some("hello"), from: queue))
+    }
+
+    @Test
+    func observeTaskTriggerOnlyMultipleKeyPathSupportsDebounce() async {
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            [\.value, \.isEnabled],
+            retention: .manual,
+            options: [.debounce(debounce)]
+        ) {
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 1
+        model.value = 2
+        model.isEnabled = true
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(recorder.count() == 1)
+
+        #expect(await waitUntilCount(2, in: recorder))
+    }
+
+    @Test
     func observeTaskSupportsMultipleKeyPaths() async {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask([\.value, \.isEnabled], retention: .manual) {
+        let handle = model.observeTask([\.value, \.isEnabled], retention: .manual, options: []) {
             recorder.append(1)
         }
         defer { handle.cancel() }
@@ -620,7 +1199,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observe([\.value, \.isEnabled], retention: .manual) {
+        let handle = model.observe([\.value, \.isEnabled], retention: .manual, options: []) {
             recorder.append(1)
         }
         defer { handle.cancel() }
@@ -640,7 +1219,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        model.observeTask(\.value) { value in
+        model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
 
@@ -657,7 +1236,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, retention: .manual) { value in
+        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
             await queue.push(value)
         }
 
@@ -676,8 +1255,53 @@ struct ObservationsCompatTests {
         let started = ValueQueue<Int>()
         let completed = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
 
-        let handle = model.observeTask(\.value, retention: .manual) { value in
+        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
+            await started.push(value)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await completed.push(value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.value = 1
+        #expect(await waitUntilValueReceived(0, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(1, from: started, nanoseconds: 15_000_000_000))
+
+        model.value = 2
+        #expect(await waitUntilValueReceived(1, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(2, from: started, nanoseconds: 15_000_000_000))
+
+        await gate.release(2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskDebounceStillPreservesLatestWinsCancellation() async {
+        let model = CounterModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let debounce = ObservationDebounce(interval: .milliseconds(150), mode: .immediateFirst)
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.debounce(debounce)]
+        ) { value in
             await started.push(value)
             do {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -691,21 +1315,24 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: started) == 0)
 
         model.value = 1
-        await Task.yield()
-
         model.value = 2
+
         let cancelledValue = await nextWithTimeout(from: cancelled)
-        #expect(cancelledValue == 0 || cancelledValue == 1)
+        #expect(cancelledValue == 0)
         #expect(await nextWithTimeout(from: completed) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
     func observeTaskNativeBackendFallsBackToLegacyOnUnsupportedOS() async {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            return
+        }
+
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, backend: .native, retention: .manual) { value in
+        let handle = model.observeTask(\.value, backend: .native, retention: .manual, options: []) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
@@ -730,7 +1357,7 @@ struct ObservationsCompatTests {
             }
             weakModel = model
 
-            model.observeTask(\.value) { _ in
+            model.observeTask(\.value, options: []) { _ in
             }
         }
 
@@ -748,7 +1375,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, backend: .legacy, retention: .manual) { value in
+            model.observeTask(\.value, backend: .legacy, retention: .manual, options: []) { value in
                 onObserved(value)
             }
         }
@@ -771,7 +1398,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, backend: .native, retention: .manual) { value in
+            model.observeTask(\.value, backend: .native, retention: .manual, options: []) { value in
                 onObserved(value)
             }
         }

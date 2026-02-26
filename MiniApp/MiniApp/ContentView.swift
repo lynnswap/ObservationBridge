@@ -243,7 +243,7 @@ private enum StressBenchmarkRunner {
             iterations: iterations,
             seed: seed
         ) { model, onObserved in
-            model.observeTask(\.value, backend: requestedBackend, retention: .manual) { value in
+            model.observeTask(\.value, backend: requestedBackend, retention: .manual, options: []) { value in
                 onObserved(value)
             }
         }

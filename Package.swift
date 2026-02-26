@@ -14,6 +14,9 @@ let package = Package(
             targets: ["ObservationsCompat"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0")
+    ],
     targets: [
         .target(
             name: "ObservationsCompatLegacy",
@@ -26,7 +29,10 @@ let package = Package(
         ),
         .target(
             name: "ObservationsCompat",
-            dependencies: ["ObservationsCompatLegacy"],
+            dependencies: [
+                "ObservationsCompatLegacy",
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
+            ],
             path: "ObservationsCompat/Sources/ObservationsCompat",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
