@@ -11,11 +11,46 @@ import ObservationsCompat
 import Synchronization
 import SwiftUI
 
+private enum StressRunMode: Sendable {
+    case `default`
+    case forceLegacy
+
+    var title: String {
+        switch self {
+        case .default:
+            return "default"
+        case .forceLegacy:
+            return "forceLegacy"
+        }
+    }
+
+    var seed: UInt64 {
+        switch self {
+        case .default:
+            return 0x26_00_00_00_00_00_00_01
+        case .forceLegacy:
+            return 0x26_00_00_00_00_00_00_02
+        }
+    }
+
+    var options: ObservationOptions {
+        switch self {
+        case .default:
+            return []
+        case .forceLegacy:
+            if #available(iOS 26.0, macOS 26.0, *) {
+                return [.legacyBackend]
+            }
+            return []
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var isRunning = false
-    @State private var runningBackend: ObservationsCompatBackend?
-    @State private var legacyElapsedSeconds: Double?
-    @State private var nativeElapsedSeconds: Double?
+    @State private var runningMode: StressRunMode?
+    @State private var defaultElapsedSeconds: Double?
+    @State private var forceLegacyElapsedSeconds: Double?
     @State private var runningTask: Task<Void, Never>?
 
     var body: some View {
@@ -23,25 +58,27 @@ struct ContentView: View {
             Form {
                 Section("Run") {
                     LabeledContent("Status") {
-                        if isRunning, let runningBackend {
+                        if isRunning, let runningMode {
                             HStack(spacing: 8) {
                                 ProgressView()
-                                Text("Running (\(backendTitle(runningBackend)))")
+                                Text("Running (\(runningMode.title))")
                             }
                         } else {
                             Text("Idle")
                         }
                     }
 
-                    Button("Run Legacy") {
-                        startRun(requestedBackend: .legacy)
+                    Button("Run Default") {
+                        startRun(mode: .default)
                     }
                     .disabled(isRunning)
 
-                    Button("Run Native") {
-                        startRun(requestedBackend: .native)
+                    if #available(iOS 26.0, macOS 26.0, *) {
+                        Button("Run Force Legacy") {
+                            startRun(mode: .forceLegacy)
+                        }
+                        .disabled(isRunning)
                     }
-                    .disabled(isRunning)
 
                     if isRunning {
                         Button("Cancel", role: .destructive) {
@@ -51,12 +88,12 @@ struct ContentView: View {
                 }
 
                 Section("Elapsed Time") {
-                    LabeledContent("Legacy") {
-                        Text(formattedElapsed(legacyElapsedSeconds))
+                    LabeledContent("Default") {
+                        Text(formattedElapsed(defaultElapsedSeconds))
                             .monospacedDigit()
                     }
-                    LabeledContent("Native") {
-                        Text(formattedElapsed(nativeElapsedSeconds))
+                    LabeledContent("Force Legacy") {
+                        Text(formattedElapsed(forceLegacyElapsedSeconds))
                             .monospacedDigit()
                     }
                 }
@@ -79,30 +116,21 @@ struct ContentView: View {
             )
     }
 
-    private func startRun(requestedBackend: ObservationsCompatBackend) {
+    private func startRun(mode: StressRunMode) {
         guard !isRunning else {
             return
         }
 
         let iterations = 1_000_000
-        let seed: UInt64
-        switch requestedBackend {
-        case .legacy:
-            seed = 0x26_00_00_00_00_00_00_01
-        case .native:
-            seed = 0x26_00_00_00_00_00_00_02
-        case .automatic:
-            seed = 0x26_00_00_00_00_00_00_03
-        }
 
         isRunning = true
-        runningBackend = requestedBackend
+        runningMode = mode
 
         runningTask = Task {
             let result = await StressBenchmarkRunner.run(
-                requestedBackend: requestedBackend,
+                mode: mode,
                 iterations: iterations,
-                seed: seed
+                seed: mode.seed
             )
 
             if Task.isCancelled {
@@ -110,17 +138,15 @@ struct ContentView: View {
             }
 
             await MainActor.run {
-                switch requestedBackend {
-                case .legacy:
-                    legacyElapsedSeconds = result.elapsedSeconds
-                case .native:
-                    nativeElapsedSeconds = result.elapsedSeconds
-                case .automatic:
-                    break
+                switch mode {
+                case .default:
+                    defaultElapsedSeconds = result.elapsedSeconds
+                case .forceLegacy:
+                    forceLegacyElapsedSeconds = result.elapsedSeconds
                 }
 
                 isRunning = false
-                runningBackend = nil
+                runningMode = nil
                 runningTask = nil
             }
         }
@@ -130,18 +156,7 @@ struct ContentView: View {
         runningTask?.cancel()
         runningTask = nil
         isRunning = false
-        runningBackend = nil
-    }
-
-    private func backendTitle(_ backend: ObservationsCompatBackend) -> String {
-        switch backend {
-        case .legacy:
-            return "legacy"
-        case .native:
-            return "native"
-        case .automatic:
-            return "automatic"
-        }
+        runningMode = nil
     }
 }
 
@@ -217,8 +232,8 @@ private struct StressRunOutcome: Sendable {
 }
 
 private struct StressRunResult: Sendable {
-    let requestedBackend: ObservationsCompatBackend
-    let effectiveBackend: ObservationsCompatBackend
+    let mode: StressRunMode
+    let effectiveBackend: String
     let iterations: Int
     let workers: Int
     let seed: UInt64
@@ -234,7 +249,7 @@ private enum StressBenchmarkRunner {
     ) -> ObservationHandle
 
     static func run(
-        requestedBackend: ObservationsCompatBackend,
+        mode: StressRunMode,
         iterations: Int,
         seed: UInt64
     ) async -> StressRunResult {
@@ -243,7 +258,7 @@ private enum StressBenchmarkRunner {
             iterations: iterations,
             seed: seed
         ) { model, onObserved in
-            model.observeTask(\.value, backend: requestedBackend, retention: .manual, options: []) { value in
+            model.observeTask(\.value, retention: .manual, options: mode.options) { value in
                 onObserved(value)
             }
         }
@@ -251,8 +266,8 @@ private enum StressBenchmarkRunner {
         let elapsedSeconds = Double(endNanos - startNanos) / 1_000_000_000
 
         return StressRunResult(
-            requestedBackend: requestedBackend,
-            effectiveBackend: resolvedBackend(for: requestedBackend),
+            mode: mode,
+            effectiveBackend: resolvedBackend(for: mode),
             iterations: iterations,
             workers: result.workers,
             seed: seed,
@@ -262,15 +277,15 @@ private enum StressBenchmarkRunner {
         )
     }
 
-    private static func resolvedBackend(for backend: ObservationsCompatBackend) -> ObservationsCompatBackend {
-        switch backend {
-        case .legacy:
-            return .legacy
-        case .automatic, .native:
+    private static func resolvedBackend(for mode: StressRunMode) -> String {
+        switch mode {
+        case .forceLegacy:
+            return "legacy"
+        case .default:
             if #available(iOS 26.0, macOS 26.0, *) {
-                return .native
+                return "native"
             }
-            return .legacy
+            return "legacy"
         }
     }
 

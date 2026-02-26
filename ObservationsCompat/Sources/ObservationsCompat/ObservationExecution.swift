@@ -48,7 +48,7 @@ private struct DuplicateEmissionState<Value: Sendable>: Sendable {
 
 func observeImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
-    backend: ObservationsCompatBackend,
+    options: ObservationOptions,
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
@@ -60,7 +60,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     let monitorTask = Task {
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
-            backend: backend,
+            options: options,
             of: value
         )
         defer {
@@ -110,7 +110,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
 
 func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
-    backend: ObservationsCompatBackend,
+    options: ObservationOptions,
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
@@ -228,7 +228,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     let monitorTask = Task {
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
-            backend: backend,
+            options: options,
             of: value
         )
         defer {
@@ -286,14 +286,14 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 
 private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    backend: ObservationsCompatBackend,
+    options: ObservationOptions,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
 ) -> ObservedValueChannel<Value> {
     let channel = AsyncChannel<Value>()
     let producerTask = Task {
         await forEachOwnerValueEmission(
             ownerToken: ownerToken,
-            backend: backend,
+            options: options,
             of: value
         ) { emission in
             switch emission {
@@ -419,7 +419,7 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
 
 private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
-    backend: ObservationsCompatBackend,
+    options: ObservationOptions,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
@@ -435,7 +435,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
         }
     }
 
-    switch resolveBackend(backend) {
+    switch resolveBackend(options: options) {
     case .native:
         if #available(iOS 26.0, macOS 26.0, *) {
             await forEachNativeEmission(
@@ -445,7 +445,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
             return
         }
         fallthrough
-    case .legacy, .automatic:
+    case .legacy:
         let stream = makeLegacyObservationStream(
             observeOwnerValue,
             isDuplicate: nil
