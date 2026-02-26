@@ -33,6 +33,7 @@ public struct ObservationOptions: OptionSet, Sendable {
     private static let debounceFlag: UInt64 = 1 << 1
     private static let delayedFirstFlag: UInt64 = 1 << 2
     private static let tolerancePresentFlag: UInt64 = 1 << 3
+    private static let conflictingDebounceFlag: UInt64 = 1 << 60
     private static let debouncePayloadBitWidth: UInt64 = 28
     private static let debounceIntervalShift: UInt64 = 4
     private static let debounceToleranceShift: UInt64 = debounceIntervalShift + debouncePayloadBitWidth
@@ -43,32 +44,42 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public let rawValue: UInt64
     private let debounceConfiguration: ObservationDebounce?
+    private let hasConflictingDebounce: Bool
 
     public init() {
         rawValue = 0
         debounceConfiguration = nil
+        hasConflictingDebounce = false
     }
 
     public init(rawValue: UInt64) {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0
-        let debounceConfiguration = Self.decodeDebounceConfiguration(from: rawValue)
+        let hasConflictingDebounce = (rawValue & Self.conflictingDebounceFlag) != 0
+        let debounceConfiguration = hasConflictingDebounce ? nil : Self.decodeDebounceConfiguration(from: rawValue)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: debounceConfiguration
+            debounceConfiguration: debounceConfiguration,
+            hasConflictingDebounce: hasConflictingDebounce
         )
         self.debounceConfiguration = debounceConfiguration
+        self.hasConflictingDebounce = hasConflictingDebounce
     }
 
     private init(
         removeDuplicates: Bool,
-        debounceConfiguration: ObservationDebounce?
+        debounceConfiguration: ObservationDebounce?,
+        hasConflictingDebounce: Bool = false
     ) {
-        let normalizedDebounceConfiguration = Self.normalizeDebounceConfiguration(debounceConfiguration)
+        let normalizedDebounceConfiguration = hasConflictingDebounce
+            ? nil
+            : Self.normalizeDebounceConfiguration(debounceConfiguration)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: normalizedDebounceConfiguration
+            debounceConfiguration: normalizedDebounceConfiguration,
+            hasConflictingDebounce: hasConflictingDebounce
         )
         self.debounceConfiguration = normalizedDebounceConfiguration
+        self.hasConflictingDebounce = hasConflictingDebounce
     }
 
     public init(arrayLiteral elements: ObservationOptions...) {
@@ -95,6 +106,9 @@ public struct ObservationOptions: OptionSet, Sendable {
         guard (ownMembership & memberMembership) == memberMembership else {
             return false
         }
+        if member.hasConflictingDebounce {
+            return hasConflictingDebounce
+        }
         guard let memberDebounceConfiguration = member.debounceConfiguration else {
             return true
         }
@@ -103,10 +117,16 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func union(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 || (other.rawValue & Self.removeDuplicatesFlag) != 0
-        let mergedDebounce = Self.mergeDebounce(lhs: debounceConfiguration, rhs: other.debounceConfiguration)
+        let mergedDebounce = Self.mergeDebounce(
+            lhs: debounceConfiguration,
+            lhsConflicting: hasConflictingDebounce,
+            rhs: other.debounceConfiguration,
+            rhsConflicting: other.hasConflictingDebounce
+        )
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: mergedDebounce
+            debounceConfiguration: mergedDebounce.configuration,
+            hasConflictingDebounce: mergedDebounce.hasConflict
         )
     }
 
@@ -116,10 +136,12 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func intersection(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) != 0
-        let intersectedDebounce = debounceConfiguration == other.debounceConfiguration ? debounceConfiguration : nil
+        let intersectedConflict = hasConflictingDebounce && other.hasConflictingDebounce
+        let intersectedDebounce = intersectedConflict ? nil : (debounceConfiguration == other.debounceConfiguration ? debounceConfiguration : nil)
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: intersectedDebounce
+            debounceConfiguration: intersectedDebounce,
+            hasConflictingDebounce: intersectedConflict
         )
     }
 
@@ -129,21 +151,27 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func symmetricDifference(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = ((rawValue & Self.removeDuplicatesFlag) != 0) != ((other.rawValue & Self.removeDuplicatesFlag) != 0)
+        let resultingConflict = hasConflictingDebounce != other.hasConflictingDebounce
         let resultingDebounce: ObservationDebounce?
-        switch (debounceConfiguration, other.debounceConfiguration) {
-        case (nil, nil):
+        if resultingConflict {
             resultingDebounce = nil
-        case let (lhs?, nil):
-            resultingDebounce = lhs
-        case let (nil, rhs?):
-            resultingDebounce = rhs
-        case (.some, .some):
-            resultingDebounce = nil
+        } else {
+            switch (debounceConfiguration, other.debounceConfiguration) {
+            case (nil, nil):
+                resultingDebounce = nil
+            case let (lhs?, nil):
+                resultingDebounce = lhs
+            case let (nil, rhs?):
+                resultingDebounce = rhs
+            case (.some, .some):
+                resultingDebounce = nil
+            }
         }
 
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: resultingDebounce
+            debounceConfiguration: resultingDebounce,
+            hasConflictingDebounce: resultingConflict
         )
     }
 
@@ -153,10 +181,19 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func subtracting(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) == 0
-        let resultingDebounce = debounceConfiguration == other.debounceConfiguration ? nil : debounceConfiguration
+        let resultingConflict: Bool
+        let resultingDebounce: ObservationDebounce?
+        if hasConflictingDebounce {
+            resultingConflict = !other.hasConflictingDebounce
+            resultingDebounce = nil
+        } else {
+            resultingConflict = false
+            resultingDebounce = debounceConfiguration == other.debounceConfiguration ? nil : debounceConfiguration
+        }
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
-            debounceConfiguration: resultingDebounce
+            debounceConfiguration: resultingDebounce,
+            hasConflictingDebounce: resultingConflict
         )
     }
 
@@ -189,9 +226,14 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     private static func encodeRawValue(
         removeDuplicates: Bool,
-        debounceConfiguration: ObservationDebounce?
+        debounceConfiguration: ObservationDebounce?,
+        hasConflictingDebounce: Bool
     ) -> UInt64 {
         var rawValue: UInt64 = removeDuplicates ? removeDuplicatesFlag : 0
+        if hasConflictingDebounce {
+            rawValue |= conflictingDebounceFlag
+            return rawValue
+        }
         guard let debounceConfiguration else {
             return rawValue
         }
@@ -286,25 +328,33 @@ public struct ObservationOptions: OptionSet, Sendable {
         return totalMilliseconds
     }
 
+    private struct DebounceMergeResult {
+        let configuration: ObservationDebounce?
+        let hasConflict: Bool
+    }
+
     private static func mergeDebounce(
         lhs: ObservationDebounce?,
-        rhs: ObservationDebounce?
-    ) -> ObservationDebounce? {
+        lhsConflicting: Bool,
+        rhs: ObservationDebounce?,
+        rhsConflicting: Bool
+    ) -> DebounceMergeResult {
+        if lhsConflicting || rhsConflicting {
+            return DebounceMergeResult(configuration: nil, hasConflict: true)
+        }
+
         switch (lhs, rhs) {
         case (nil, nil):
-            return nil
+            return DebounceMergeResult(configuration: nil, hasConflict: false)
         case let (lhs?, nil):
-            return lhs
+            return DebounceMergeResult(configuration: lhs, hasConflict: false)
         case let (nil, rhs?):
-            return rhs
+            return DebounceMergeResult(configuration: rhs, hasConflict: false)
         case let (lhs?, rhs?):
             if lhs == rhs {
-                return lhs
+                return DebounceMergeResult(configuration: lhs, hasConflict: false)
             }
-
-            let lhsEncoded = encodeDebouncePayload(lhs)
-            let rhsEncoded = encodeDebouncePayload(rhs)
-            return lhsEncoded <= rhsEncoded ? lhs : rhs
+            return DebounceMergeResult(configuration: nil, hasConflict: true)
         }
     }
 }

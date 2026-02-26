@@ -689,6 +689,31 @@ struct ObservationsCompatTests {
 
         let a = ObservationOptions.debounce(debounce)
         let b = ObservationOptions.debounce(otherDebounce)
+        let conflictingUnionAB = a.union(b)
+        let conflictingUnionBA = b.union(a)
+        #expect(conflictingUnionAB == conflictingUnionBA)
+        #expect(conflictingUnionAB.debounce == nil)
+        #expect(!conflictingUnionAB.contains(a))
+        #expect(!conflictingUnionAB.contains(b))
+
+        let literalMerged: ObservationOptions = [.debounce(debounce), .debounce(otherDebounce)]
+        #expect(literalMerged.debounce == nil)
+        #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
+
+        let subtractSpecificFromConflict = literalMerged.subtracting([.debounce(debounce)])
+        #expect(subtractSpecificFromConflict == literalMerged)
+
+        let clearedConflict = literalMerged.subtracting(literalMerged)
+        #expect(clearedConflict == ObservationOptions())
+
+        let thirdDebounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let c = ObservationOptions.debounce(thirdDebounce)
+        let mergedLeftAssociative = a.union(b).union(c)
+        let mergedRightAssociative = a.union(b.union(c))
+        #expect(mergedLeftAssociative == mergedRightAssociative)
+        #expect(mergedLeftAssociative.debounce == nil)
+        #expect(!mergedLeftAssociative.contains(c))
+
         let symmetricAB = a.symmetricDifference(b)
         let symmetricBA = b.symmetricDifference(a)
         #expect(symmetricAB == symmetricBA)
