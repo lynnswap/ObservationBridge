@@ -1,12 +1,6 @@
 import Observation
 import ObservationsCompatLegacy
 
-public enum ObservationsCompatBackend: Sendable {
-    case automatic
-    case native
-    case legacy
-}
-
 public enum ObservationDebounceMode: Sendable, Hashable {
     case immediateFirst
     case delayedFirst
@@ -33,6 +27,7 @@ public struct ObservationOptions: OptionSet, Sendable {
     private static let debounceFlag: UInt64 = 1 << 1
     private static let delayedFirstFlag: UInt64 = 1 << 2
     private static let tolerancePresentFlag: UInt64 = 1 << 3
+    private static let legacyBackendFlag: UInt64 = 1 << 61
     private static let conflictingDebounceFlag: UInt64 = 1 << 60
     private static let debouncePayloadBitWidth: UInt64 = 28
     private static let debounceIntervalShift: UInt64 = 4
@@ -40,7 +35,7 @@ public struct ObservationOptions: OptionSet, Sendable {
     private static let debouncePayloadMask: UInt64 = (1 << debouncePayloadBitWidth) - 1
     private static let debounceIntervalMask: UInt64 = debouncePayloadMask << debounceIntervalShift
     private static let debounceToleranceMask: UInt64 = debouncePayloadMask << debounceToleranceShift
-    private static let membershipMask: UInt64 = removeDuplicatesFlag | debounceFlag
+    private static let membershipMask: UInt64 = removeDuplicatesFlag | debounceFlag | legacyBackendFlag
 
     public let rawValue: UInt64
     private let debounceConfiguration: ObservationDebounce?
@@ -54,10 +49,12 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public init(rawValue: UInt64) {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0
+        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0
         let hasConflictingDebounce = (rawValue & Self.conflictingDebounceFlag) != 0
         let debounceConfiguration = hasConflictingDebounce ? nil : Self.decodeDebounceConfiguration(from: rawValue)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: debounceConfiguration,
             hasConflictingDebounce: hasConflictingDebounce
         )
@@ -67,6 +64,7 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     private init(
         removeDuplicates: Bool,
+        usesLegacyBackend: Bool,
         debounceConfiguration: ObservationDebounce?,
         hasConflictingDebounce: Bool = false
     ) {
@@ -75,6 +73,7 @@ public struct ObservationOptions: OptionSet, Sendable {
             : Self.normalizeDebounceConfiguration(debounceConfiguration)
         self.rawValue = Self.encodeRawValue(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: normalizedDebounceConfiguration,
             hasConflictingDebounce: hasConflictingDebounce
         )
@@ -92,8 +91,11 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public static let removeDuplicates = ObservationOptions(rawValue: removeDuplicatesFlag)
 
+    @available(iOS 26.0, macOS 26.0, *)
+    public static let legacyBackend = ObservationOptions(rawValue: legacyBackendFlag)
+
     public static func debounce(_ configuration: ObservationDebounce) -> ObservationOptions {
-        ObservationOptions(removeDuplicates: false, debounceConfiguration: configuration)
+        ObservationOptions(removeDuplicates: false, usesLegacyBackend: false, debounceConfiguration: configuration)
     }
 
     public var debounce: ObservationDebounce? {
@@ -109,6 +111,10 @@ public struct ObservationOptions: OptionSet, Sendable {
             preconditionFailure("Conflicting debounce options are not supported when starting observation")
         }
         return debounceConfiguration
+    }
+
+    var forcesLegacyBackend: Bool {
+        (rawValue & Self.legacyBackendFlag) != 0
     }
 
     public func contains(_ member: ObservationOptions) -> Bool {
@@ -128,6 +134,7 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func union(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 || (other.rawValue & Self.removeDuplicatesFlag) != 0
+        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 || (other.rawValue & Self.legacyBackendFlag) != 0
         let mergedDebounce = Self.mergeDebounce(
             lhs: debounceConfiguration,
             lhsConflicting: hasConflictingDebounce,
@@ -136,6 +143,7 @@ public struct ObservationOptions: OptionSet, Sendable {
         )
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: mergedDebounce.configuration,
             hasConflictingDebounce: mergedDebounce.hasConflict
         )
@@ -147,10 +155,12 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func intersection(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) != 0
+        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) != 0
         let intersectedConflict = hasConflictingDebounce && other.hasConflictingDebounce
         let intersectedDebounce = intersectedConflict ? nil : (debounceConfiguration == other.debounceConfiguration ? debounceConfiguration : nil)
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: intersectedDebounce,
             hasConflictingDebounce: intersectedConflict
         )
@@ -162,6 +172,7 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func symmetricDifference(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = ((rawValue & Self.removeDuplicatesFlag) != 0) != ((other.rawValue & Self.removeDuplicatesFlag) != 0)
+        let usesLegacyBackend = ((rawValue & Self.legacyBackendFlag) != 0) != ((other.rawValue & Self.legacyBackendFlag) != 0)
         let resultingConflict = hasConflictingDebounce != other.hasConflictingDebounce
         let resultingDebounce: ObservationDebounce?
         if resultingConflict {
@@ -181,6 +192,7 @@ public struct ObservationOptions: OptionSet, Sendable {
 
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: resultingDebounce,
             hasConflictingDebounce: resultingConflict
         )
@@ -192,6 +204,7 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     public func subtracting(_ other: ObservationOptions) -> ObservationOptions {
         let removeDuplicates = (rawValue & Self.removeDuplicatesFlag) != 0 && (other.rawValue & Self.removeDuplicatesFlag) == 0
+        let usesLegacyBackend = (rawValue & Self.legacyBackendFlag) != 0 && (other.rawValue & Self.legacyBackendFlag) == 0
         let resultingConflict: Bool
         let resultingDebounce: ObservationDebounce?
         if hasConflictingDebounce {
@@ -203,6 +216,7 @@ public struct ObservationOptions: OptionSet, Sendable {
         }
         return ObservationOptions(
             removeDuplicates: removeDuplicates,
+            usesLegacyBackend: usesLegacyBackend,
             debounceConfiguration: resultingDebounce,
             hasConflictingDebounce: resultingConflict
         )
@@ -237,10 +251,14 @@ public struct ObservationOptions: OptionSet, Sendable {
 
     private static func encodeRawValue(
         removeDuplicates: Bool,
+        usesLegacyBackend: Bool,
         debounceConfiguration: ObservationDebounce?,
         hasConflictingDebounce: Bool
     ) -> UInt64 {
         var rawValue: UInt64 = removeDuplicates ? removeDuplicatesFlag : 0
+        if usesLegacyBackend {
+            rawValue |= legacyBackendFlag
+        }
         if hasConflictingDebounce {
             rawValue |= conflictingDebounceFlag
             return rawValue
@@ -379,202 +397,13 @@ public extension Observable where Self: AnyObject {
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
-        observe(
-            keyPath,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-    ) -> ObservationHandle {
-        observe(
-            keyPath,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPath,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPath,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observe(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
-    ) -> ObservationHandle {
-        observe(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observeTask(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-    ) -> ObservationHandle {
-        observe(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            of: value,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable & Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-    ) -> ObservationHandle {
-        observe(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            of: value,
-            onChange: onChange
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            of: value,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observeTask<Value: Sendable & Equatable>(
-        _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        of value: @escaping @Sendable (Self) -> Value,
-        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
-    ) -> ObservationHandle {
-        observeTask(
-            keyPaths,
-            backend: .automatic,
-            retention: retention,
-            options: options,
-            clock: clock,
-            of: value,
-            task: task
-        )
-    }
-
-    @discardableResult
-    func observe<Value: Sendable>(
-        _ keyPath: sending KeyPath<Self, Value>,
-        backend: ObservationsCompatBackend,
-        retention: ObservationRetention = .automatic,
-        options: ObservationOptions = [],
-        clock: any Clock<Duration> = ContinuousClock(),
-        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
-    ) -> ObservationHandle {
         if options.contains(.removeDuplicates) {
             preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
         }
 
         return observeImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -587,7 +416,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -595,7 +423,7 @@ public extension Observable where Self: AnyObject {
     ) -> ObservationHandle {
         observeImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
@@ -608,7 +436,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -620,7 +447,7 @@ public extension Observable where Self: AnyObject {
 
         return observeTaskImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -633,7 +460,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -641,7 +467,7 @@ public extension Observable where Self: AnyObject {
     ) -> ObservationHandle {
         observeTaskImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
@@ -654,7 +480,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -666,7 +491,7 @@ public extension Observable where Self: AnyObject {
 
         return observeImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -681,7 +506,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -693,7 +517,7 @@ public extension Observable where Self: AnyObject {
 
         return observeTaskImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -708,7 +532,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -721,7 +544,7 @@ public extension Observable where Self: AnyObject {
 
         return observeImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -734,7 +557,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable & Equatable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -743,7 +565,7 @@ public extension Observable where Self: AnyObject {
     ) -> ObservationHandle {
         observeImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
@@ -756,7 +578,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -769,7 +590,7 @@ public extension Observable where Self: AnyObject {
 
         return observeTaskImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -782,7 +603,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
@@ -791,7 +611,7 @@ public extension Observable where Self: AnyObject {
     ) -> ObservationHandle {
         observeTaskImpl(
             owner: self,
-            backend: backend,
+            options: options,
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
@@ -800,7 +620,6 @@ public extension Observable where Self: AnyObject {
             task: task
         )
     }
-
 }
 
 // KeyPath / PartialKeyPath are immutable metadata; wrapping allows safe capture in @Sendable closures.
@@ -853,14 +672,19 @@ private func makeOnChangeAdapter<Value>(
     }
 }
 
+enum ResolvedBackend: Sendable {
+    case native
+    case legacy
+}
+
 func makeObservationStream<Value: Sendable>(
-    backend: ObservationsCompatBackend = .automatic,
+    options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     debounce: ObservationDebounce? = nil,
     debounceClock: any Clock<Duration> = ContinuousClock()
 ) -> AsyncStream<Value> {
-    let stream = makeRawObservationStream(backend: backend, observe)
+    let stream = makeRawObservationStream(options: options, observe)
     let streamWithDebounce: AsyncStream<Value>
     if let debounce {
         streamWithDebounce = makeDebouncedValueStream(
@@ -879,18 +703,16 @@ func makeObservationStream<Value: Sendable>(
 }
 
 private func makeRawObservationStream<Value: Sendable>(
-    backend: ObservationsCompatBackend = .automatic,
+    options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> AsyncStream<Value> {
-    switch resolveBackend(backend) {
+    switch resolveBackend(options: options) {
     case .legacy:
         return makeLegacyObservationStream(observe, isDuplicate: nil)
     case .native:
         if #available(iOS 26.0, macOS 26.0, *) {
             return makeNativeStream(observe)
         }
-        return makeLegacyObservationStream(observe, isDuplicate: nil)
-    case .automatic:
         return makeLegacyObservationStream(observe, isDuplicate: nil)
     }
 }
@@ -933,21 +755,15 @@ private func makeDuplicateFilteredStream<Value: Sendable>(
     }
 }
 
-func resolveBackend(_ backend: ObservationsCompatBackend) -> ObservationsCompatBackend {
-    switch backend {
-    case .automatic:
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return .native
-        }
-        return .legacy
-    case .native:
-        if #available(iOS 26.0, macOS 26.0, *) {
-            return .native
-        }
-        return .legacy
-    case .legacy:
+func resolveBackend(options: ObservationOptions) -> ResolvedBackend {
+    if options.forcesLegacyBackend {
         return .legacy
     }
+
+    if #available(iOS 26.0, macOS 26.0, *) {
+        return .native
+    }
+    return .legacy
 }
 
 @available(iOS 26.0, macOS 26.0, *)
@@ -996,7 +812,6 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
     }
 
     public init(
-        backend: ObservationsCompatBackend = .automatic,
         options: ObservationOptions,
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
@@ -1006,7 +821,7 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
         }
 
         self.init(stream: makeObservationStream(
-            backend: backend,
+            options: options,
             observe,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
@@ -1021,24 +836,21 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
 
 public extension ObservationsCompat where Value: Equatable {
     init(
-        backend: ObservationsCompatBackend = .automatic,
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(
-            backend: backend,
             options: [.removeDuplicates],
             observe
         )
     }
 
     init(
-        backend: ObservationsCompatBackend = .automatic,
         options: ObservationOptions,
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
         self.init(stream: makeObservationStream(
-            backend: backend,
+            options: options,
             observe,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
@@ -1048,20 +860,17 @@ public extension ObservationsCompat where Value: Equatable {
 }
 
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
-    backend: ObservationsCompatBackend = .automatic,
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompat<Value> {
-    ObservationsCompat(backend: backend, observe)
+    ObservationsCompat(observe)
 }
 
 public func makeObservationsCompatStream<Value: Sendable>(
-    backend: ObservationsCompatBackend = .automatic,
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompat<Value> {
     ObservationsCompat(
-        backend: backend,
         options: options,
         clock: clock,
         observe
@@ -1069,13 +878,11 @@ public func makeObservationsCompatStream<Value: Sendable>(
 }
 
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
-    backend: ObservationsCompatBackend = .automatic,
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompat<Value> {
     ObservationsCompat(
-        backend: backend,
         options: options,
         clock: clock,
         observe

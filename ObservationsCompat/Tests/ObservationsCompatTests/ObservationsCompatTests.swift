@@ -108,6 +108,16 @@ private func stressSeed(default defaultSeed: UInt64) -> UInt64 {
     return defaultSeed
 }
 
+private func legacyOptionsForCurrentRuntime(
+    _ additional: ObservationOptions = []
+) -> ObservationOptions {
+    var options = additional
+    if #available(iOS 26.0, macOS 26.0, *) {
+        options.formUnion([.legacyBackend])
+    }
+    return options
+}
+
 private actor ValueQueue<Value: Sendable> {
     private var buffered: [Value] = []
     private var waiters: [UUID: CheckedContinuation<Value?, Never>] = [:]
@@ -263,25 +273,35 @@ private final class TestDebounceClock: Clock, @unchecked Sendable {
 
     func sleep(untilSuspendedBy minimumSleepers: Int = 1) async {
         precondition(minimumSleepers > 0, "minimumSleepers must be positive")
+        let suspensionToken = state.withLock { state in
+            let token = state.nextSuspensionToken
+            state.nextSuspensionToken &+= 1
+            return token
+        }
 
-        await withCheckedContinuation { continuation in
-            let shouldResumeImmediately = state.withLock { state in
-                if state.sleepers.count >= minimumSleepers {
-                    return true
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let shouldResumeImmediately = state.withLock { state in
+                    if state.sleepers.count >= minimumSleepers {
+                        return true
+                    }
+
+                    state.suspensionWaiters[suspensionToken] = SuspensionWaiter(
+                        minimumSleepers: minimumSleepers,
+                        continuation: continuation
+                    )
+                    return false
                 }
 
-                let token = state.nextSuspensionToken
-                state.nextSuspensionToken &+= 1
-                state.suspensionWaiters[token] = SuspensionWaiter(
-                    minimumSleepers: minimumSleepers,
-                    continuation: continuation
-                )
-                return false
+                if shouldResumeImmediately {
+                    continuation.resume()
+                }
             }
-
-            if shouldResumeImmediately {
-                continuation.resume()
+        } onCancel: {
+            let cancellationContinuation = state.withLock { state in
+                state.suspensionWaiters.removeValue(forKey: suspensionToken)?.continuation
             }
+            cancellationContinuation?.resume()
         }
     }
 
@@ -512,7 +532,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -539,7 +559,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendCoalescesBurstAndEventuallyEmitsLatestValue() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -572,7 +592,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendSuppressesHighFrequencyDuplicateValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -595,9 +615,13 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func nativeBackendFallsBackToLegacyOnUnsupportedOS() async {
+    func defaultBackendFallsBackToLegacyOnUnsupportedOS() async {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            return
+        }
+
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .native) {
+        let stream = ObservationsCompat(options: []) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -618,7 +642,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendEmitsInitialOptionalNilValue() async {
         let model = OptionalCounterModel()
-        let stream = ObservationsCompat(backend: .legacy) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int?>()
@@ -645,7 +669,7 @@ struct ObservationsCompatTests {
         }
         let observe: @isolated(any) @Sendable () -> Int = observeOnMainActor
         let stream = await Task.detached {
-            ObservationsCompat(backend: .legacy, observe)
+            ObservationsCompat(options: legacyOptionsForCurrentRuntime(), observe)
         }.value
         let queue = ValueQueue<Int>()
         let consumer = Task.detached(priority: nil) {
@@ -665,7 +689,7 @@ struct ObservationsCompatTests {
     @Test
     func streamCanBeCancelledSafely() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
 
@@ -701,7 +725,7 @@ struct ObservationsCompatTests {
             }
             weakModel = model
 
-            var stream: ObservationsCompat<Int>? = ObservationsCompat(backend: .legacy) {
+            var stream: ObservationsCompat<Int>? = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
                 model.value
             }
 
@@ -728,7 +752,7 @@ struct ObservationsCompatTests {
     @Test
     func observationsCompatOptionsEmptyEmitsConsecutiveEqualValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy, options: []) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
             model.parity
         }
         let queue = ValueQueue<Int>()
@@ -752,7 +776,7 @@ struct ObservationsCompatTests {
     @Test
     func observationsCompatRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(backend: .legacy, options: [.removeDuplicates]) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
             model.parity
         }
         let queue = ValueQueue<Int>()
@@ -779,7 +803,7 @@ struct ObservationsCompatTests {
     @Test
     func observationsCompatRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
         let model = OptionalCounterModel()
-        let stream = ObservationsCompat(backend: .legacy, options: [.removeDuplicates]) {
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
             model.value
         }
         let queue = ValueQueue<Int?>()
@@ -813,8 +837,7 @@ struct ObservationsCompatTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationsCompat(
-            backend: .legacy,
-            options: [.debounce(debounce)],
+            options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
             clock: clock
         ) {
             model.value
@@ -850,8 +873,7 @@ struct ObservationsCompatTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationsCompat(
-            backend: .legacy,
-            options: [.removeDuplicates, .debounce(debounce)],
+            options: legacyOptionsForCurrentRuntime([.removeDuplicates, .debounce(debounce)]),
             clock: clock
         ) {
             model.value
@@ -873,7 +895,7 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == 2)
 
         model.value = 2
-        await clock.sleep(untilSuspendedBy: 1)
+        await Task.yield()
         clock.advance(by: .milliseconds(200))
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
 
@@ -890,8 +912,7 @@ struct ObservationsCompatTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = makeObservationsCompatStream(
-            backend: .legacy,
-            options: [.debounce(debounce)],
+            options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
             clock: clock
         ) {
             model.value
@@ -1151,6 +1172,21 @@ struct ObservationsCompatTests {
         let withFlag = debounceOnly.union([.removeDuplicates])
         #expect(withFlag.contains(.removeDuplicates))
         #expect(withFlag.debounce?.interval == .milliseconds(100))
+
+        if #available(iOS 26.0, macOS 26.0, *) {
+            let legacyOnly: ObservationOptions = [.legacyBackend]
+            #expect(legacyOnly.contains(.legacyBackend))
+
+            let withLegacy = withFlag.union(legacyOnly)
+            #expect(withLegacy.contains(.legacyBackend))
+            #expect(withLegacy.contains(.removeDuplicates))
+
+            let legacyRoundTrip = ObservationOptions(rawValue: withLegacy.rawValue)
+            #expect(legacyRoundTrip.contains(.legacyBackend))
+
+            let withoutLegacy = withLegacy.subtracting([.legacyBackend])
+            #expect(!withoutLegacy.contains(.legacyBackend))
+        }
 
         let roundTrippedWithFlag = ObservationOptions(rawValue: withFlag.rawValue)
         #expect(roundTrippedWithFlag.contains(.removeDuplicates))
@@ -1513,7 +1549,7 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observeTaskNativeBackendFallsBackToLegacyOnUnsupportedOS() async {
+    func observeTaskDefaultBackendFallsBackToLegacyOnUnsupportedOS() async {
         if #available(iOS 26.0, macOS 26.0, *) {
             return
         }
@@ -1521,7 +1557,7 @@ struct ObservationsCompatTests {
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, backend: .native, retention: .manual, options: []) { value in
+        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
@@ -1564,7 +1600,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, backend: .legacy, retention: .manual, options: []) { value in
+            model.observeTask(\.value, retention: .manual, options: legacyOptionsForCurrentRuntime()) { value in
                 onObserved(value)
             }
         }
@@ -1579,7 +1615,7 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func nativeBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
+    func defaultBackendObserveTaskStressNoRaceAcrossOneMillionIterationsOnModernOS() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
         }
@@ -1587,7 +1623,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, backend: .native, retention: .manual, options: []) { value in
+            model.observeTask(\.value, retention: .manual, options: []) { value in
                 onObserved(value)
             }
         }

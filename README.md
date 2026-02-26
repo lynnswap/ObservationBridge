@@ -65,6 +65,7 @@ Available options:
 
 - `.removeDuplicates`: suppresses consecutive equal values.
 - `.debounce(ObservationDebounce)`: coalesces high-frequency updates and emits on debounce boundaries.
+- `.legacyBackend` (`iOS 26.0+` / `macOS 26.0+`): forces legacy `withObservationTracking` backend even on modern OS.
 - `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
 
 When both options are used together, duplicate suppression is applied to debounced outputs.
@@ -126,10 +127,12 @@ Both APIs:
 - fall back to legacy `withObservationTracking` on older OS versions
 - auto-cancel when the owner is released (`retention: .automatic`, default)
 
-Legacy backend behavior note:
+Backend behavior note:
 
+- by default, native `Observations` is used on `iOS/macOS 26.0+`, and legacy `withObservationTracking` is used on older OS versions
+- `.legacyBackend` forces legacy behavior on `iOS/macOS 26.0+`
 - legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
-- native uses Swift `Observations` transaction semantics on supported OS versions; both backends preserve `latest wins` cancellation for `observeTask`
+- native uses Swift `Observations` transaction semantics; both backends preserve `latest wins` cancellation for `observeTask`
 - `latest wins` means newer values are prioritized; when a running task is cancelled, completion timing depends on cooperative cancellation in user task code
 
 Note: `.automatic` retention requires Objective-C runtime support. On platforms without it, use `.manual`.
