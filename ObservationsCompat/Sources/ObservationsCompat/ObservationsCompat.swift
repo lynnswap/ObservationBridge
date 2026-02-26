@@ -392,7 +392,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
@@ -404,7 +403,6 @@ public extension Observable where Self: AnyObject {
         return observeImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -416,7 +414,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
@@ -424,7 +421,6 @@ public extension Observable where Self: AnyObject {
         observeImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -436,7 +432,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
@@ -448,7 +443,6 @@ public extension Observable where Self: AnyObject {
         return observeTaskImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -460,7 +454,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
@@ -468,7 +461,6 @@ public extension Observable where Self: AnyObject {
         observeTaskImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -480,7 +472,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
@@ -492,7 +483,6 @@ public extension Observable where Self: AnyObject {
         return observeImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -506,7 +496,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
@@ -518,7 +507,6 @@ public extension Observable where Self: AnyObject {
         return observeTaskImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -532,7 +520,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
@@ -545,7 +532,6 @@ public extension Observable where Self: AnyObject {
         return observeImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -557,7 +543,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observe<Value: Sendable & Equatable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
@@ -566,7 +551,6 @@ public extension Observable where Self: AnyObject {
         observeImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -578,7 +562,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
@@ -591,7 +574,6 @@ public extension Observable where Self: AnyObject {
         return observeTaskImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
@@ -603,7 +585,6 @@ public extension Observable where Self: AnyObject {
     @discardableResult
     func observeTask<Value: Sendable & Equatable>(
         _ keyPaths: sending [PartialKeyPath<Self>],
-        retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
         clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
@@ -612,7 +593,6 @@ public extension Observable where Self: AnyObject {
         observeTaskImpl(
             owner: self,
             options: options,
-            retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,

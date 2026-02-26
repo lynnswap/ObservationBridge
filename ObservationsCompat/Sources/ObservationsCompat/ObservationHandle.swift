@@ -1,10 +1,5 @@
 import Synchronization
 
-public enum ObservationRetention: Sendable {
-    case automatic
-    case manual
-}
-
 public struct ObservationHandle: Sendable {
     let box: ObservationHandleBox
 

@@ -940,7 +940,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.parity, retention: .manual, options: []) { value in
+        let handle = model.observeTask(\.parity, options: []) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
@@ -962,7 +962,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observe(
             \.parity,
-            retention: .manual,
             options: [.removeDuplicates]
         ) { value in
             recorder.append(value)
@@ -994,7 +993,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.value,
-            retention: .manual,
             options: [.removeDuplicates]
         ) { value in
             await queue.push(value)
@@ -1025,7 +1023,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.value,
-            retention: .manual,
             options: [.debounce(debounce)],
             clock: clock
         ) { value in
@@ -1058,7 +1055,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.value,
-            retention: .manual,
             options: [.debounce(debounce)],
             clock: clock
         ) { value in
@@ -1098,7 +1094,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.value,
-            retention: .manual,
             options: [.debounce(debounce)],
             clock: clock
         ) { value in
@@ -1129,7 +1124,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.parity,
-            retention: .manual,
             options: [.removeDuplicates, .debounce(debounce)],
             clock: clock
         ) { value in
@@ -1284,7 +1278,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observe(
             [\.value, \.isEnabled],
-            retention: .manual,
             options: [.removeDuplicates],
             of: { owner in
                 CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
@@ -1329,7 +1322,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             [\.value, \.isEnabled],
-            retention: .manual,
             options: [.debounce(debounce)],
             of: { owner in
                 CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
@@ -1356,7 +1348,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             [\.name, \.isEnabled],
-            retention: .manual,
             options: [],
             of: { owner in
                 owner.isEnabled ? owner.name : nil
@@ -1381,7 +1372,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             [\.value, \.isEnabled],
-            retention: .manual,
             options: [.debounce(debounce)]
         ) {
             recorder.append(1)
@@ -1404,7 +1394,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observeTask([\.value, \.isEnabled], retention: .manual, options: []) {
+        let handle = model.observeTask([\.value, \.isEnabled], options: []) {
             recorder.append(1)
         }
         defer { handle.cancel() }
@@ -1424,7 +1414,7 @@ struct ObservationsCompatTests {
         let model = CounterModel()
         let recorder = ValueRecorder<Int>()
 
-        let handle = model.observe([\.value, \.isEnabled], retention: .manual, options: []) {
+        let handle = model.observe([\.value, \.isEnabled], options: []) {
             recorder.append(1)
         }
         defer { handle.cancel() }
@@ -1439,7 +1429,7 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observeTaskAutomaticRetentionKeepsObservationWithoutHandle() async {
+    func observeTaskKeepsObservationWithoutHandle() async {
 #if canImport(ObjectiveC)
         let model = CounterModel()
         let queue = ValueQueue<Int>()
@@ -1457,11 +1447,11 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observeTaskManualRetentionStopsAfterCancel() async {
+    func observeTaskStopsAfterHandleCancel() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
+        let handle = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
 
@@ -1482,7 +1472,7 @@ struct ObservationsCompatTests {
         let cancelled = ValueQueue<Int>()
         let gate = OperationGate()
 
-        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
+        let handle = model.observeTask(\.value, options: []) { value in
             await started.push(value)
             await withTaskCancellationHandler {
                 await gate.wait(for: value)
@@ -1524,7 +1514,6 @@ struct ObservationsCompatTests {
 
         let handle = model.observeTask(
             \.value,
-            retention: .manual,
             options: [.debounce(debounce)]
         ) { value in
             await started.push(value)
@@ -1557,7 +1546,7 @@ struct ObservationsCompatTests {
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 
-        let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
+        let handle = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
@@ -1569,7 +1558,7 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observeTaskAutomaticRetentionDoesNotPreventOwnerDeinit() async {
+    func observeTaskDoesNotPreventOwnerDeinit() async {
 #if canImport(ObjectiveC)
         let deinitFlag = DeinitFlag()
         weak var weakModel: DeinitProbeCounterModel?
@@ -1600,7 +1589,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_01)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, retention: .manual, options: legacyOptionsForCurrentRuntime()) { value in
+            model.observeTask(\.value, options: legacyOptionsForCurrentRuntime()) { value in
                 onObserved(value)
             }
         }
@@ -1623,7 +1612,7 @@ struct ObservationsCompatTests {
         let iterations = 1_000_000
         let seed = stressSeed(default: 0x26_00_00_00_00_00_00_02)
         let result = await runRandomizedObservationStress(iterations: iterations, seed: seed) { model, onObserved in
-            model.observeTask(\.value, retention: .manual, options: []) { value in
+            model.observeTask(\.value, options: []) { value in
                 onObserved(value)
             }
         }

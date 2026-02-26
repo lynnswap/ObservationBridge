@@ -49,7 +49,6 @@ private struct DuplicateEmissionState<Value: Sendable>: Sendable {
 func observeImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
     options: ObservationOptions,
-    retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
     debounceClock: any Clock<Duration>,
@@ -105,13 +104,13 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         WeakOwnerRegistry.removeToken(ownerToken)
     }
 
-    return applyRetention(handle, owner: owner, retention: retention)
+    AutomaticRetentionRegistry.retain(handle.box, owner: owner)
+    return handle
 }
 
 func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     owner: Owner,
     options: ObservationOptions,
-    retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
     debounceClock: any Clock<Duration>,
@@ -281,7 +280,8 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         WeakOwnerRegistry.removeToken(ownerToken)
     }
 
-    return applyRetention(handle, owner: owner, retention: retention)
+    AutomaticRetentionRegistry.retain(handle.box, owner: owner)
+    return handle
 }
 
 private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
@@ -476,18 +476,4 @@ private func forEachNativeEmission<Value: Sendable>(
             break
         }
     }
-}
-
-private func applyRetention(
-    _ handle: ObservationHandle,
-    owner: AnyObject,
-    retention: ObservationRetention
-) -> ObservationHandle {
-    guard retention == .automatic else {
-        return handle
-    }
-
-    AutomaticRetentionRegistry.retain(handle.box, owner: owner)
-
-    return handle
 }
