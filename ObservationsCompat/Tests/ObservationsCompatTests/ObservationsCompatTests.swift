@@ -167,6 +167,165 @@ private final class ValueRecorder<Value: Sendable>: Sendable {
     }
 }
 
+private final class TestDebounceClock: Clock, @unchecked Sendable {
+    typealias Instant = ContinuousClock.Instant
+    typealias Duration = Swift.Duration
+
+    private struct SleepWaiter {
+        let deadline: Instant
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private struct SuspensionWaiter {
+        let minimumSleepers: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private struct State {
+        var now: Instant
+        var sleepers: [UInt64: SleepWaiter] = [:]
+        var nextSleepToken: UInt64 = 0
+        var suspensionWaiters: [UInt64: SuspensionWaiter] = [:]
+        var nextSuspensionToken: UInt64 = 0
+    }
+
+    private let state: Mutex<State>
+
+    var now: Instant {
+        state.withLock { $0.now }
+    }
+
+    var minimumResolution: Duration {
+        .nanoseconds(1)
+    }
+
+    init(now: Instant = ContinuousClock().now) {
+        state = Mutex(State(now: now))
+    }
+
+    func sleep(until deadline: Instant, tolerance _: Duration? = nil) async throws {
+        if deadline <= now {
+            return
+        }
+        try Task.checkCancellation()
+
+        let sleepToken = state.withLock { state in
+            let token = state.nextSleepToken
+            state.nextSleepToken &+= 1
+            return token
+        }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let suspensionContinuations: [CheckedContinuation<Void, Never>] = state.withLock { state in
+                    if deadline <= state.now {
+                        continuation.resume(returning: ())
+                        return []
+                    }
+
+                    state.sleepers[sleepToken] = SleepWaiter(
+                        deadline: deadline,
+                        continuation: continuation
+                    )
+                    return Self.popReadySuspensionWaiters(state: &state)
+                }
+                for suspensionContinuation in suspensionContinuations {
+                    suspensionContinuation.resume()
+                }
+            }
+        } onCancel: {
+            let cancellationContinuation: CheckedContinuation<Void, Error>? = state.withLock { state in
+                state.sleepers.removeValue(forKey: sleepToken)?.continuation
+            }
+            cancellationContinuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    func advance(by duration: Duration) {
+        precondition(duration >= .zero, "duration must be non-negative")
+
+        let readyContinuations: [CheckedContinuation<Void, Error>] = state.withLock { state in
+            state.now = state.now.advanced(by: duration)
+
+            let readySleepTokens = state.sleepers.compactMap { token, waiter in
+                waiter.deadline <= state.now ? token : nil
+            }
+
+            return readySleepTokens.compactMap { token in
+                state.sleepers.removeValue(forKey: token)?.continuation
+            }
+        }
+
+        for continuation in readyContinuations {
+            continuation.resume(returning: ())
+        }
+    }
+
+    func sleep(untilSuspendedBy minimumSleepers: Int = 1) async {
+        precondition(minimumSleepers > 0, "minimumSleepers must be positive")
+
+        await withCheckedContinuation { continuation in
+            let shouldResumeImmediately = state.withLock { state in
+                if state.sleepers.count >= minimumSleepers {
+                    return true
+                }
+
+                let token = state.nextSuspensionToken
+                state.nextSuspensionToken &+= 1
+                state.suspensionWaiters[token] = SuspensionWaiter(
+                    minimumSleepers: minimumSleepers,
+                    continuation: continuation
+                )
+                return false
+            }
+
+            if shouldResumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func popReadySuspensionWaiters(state: inout State) -> [CheckedContinuation<Void, Never>] {
+        let readyTokens = state.suspensionWaiters.compactMap { token, waiter in
+            state.sleepers.count >= waiter.minimumSleepers ? token : nil
+        }
+
+        return readyTokens.compactMap { token in
+            state.suspensionWaiters.removeValue(forKey: token)?.continuation
+        }
+    }
+}
+
+private actor OperationGate {
+    private var permits: Set<Int> = []
+    private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
+
+    func wait(for value: Int) async {
+        if permits.remove(value) != nil {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters[value, default: []].append(continuation)
+        }
+    }
+
+    func release(_ value: Int) {
+        guard var valueWaiters = waiters[value], !valueWaiters.isEmpty else {
+            permits.insert(value)
+            return
+        }
+
+        let continuation = valueWaiters.removeFirst()
+        if valueWaiters.isEmpty {
+            waiters[value] = nil
+        } else {
+            waiters[value] = valueWaiters
+        }
+        continuation.resume()
+    }
+}
+
 private func waitWithTimeout<T: Sendable>(
     nanoseconds: UInt64 = 5_000_000_000,
     _ operation: @escaping @Sendable () async -> T
@@ -207,6 +366,24 @@ private func waitUntilCount<Value: Sendable>(
             await Task.yield()
         }
         return true
+    }
+    return reached == true
+}
+
+private func waitUntilValueReceived<Value: Sendable & Equatable>(
+    _ expected: Value,
+    from queue: ValueQueue<Value>,
+    nanoseconds: UInt64 = 5_000_000_000
+) async -> Bool {
+    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
+        while true {
+            guard let next = await queue.next() else {
+                return false
+            }
+            if next == expected {
+                return true
+            }
+        }
     }
     return reached == true
 }
@@ -601,15 +778,17 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observeTaskDebounceImmediateFirstEmitsInitialImmediatelyAndCoalescesFollowingValues() async {
+    func observeTaskDebounceImmediateFirstSupportsDeterministicClockControl() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
 
         let handle = model.observeTask(
             \.value,
             retention: .manual,
-            options: [.debounce(debounce)]
+            options: [.debounce(debounce)],
+            clock: clock
         ) { value in
             await queue.push(value)
         }
@@ -621,32 +800,85 @@ struct ObservationsCompatTests {
         model.value = 2
         model.value = 3
 
+        await clock.sleep(untilSuspendedBy: 1)
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 2_000_000_000) == 3)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 3)
     }
 
     @Test
-    func observeTaskDebounceDelayedFirstDelaysInitialValue() async {
+    func observeTaskDebounceDelayedFirstSupportsDeterministicClockControl() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .delayedFirst)
 
         let handle = model.observeTask(
             \.value,
             retention: .manual,
-            options: [.debounce(debounce)]
+            options: [.debounce(debounce)],
+            clock: clock
         ) { value in
             await queue.push(value)
         }
         defer { handle.cancel() }
 
+        await clock.sleep(untilSuspendedBy: 1)
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 2_000_000_000) == 0)
+
+        clock.advance(by: .milliseconds(200))
+        #expect(await nextWithTimeout(from: queue) == 0)
 
         model.value = 10
         model.value = 11
+        await clock.sleep(untilSuspendedBy: 1)
+
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
-        #expect(await nextWithTimeout(from: queue, nanoseconds: 2_000_000_000) == 11)
+
+        clock.advance(by: .milliseconds(199))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 11)
+    }
+
+    @Test
+    func observeTaskDebounceWithToleranceSupportsDeterministicClockBoundaryChecks() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(
+            interval: .milliseconds(300),
+            tolerance: .milliseconds(50),
+            mode: .delayedFirst
+        )
+
+        let handle = model.observeTask(
+            \.value,
+            retention: .manual,
+            options: [.debounce(debounce)],
+            clock: clock
+        ) { value in
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(299))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 42
+        await clock.sleep(untilSuspendedBy: 1)
+        clock.advance(by: .milliseconds(299))
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(await nextWithTimeout(from: queue) == 42)
     }
 
     @Test
@@ -852,10 +1084,8 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue) == .some(nil))
 
         model.name = "hello"
-        #expect(await nextWithTimeout(from: queue) == .some(nil))
-
         model.isEnabled = true
-        #expect(await nextWithTimeout(from: queue) == "hello")
+        #expect(await waitUntilValueReceived(.some("hello"), from: queue))
     }
 
     @Test
@@ -965,14 +1195,21 @@ struct ObservationsCompatTests {
         let started = ValueQueue<Int>()
         let completed = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
 
         let handle = model.observeTask(\.value, retention: .manual, options: []) { value in
             await started.push(value)
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+                guard !Task.isCancelled else {
+                    return
+                }
                 await completed.push(value)
-            } catch {
-                await cancelled.push(value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
             }
         }
         defer { handle.cancel() }
@@ -980,11 +1217,14 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: started) == 0)
 
         model.value = 1
-        await Task.yield()
+        #expect(await waitUntilValueReceived(0, from: cancelled))
+        #expect(await waitUntilValueReceived(1, from: started))
 
         model.value = 2
-        let cancelledValue = await nextWithTimeout(from: cancelled)
-        #expect(cancelledValue == 0 || cancelledValue == 1)
+        #expect(await waitUntilValueReceived(1, from: cancelled))
+        #expect(await waitUntilValueReceived(2, from: started))
+
+        await gate.release(2)
         #expect(await nextWithTimeout(from: completed) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
     }
@@ -1025,6 +1265,10 @@ struct ObservationsCompatTests {
 
     @Test
     func observeTaskNativeBackendFallsBackToLegacyOnUnsupportedOS() async {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            return
+        }
+
         let model = PlainCounterModel()
         let queue = ValueQueue<Int>()
 

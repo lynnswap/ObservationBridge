@@ -27,6 +27,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
+    debounceClock: any Clock<Duration>,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -46,7 +47,8 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         if let debounce {
             let debouncedStream = makeDebouncedValueStream(
                 observedValues.channel,
-                debounce: debounce
+                debounce: debounce,
+                debounceClock: debounceClock
             )
             for await observedValue in debouncedStream {
                 guard !Task.isCancelled else {
@@ -80,6 +82,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     retention: ObservationRetention,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
+    debounceClock: any Clock<Duration>,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -205,7 +208,8 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         if let debounce {
             let debouncedStream = makeDebouncedValueStream(
                 observedValues.channel,
-                debounce: debounce
+                debounce: debounce,
+                debounceClock: debounceClock
             )
             for await observedValue in debouncedStream {
                 guard !Task.isCancelled else {
@@ -278,7 +282,20 @@ private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
 
 private func makeDebouncedValueStream<Value: Sendable>(
     _ source: AsyncChannel<Value>,
-    debounce: ObservationDebounce
+    debounce: ObservationDebounce,
+    debounceClock: any Clock<Duration>
+) -> AsyncStream<Value> {
+    makeDebouncedValueStream(
+        source,
+        debounce: debounce,
+        clock: debounceClock
+    )
+}
+
+private func makeDebouncedValueStream<Value: Sendable, C: Clock<Duration>>(
+    _ source: AsyncChannel<Value>,
+    debounce: ObservationDebounce,
+    clock: C
 ) -> AsyncStream<Value> {
     switch debounce.mode {
     case .delayedFirst:
@@ -287,7 +304,7 @@ private func makeDebouncedValueStream<Value: Sendable>(
                 for await value in source.debounce(
                     for: debounce.interval,
                     tolerance: debounce.tolerance,
-                    clock: .continuous
+                    clock: clock
                 ) {
                     guard !Task.isCancelled else {
                         break
@@ -334,7 +351,7 @@ private func makeDebouncedValueStream<Value: Sendable>(
                 for await value in remainingStream.debounce(
                     for: debounce.interval,
                     tolerance: debounce.tolerance,
-                    clock: .continuous
+                    clock: clock
                 ) {
                     guard !Task.isCancelled else {
                         break

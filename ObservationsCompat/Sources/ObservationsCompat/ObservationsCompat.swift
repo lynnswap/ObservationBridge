@@ -365,6 +365,7 @@ public extension Observable where Self: AnyObject {
         _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observe(
@@ -372,6 +373,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             onChange: onChange
         )
     }
@@ -381,6 +383,7 @@ public extension Observable where Self: AnyObject {
         _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observe(
@@ -388,6 +391,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             onChange: onChange
         )
     }
@@ -397,6 +401,7 @@ public extension Observable where Self: AnyObject {
         _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTask(
@@ -404,6 +409,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             task: task
         )
     }
@@ -413,6 +419,7 @@ public extension Observable where Self: AnyObject {
         _ keyPath: sending KeyPath<Self, Value>,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTask(
@@ -420,6 +427,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             task: task
         )
     }
@@ -429,6 +437,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
     ) -> ObservationHandle {
         observe(
@@ -436,6 +445,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             onChange: onChange
         )
     }
@@ -445,6 +455,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
     ) -> ObservationHandle {
         observeTask(
@@ -452,6 +463,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             task: task
         )
     }
@@ -461,6 +473,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
@@ -469,6 +482,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             of: value,
             onChange: onChange
         )
@@ -479,6 +493,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
@@ -487,6 +502,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             of: value,
             onChange: onChange
         )
@@ -497,6 +513,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
@@ -505,6 +522,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             of: value,
             task: task
         )
@@ -515,6 +533,7 @@ public extension Observable where Self: AnyObject {
         _ keyPaths: sending [PartialKeyPath<Self>],
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
@@ -523,6 +542,7 @@ public extension Observable where Self: AnyObject {
             backend: .automatic,
             retention: retention,
             options: options,
+            clock: clock,
             of: value,
             task: task
         )
@@ -534,6 +554,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         if options.contains(.removeDuplicates) {
@@ -546,6 +567,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -557,6 +579,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
         observeImpl(
@@ -565,6 +588,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -576,6 +600,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         if options.contains(.removeDuplicates) {
@@ -588,6 +613,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -599,6 +625,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
         observeTaskImpl(
@@ -607,6 +634,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -618,6 +646,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void
     ) -> ObservationHandle {
         if options.contains(.removeDuplicates) {
@@ -630,6 +659,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
                 await onChange()
@@ -643,6 +673,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void
     ) -> ObservationHandle {
         if options.contains(.removeDuplicates) {
@@ -655,6 +686,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             task: { _ in
                 await task()
@@ -668,6 +700,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
@@ -681,6 +714,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -692,6 +726,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
     ) -> ObservationHandle {
@@ -701,6 +736,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -712,6 +748,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
@@ -725,6 +762,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
@@ -736,6 +774,7 @@ public extension Observable where Self: AnyObject {
         backend: ObservationsCompatBackend,
         retention: ObservationRetention = .automatic,
         options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
         of value: @escaping @Sendable (Self) -> Value,
         @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
     ) -> ObservationHandle {
@@ -745,6 +784,7 @@ public extension Observable where Self: AnyObject {
             retention: retention,
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounce,
+            debounceClock: clock,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
