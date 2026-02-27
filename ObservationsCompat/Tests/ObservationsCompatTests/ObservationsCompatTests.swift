@@ -50,6 +50,12 @@ private final class OptionalCounterModel {
     var value: Int? = nil
 }
 
+@MainActor
+@Observable
+private final class MainActorCounterModel {
+    var value: Int = 0
+}
+
 private struct CounterSnapshot: Sendable, Equatable {
     let value: Int
     let isEnabled: Bool
@@ -153,6 +159,17 @@ private actor ValueQueue<Value: Sendable> {
         }
         waiter.resume(returning: nil)
     }
+}
+
+private actor CallbackIsolationActor {
+    func handle(_ value: sending Int, queue: ValueQueue<Int>) async {
+        await queue.push(value)
+    }
+}
+
+@globalActor
+private actor AlternateGlobalActor {
+    static let shared = AlternateGlobalActor()
 }
 
 private final class ValueRecorder<Value: Sendable>: Sendable {
@@ -1113,6 +1130,108 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
         clock.advance(by: .milliseconds(1))
         #expect(await nextWithTimeout(from: queue) == 42)
+    }
+
+    @Test
+    func observeMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let recorder = ValueRecorder<Int>()
+        let handle = model.observe(\.value, options: [.removeDuplicates]) { value in
+            MainActor.assertIsolated()
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot() == [0])
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
+    }
+
+    @Test
+    func observeTaskMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
+            MainActor.assertIsolated()
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskKeyPathGetterDoesNotUseCallbackActorIsolation() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let handle = await MainActor.run {
+            model.observeTask(\.value, options: [.removeDuplicates]) { @AlternateGlobalActor value in
+                await queue.push(value)
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        await MainActor.run {
+            model.value = 1
+        }
+        #expect(await nextWithTimeout(from: queue) == 1)
+    }
+
+    @Test
+    func observeImplPrefersValueIsolationOverCallbackIsolation() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let callbackIsolation = CallbackIsolationActor()
+        let readMainActorValue: @isolated(any) @Sendable (MainActorCounterModel) -> Int = { @MainActor owner in
+            owner.value
+        }
+        #expect(readMainActorValue.isolation != nil)
+
+        let handle = observeImpl(
+            owner: model,
+            options: [.removeDuplicates],
+            duplicateFilter: { @Sendable lhs, rhs in lhs == rhs },
+            debounce: nil,
+            debounceClock: ContinuousClock(),
+            isolation: callbackIsolation,
+            of: readMainActorValue,
+            onChange: { value in
+                await callbackIsolation.handle(value, queue: queue)
+            }
+        )
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
     }
 
     @Test
