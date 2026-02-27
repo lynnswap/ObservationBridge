@@ -167,6 +167,11 @@ private actor CallbackIsolationActor {
     }
 }
 
+@globalActor
+private actor AlternateGlobalActor {
+    static let shared = AlternateGlobalActor()
+}
+
 private final class ValueRecorder<Value: Sendable>: Sendable {
     private let storage = Mutex<[Value]>([])
 
@@ -1170,6 +1175,29 @@ struct ObservationsCompatTests {
 
         model.value = 1
         #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskKeyPathGetterDoesNotUseCallbackActorIsolation() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let handle = await MainActor.run {
+            model.observeTask(\.value, options: [.removeDuplicates]) { @AlternateGlobalActor value in
+                await queue.push(value)
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        await MainActor.run {
+            model.value = 1
+        }
+        #expect(await nextWithTimeout(from: queue) == 1)
     }
 
     @Test

@@ -406,7 +406,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: onChange.isolation,
+            isolation: #isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -425,7 +425,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: onChange.isolation,
+            isolation: #isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -448,7 +448,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: task.isolation,
+            isolation: #isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -467,7 +467,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: task.isolation,
+            isolation: #isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -490,7 +490,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: onChange.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
                 await onChange()
@@ -515,7 +515,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: task.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             task: { _ in
                 await task()
@@ -541,7 +541,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: onChange.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -561,7 +561,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: onChange.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -585,7 +585,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: task.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
@@ -605,7 +605,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            isolation: task.isolation,
+            isolation: #isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
