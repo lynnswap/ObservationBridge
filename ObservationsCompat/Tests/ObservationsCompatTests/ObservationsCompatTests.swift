@@ -50,6 +50,12 @@ private final class OptionalCounterModel {
     var value: Int? = nil
 }
 
+@MainActor
+@Observable
+private final class MainActorCounterModel {
+    var value: Int = 0
+}
+
 private struct CounterSnapshot: Sendable, Equatable {
     let value: Int
     let isEnabled: Bool
@@ -1113,6 +1119,51 @@ struct ObservationsCompatTests {
         #expect(await nextWithTimeout(from: queue, nanoseconds: 120_000_000) == nil)
         clock.advance(by: .milliseconds(1))
         #expect(await nextWithTimeout(from: queue) == 42)
+    }
+
+    @Test
+    func observeMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let recorder = ValueRecorder<Int>()
+        let handle = model.observe(\.value, options: [.removeDuplicates]) { value in
+            MainActor.assertIsolated()
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot() == [0])
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().prefix(2).elementsEqual([0, 1]))
+    }
+
+    @Test
+    func observeTaskMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) { value in
+            MainActor.assertIsolated()
+            await queue.push(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
     @Test

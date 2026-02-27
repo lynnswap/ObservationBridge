@@ -3,11 +3,12 @@ import Synchronization
 
 package func makeLegacyObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil
+    isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
+    observationIsolation: (any Actor)? = nil
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
         let changeGate = LegacyChangeGate()
-        let observeIsolation = observe.isolation
+        let observeIsolation = observationIsolation ?? observe.isolation
         let task = Task {
             await runLegacyProducer(
                 observe: observe,
@@ -70,25 +71,34 @@ private enum LatestObservedValue<Value> {
 }
 
 private func trackLegacyValue<Value: Sendable>(
-    isolation _: isolated (any Actor)?,
+    isolation: (any Actor)?,
     observe: @escaping @isolated(any) @Sendable () -> Value,
     changeGate: LegacyChangeGate
-) -> Value {
+) async -> Value {
     // Keep this aligned with Swift stdlib Observation (`Observations.swift`):
     // `Result(catching:)` inside `withObservationTracking` currently emits an
     // `@isolated(any)` conversion warning, but avoids isolation bypasses such as `unsafeBitCast`.
-    let result = withObservationTracking({
-        Result(catching: observe)
-    }, onChange: {
-        changeGate.signalChange()
-    })
+    await withObservationIsolation(isolation: isolation) {
+        let result = withObservationTracking({
+            Result(catching: observe)
+        }, onChange: {
+            changeGate.signalChange()
+        })
 
-    switch result {
-    case .success(let value):
-        return value
-    case .failure:
-        preconditionFailure("observe closure unexpectedly threw")
+        switch result {
+        case .success(let value):
+            return value
+        case .failure:
+            preconditionFailure("observe closure unexpectedly threw")
+        }
     }
+}
+
+private func withObservationIsolation<T>(
+    isolation: isolated (any Actor)?,
+    _ operation: () -> T
+) -> T {
+    operation()
 }
 
 private final class LegacyChangeGate: Sendable {
