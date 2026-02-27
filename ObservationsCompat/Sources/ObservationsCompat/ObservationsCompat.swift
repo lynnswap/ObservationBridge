@@ -600,6 +600,208 @@ public extension Observable where Self: AnyObject {
             task: task
         )
     }
+
+    @discardableResult
+    func observe<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        onChange: @escaping (Value) -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeKeyPathGetterLocal(keyPath),
+            onChange: onChange
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        onChange: @escaping (Value) -> Void
+    ) -> ObservationHandle {
+        observeLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: options.contains(.removeDuplicates) ? { lhs, rhs in lhs == rhs } : nil,
+            of: makeKeyPathGetterLocal(keyPath),
+            onChange: onChange
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        task: @escaping (Value) async -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeTaskLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeKeyPathGetterLocal(keyPath),
+            task: task
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        task: @escaping (Value) async -> Void
+    ) -> ObservationHandle {
+        observeTaskLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: options.contains(.removeDuplicates) ? { lhs, rhs in lhs == rhs } : nil,
+            of: makeKeyPathGetterLocal(keyPath),
+            task: task
+        )
+    }
+
+    @discardableResult
+    func observe(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        onChange: @escaping () -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates is not supported for multiple key path trigger observation")
+        }
+
+        return observeLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeAnyKeyPathsTriggerGetterLocal(keyPaths),
+            onChange: { _ in
+                onChange()
+            }
+        )
+    }
+
+    @discardableResult
+    func observeTask(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        task: @escaping () async -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates is not supported for multiple key path trigger observation")
+        }
+
+        return observeTaskLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeAnyKeyPathsTriggerGetterLocal(keyPaths),
+            task: { _ in
+                await task()
+            }
+        )
+    }
+
+    @discardableResult
+    func observe<Value>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping (Self) -> Value,
+        onChange: @escaping (Value) -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeAnyKeyPathsValueGetterLocal(keyPaths, of: value),
+            onChange: onChange
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Equatable>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping (Self) -> Value,
+        onChange: @escaping (Value) -> Void
+    ) -> ObservationHandle {
+        observeLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: options.contains(.removeDuplicates) ? { lhs, rhs in lhs == rhs } : nil,
+            of: makeAnyKeyPathsValueGetterLocal(keyPaths, of: value),
+            onChange: onChange
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping (Self) -> Value,
+        task: @escaping (Value) async -> Void
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeTaskLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: nil,
+            of: makeAnyKeyPathsValueGetterLocal(keyPaths, of: value),
+            task: task
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Equatable>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping (Self) -> Value,
+        task: @escaping (Value) async -> Void
+    ) -> ObservationHandle {
+        observeTaskLocalImpl(
+            owner: self,
+            options: options,
+            debounceClock: clock,
+            duplicateFilter: options.contains(.removeDuplicates) ? { lhs, rhs in lhs == rhs } : nil,
+            of: makeAnyKeyPathsValueGetterLocal(keyPaths, of: value),
+            task: task
+        )
+    }
 }
 
 // KeyPath / PartialKeyPath are immutable metadata; wrapping allows safe capture in @Sendable closures.
@@ -609,6 +811,18 @@ private struct _UncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Se
 
 private struct _UncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked Sendable {
     let keyPaths: [PartialKeyPath<Owner>]
+}
+
+private final class _UncheckedSendableBox<Wrapped>: @unchecked Sendable {
+    let wrapped: Wrapped
+
+    init(_ wrapped: Wrapped) {
+        self.wrapped = wrapped
+    }
+}
+
+private struct _UncheckedSendableValue<Value>: @unchecked Sendable {
+    let value: Value
 }
 
 private func makeKeyPathGetter<Owner: AnyObject, Value: Sendable>(
@@ -644,12 +858,133 @@ private func makeAnyKeyPathsValueGetter<Owner: AnyObject, Value: Sendable>(
     }
 }
 
+private func makeKeyPathGetterLocal<Owner: AnyObject, Value>(
+    _ keyPath: sending KeyPath<Owner, Value>
+) -> @isolated(any) (Owner) -> Value {
+    { owner in
+        owner[keyPath: keyPath]
+    }
+}
+
+private func makeAnyKeyPathsTriggerGetterLocal<Owner: AnyObject>(
+    _ keyPaths: sending [PartialKeyPath<Owner>]
+) -> @isolated(any) (Owner) -> Void {
+    { owner in
+        for keyPath in keyPaths {
+            _ = owner[keyPath: keyPath]
+        }
+    }
+}
+
+private func makeAnyKeyPathsValueGetterLocal<Owner: AnyObject, Value>(
+    _ keyPaths: sending [PartialKeyPath<Owner>],
+    of value: @escaping (Owner) -> Value
+) -> @isolated(any) (Owner) -> Value {
+    { owner in
+        for keyPath in keyPaths {
+            _ = owner[keyPath: keyPath]
+        }
+        return value(owner)
+    }
+}
+
+private func makeUncheckedSendableObserve<Value>(
+    _ observe: @escaping @isolated(any) () -> Value
+) -> @isolated(any) @Sendable () -> _UncheckedSendableValue<Value> {
+    let observe = _UncheckedSendableBox(observe)
+    return {
+        _UncheckedSendableValue(value: ObservationsCompatLegacy.legacyEvaluateObservedValue(value: observe.wrapped))
+    }
+}
+
+private func makeUncheckedSendableValueGetter<Owner: AnyObject, Value>(
+    _ value: @escaping @isolated(any) (Owner) -> Value
+) -> @isolated(any) @Sendable (Owner) -> _UncheckedSendableValue<Value> {
+    let value = _UncheckedSendableBox(value)
+    return { owner in
+        _UncheckedSendableValue(value: ObservationsCompatLegacy.legacyEvaluateObservedOwnerValueLocal(owner: owner, value: value.wrapped))
+    }
+}
+
+private func makeUncheckedSendableDuplicateFilter<Value>(
+    _ duplicateFilter: @escaping (Value, Value) -> Bool
+) -> @Sendable (_UncheckedSendableValue<Value>, _UncheckedSendableValue<Value>) -> Bool {
+    let duplicateFilter = _UncheckedSendableBox(duplicateFilter)
+    return { lhs, rhs in
+        duplicateFilter.wrapped(lhs.value, rhs.value)
+    }
+}
+
+private func makeLocalOnChangeAdapter<Value>(
+    _ onChange: @escaping (Value) -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValue<Value>) async -> Void {
+    let onChange = _UncheckedSendableBox(onChange)
+    return { boxedValue in
+        onChange.wrapped(boxedValue.value)
+    }
+}
+
+private func makeLocalTaskAdapter<Value>(
+    _ task: @escaping (Value) async -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValue<Value>) async -> Void {
+    let task = _UncheckedSendableBox(task)
+    return { boxedValue in
+        await task.wrapped(boxedValue.value)
+    }
+}
+
 private func makeOnChangeAdapter<Value>(
     _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
 ) -> @isolated(any) @Sendable (sending Value) async -> Void {
     { value in
         await onChange(value)
     }
+}
+
+private func forceLegacyBackendForNonSendable(_ options: ObservationOptions) -> ObservationOptions {
+    var forced = options
+    if #available(iOS 26.0, macOS 26.0, *) {
+        forced.formUnion([.legacyBackend])
+    }
+    return forced
+}
+
+private func observeLocalImpl<Owner: AnyObject, Value>(
+    owner: Owner,
+    options: ObservationOptions,
+    debounceClock: any Clock<Duration>,
+    duplicateFilter: ((Value, Value) -> Bool)?,
+    of value: @escaping @isolated(any) (Owner) -> Value,
+    onChange: @escaping (Value) -> Void
+) -> ObservationHandle {
+    observeImpl(
+        owner: owner,
+        options: forceLegacyBackendForNonSendable(options),
+        duplicateFilter: duplicateFilter.map(makeUncheckedSendableDuplicateFilter),
+        debounce: options.debounceForObservation,
+        debounceClock: debounceClock,
+        of: makeUncheckedSendableValueGetter(value),
+        onChange: makeLocalOnChangeAdapter(onChange)
+    )
+}
+
+private func observeTaskLocalImpl<Owner: AnyObject, Value>(
+    owner: Owner,
+    options: ObservationOptions,
+    debounceClock: any Clock<Duration>,
+    duplicateFilter: ((Value, Value) -> Bool)?,
+    of value: @escaping @isolated(any) (Owner) -> Value,
+    task: @escaping (Value) async -> Void
+) -> ObservationHandle {
+    observeTaskImpl(
+        owner: owner,
+        options: forceLegacyBackendForNonSendable(options),
+        duplicateFilter: duplicateFilter.map(makeUncheckedSendableDuplicateFilter),
+        debounce: options.debounceForObservation,
+        debounceClock: debounceClock,
+        of: makeUncheckedSendableValueGetter(value),
+        task: makeLocalTaskAdapter(task)
+    )
 }
 
 enum ResolvedBackend: Sendable {
@@ -697,6 +1032,23 @@ private func makeRawObservationStream<Value: Sendable>(
     }
 }
 
+private func makeLocalObservationStream<Value>(
+    options: ObservationOptions = [],
+    _ observe: @escaping @isolated(any) () -> Value,
+    duplicateFilter: ((Value, Value) -> Bool)? = nil,
+    debounce: ObservationDebounce? = nil,
+    debounceClock: any Clock<Duration> = ContinuousClock()
+) -> AsyncStream<Value> {
+    let wrappedStream = makeObservationStream(
+        options: forceLegacyBackendForNonSendable(options),
+        makeUncheckedSendableObserve(observe),
+        duplicateFilter: duplicateFilter.map(makeUncheckedSendableDuplicateFilter),
+        debounce: debounce,
+        debounceClock: debounceClock
+    )
+    return unwrapUncheckedSendableStream(wrappedStream)
+}
+
 private enum _ObservationStreamPrevious<Value> {
     case none
     case value(Value)
@@ -726,6 +1078,26 @@ private func makeDuplicateFilteredStream<Value: Sendable>(
                 continuation.yield(value)
             }
 
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
+}
+
+private func unwrapUncheckedSendableStream<Value>(
+    _ source: AsyncStream<_UncheckedSendableValue<Value>>
+) -> AsyncStream<Value> {
+    AsyncStream<Value> { continuation in
+        let task = Task {
+            for await boxedValue in source {
+                if Task.isCancelled {
+                    break
+                }
+                continuation.yield(boxedValue.value)
+            }
             continuation.finish()
         }
 
@@ -770,7 +1142,7 @@ private func makeNativeStream<Value: Sendable>(
     }
 }
 
-public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
+public struct ObservationsCompat<Value>: AsyncSequence {
     public typealias Element = Value
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -791,7 +1163,15 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
         self.stream = stream
     }
 
-    public init(
+    public func makeAsyncIterator() -> Iterator {
+        Iterator(base: stream.makeAsyncIterator())
+    }
+}
+
+extension ObservationsCompat: Sendable where Value: Sendable {}
+
+public extension ObservationsCompat where Value: Sendable {
+    init(
         options: ObservationOptions,
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
@@ -808,13 +1188,9 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
             debounceClock: clock
         ))
     }
-
-    public func makeAsyncIterator() -> Iterator {
-        Iterator(base: stream.makeAsyncIterator())
-    }
 }
 
-public extension ObservationsCompat where Value: Equatable {
+public extension ObservationsCompat where Value: Equatable & Sendable {
     init(
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
@@ -839,6 +1215,51 @@ public extension ObservationsCompat where Value: Equatable {
     }
 }
 
+public extension ObservationsCompat {
+    init(
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
+        _ observe: @escaping @isolated(any) () -> Value
+    ) {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        self.init(stream: makeLocalObservationStream(
+            options: options,
+            observe,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
+    }
+}
+
+public extension ObservationsCompat where Value: Equatable {
+    init(
+        _ observe: @escaping @isolated(any) () -> Value
+    ) {
+        self.init(
+            options: [.removeDuplicates],
+            observe
+        )
+    }
+
+    init(
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
+        _ observe: @escaping @isolated(any) () -> Value
+    ) {
+        self.init(stream: makeLocalObservationStream(
+            options: options,
+            observe,
+            duplicateFilter: options.contains(.removeDuplicates) ? { lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
+    }
+}
+
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationsCompat<Value> {
@@ -849,6 +1270,36 @@ public func makeObservationsCompatStream<Value: Sendable>(
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+public func makeObservationsCompatStream<Value: Equatable>(
+    _ observe: @escaping @isolated(any) () -> Value
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(observe)
+}
+
+public func makeObservationsCompatStream<Value>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    _ observe: @escaping @isolated(any) () -> Value
+) -> ObservationsCompat<Value> {
+    ObservationsCompat(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+public func makeObservationsCompatStream<Value: Equatable>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    _ observe: @escaping @isolated(any) () -> Value
 ) -> ObservationsCompat<Value> {
     ObservationsCompat(
         options: options,

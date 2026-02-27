@@ -205,3 +205,26 @@ package enum LegacyOwnerObservationResult<Value: Sendable>: Sendable {
     case ownerGone
     case value(Value)
 }
+
+package func legacyEvaluateObservedValue<Value>(
+    value: @escaping @isolated(any) () -> Value
+) -> Value {
+    switch Result(catching: value) {
+    case .success(let observedValue):
+        return observedValue
+    case .failure:
+        preconditionFailure("value closure unexpectedly threw")
+    }
+}
+
+package func legacyEvaluateObservedOwnerValueLocal<Owner: AnyObject, Value>(
+    owner: Owner,
+    value: @escaping @isolated(any) (Owner) -> Value
+) -> Value {
+    switch Optional(owner).map(value) {
+    case .some(let observedValue):
+        return observedValue
+    case .none:
+        preconditionFailure("owner unexpectedly disappeared during local evaluation")
+    }
+}

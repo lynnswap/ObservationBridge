@@ -140,6 +140,13 @@ Both APIs:
 - fall back to legacy `withObservationTracking` on older OS versions
 - are retained for the owner's lifetime and auto-cancel when the owner is released
 
+Sendable / non-Sendable behavior:
+
+- `Value: Sendable` call sites use the existing cross-actor-safe path.
+- non-Sendable call sites are supported via overloads and are forced to the legacy backend.
+- Sendable-capable call sites continue to use the Sendable overloads, while non-Sendable values can use non-Sendable overloads.
+- `ObservationsCompat` now accepts any `Value`; it conditionally conforms to `Sendable` only when `Value: Sendable`.
+
 Backend behavior note:
 
 - by default, native `Observations` is used on `iOS/macOS 26.0+`, and legacy `withObservationTracking` is used on older OS versions

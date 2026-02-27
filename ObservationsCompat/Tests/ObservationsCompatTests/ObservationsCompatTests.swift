@@ -50,6 +50,32 @@ private final class OptionalCounterModel {
     var value: Int? = nil
 }
 
+private final class NonSendableToken {
+    let id: Int
+
+    init(id: Int) {
+        self.id = id
+    }
+}
+
+private final class NonSendableEquatableValue: Equatable {
+    let value: Int
+
+    init(_ value: Int) {
+        self.value = value
+    }
+
+    static func == (lhs: NonSendableEquatableValue, rhs: NonSendableEquatableValue) -> Bool {
+        lhs.value == rhs.value
+    }
+}
+
+@Observable
+private final class NonSendableModel {
+    var token = NonSendableToken(id: 0)
+    var boxed = NonSendableEquatableValue(0)
+}
+
 private struct CounterSnapshot: Sendable, Equatable {
     let value: Int
     let isEnabled: Bool
@@ -1535,6 +1561,131 @@ struct ObservationsCompatTests {
         #expect(cancelledValue == 0)
         #expect(await nextWithTimeout(from: completed) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func nonSendableObserveSupportsInitialAndSubsequentChanges() async {
+        let model = NonSendableModel()
+        let marker = NSMutableString(string: "")
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe(\.token, options: []) { token in
+            marker.append("x")
+            recorder.append(token.id)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot().first == 0)
+
+        model.token = NonSendableToken(id: 1)
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().contains(1))
+        #expect(marker.length >= 2)
+    }
+
+    @Test
+    func nonSendableObserveTaskLatestWinsCancelsPreviousInFlightTask() async {
+        let model = NonSendableModel()
+        let started = ValueQueue<Int>()
+        let completed = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.boxed, options: []) { boxed in
+            let value = boxed.value
+            await started.push(value)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await completed.push(value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
+            }
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        model.boxed = NonSendableEquatableValue(1)
+        #expect(await waitUntilValueReceived(0, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(1, from: started, nanoseconds: 15_000_000_000))
+
+        model.boxed = NonSendableEquatableValue(2)
+        #expect(await waitUntilValueReceived(1, from: cancelled, nanoseconds: 15_000_000_000))
+        #expect(await waitUntilValueReceived(2, from: started, nanoseconds: 15_000_000_000))
+
+        await gate.release(2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func nonSendableObservationsCompatAndFactoryEmitExpectedValues() async {
+        let model = NonSendableModel()
+        let streamQueue = ValueQueue<Int>()
+        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+            model.boxed
+        }
+        let streamConsumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await streamQueue.push(value.value)
+            }
+        }
+        defer { streamConsumer.cancel() }
+
+        #expect(await nextWithTimeout(from: streamQueue) == 0)
+        model.boxed = NonSendableEquatableValue(1)
+        #expect(await nextWithTimeout(from: streamQueue) == 1)
+
+        let factoryQueue = ValueQueue<Int>()
+        let factoryStream = makeObservationsCompatStream(
+            options: legacyOptionsForCurrentRuntime([.removeDuplicates])
+        ) {
+            model.boxed
+        }
+        let factoryConsumer = Task<Void, Never> {
+            var iterator = factoryStream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await factoryQueue.push(value.value)
+            }
+        }
+        defer { factoryConsumer.cancel() }
+
+        #expect(await nextWithTimeout(from: factoryQueue) == 1)
+
+        model.boxed = NonSendableEquatableValue(1)
+        #expect(await nextWithTimeout(from: factoryQueue, nanoseconds: 300_000_000) == nil)
+
+        model.boxed = NonSendableEquatableValue(2)
+        #expect(await nextWithTimeout(from: factoryQueue) == 2)
+    }
+
+    @Test
+    func sendableValueObserveAllowsNonSendableCaptureViaLocalOverload() async {
+        let model = CounterModel()
+        let marker = NSMutableString(string: "")
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe(\.value, options: []) { value in
+            marker.append("x")
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot().first == 0)
+
+        model.value = 9
+        #expect(await waitUntilCount(2, in: recorder))
+        #expect(recorder.snapshot().contains(9))
+        #expect(marker.length >= 2)
     }
 
     @Test
