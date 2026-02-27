@@ -4,11 +4,11 @@ import Synchronization
 package func makeLegacyObservationStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
     isDuplicate: (@Sendable (Value, Value) -> Bool)? = nil,
-    observationIsolation: (any Actor)? = nil
+    isolation: (any Actor)? = nil
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
         let changeGate = LegacyChangeGate()
-        let observeIsolation = observationIsolation ?? observe.isolation
+        let observeIsolation = isolation ?? observe.isolation
         let task = Task {
             await runLegacyProducer(
                 observe: observe,

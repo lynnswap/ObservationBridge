@@ -406,7 +406,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: onChange.isolation,
+            isolation: onChange.isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -425,7 +425,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: onChange.isolation,
+            isolation: onChange.isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -448,7 +448,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: task.isolation,
+            isolation: task.isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -467,7 +467,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: task.isolation,
+            isolation: task.isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
         )
@@ -490,7 +490,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: onChange.isolation,
+            isolation: onChange.isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             onChange: { _ in
                 await onChange()
@@ -515,7 +515,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: task.isolation,
+            isolation: task.isolation,
             of: makeAnyKeyPathsTriggerGetter(keyPaths),
             task: { _ in
                 await task()
@@ -541,7 +541,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: onChange.isolation,
+            isolation: onChange.isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -561,7 +561,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: onChange.isolation,
+            isolation: onChange.isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             onChange: makeOnChangeAdapter(onChange)
         )
@@ -585,7 +585,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: task.isolation,
+            isolation: task.isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
@@ -605,7 +605,7 @@ public extension Observable where Self: AnyObject {
             duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
             debounce: options.debounceForObservation,
             debounceClock: clock,
-            observationIsolation: task.isolation,
+            isolation: task.isolation,
             of: makeAnyKeyPathsValueGetter(keyPaths, of: value),
             task: task
         )
@@ -670,7 +670,7 @@ enum ResolvedBackend: Sendable {
 func makeObservationStream<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    observationIsolation: (any Actor)? = nil,
+    isolation: (any Actor)? = nil,
     duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
     debounce: ObservationDebounce? = nil,
     debounceClock: any Clock<Duration> = ContinuousClock()
@@ -678,7 +678,7 @@ func makeObservationStream<Value: Sendable>(
     let stream = makeRawObservationStream(
         options: options,
         observe,
-        observationIsolation: observationIsolation ?? observe.isolation
+        isolation: isolation ?? observe.isolation
     )
     let streamWithDebounce: AsyncStream<Value>
     if let debounce {
@@ -700,26 +700,26 @@ func makeObservationStream<Value: Sendable>(
 private func makeRawObservationStream<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    observationIsolation: (any Actor)?
+    isolation: (any Actor)?
 ) -> AsyncStream<Value> {
     switch resolveBackend(options: options) {
     case .legacy:
         return makeLegacyObservationStream(
             observe,
             isDuplicate: nil,
-            observationIsolation: observationIsolation
+            isolation: isolation
         )
     case .native:
         if #available(iOS 26.0, macOS 26.0, *) {
             return makeNativeStream(
                 observe,
-                observationIsolation: observationIsolation
+                isolation: isolation
             )
         }
         return makeLegacyObservationStream(
             observe,
             isDuplicate: nil,
-            observationIsolation: observationIsolation
+            isolation: isolation
         )
     }
 }
@@ -776,13 +776,13 @@ func resolveBackend(options: ObservationOptions) -> ResolvedBackend {
 @available(iOS 26.0, macOS 26.0, *)
 private func makeNativeStream<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
-    observationIsolation: (any Actor)?
+    isolation: (any Actor)?
 ) -> AsyncStream<Value> {
     AsyncStream<Value> { continuation in
         let task = Task {
             await drainNativeObservationValues(
                 observe: observe,
-                isolation: observationIsolation,
+                isolation: isolation,
                 continuation: continuation
             )
 

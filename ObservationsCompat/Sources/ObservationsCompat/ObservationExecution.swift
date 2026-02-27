@@ -52,7 +52,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
     debounceClock: any Clock<Duration>,
-    observationIsolation: (any Actor)?,
+    isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -61,7 +61,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
-            observationIsolation: observationIsolation,
+            isolation: isolation,
             of: value
         )
         defer {
@@ -116,7 +116,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
     debounce: ObservationDebounce?,
     debounceClock: any Clock<Duration>,
-    observationIsolation: (any Actor)?,
+    isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
 ) -> ObservationHandle {
@@ -231,7 +231,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
-            observationIsolation: observationIsolation,
+            isolation: isolation,
             of: value
         )
         defer {
@@ -291,7 +291,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     options: ObservationOptions,
-    observationIsolation: (any Actor)?,
+    isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
 ) -> ObservedValueChannel<Value> {
     let channel = AsyncChannel<Value>()
@@ -299,7 +299,7 @@ private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
         await forEachOwnerValueEmission(
             ownerToken: ownerToken,
             options: options,
-            observationIsolation: observationIsolation,
+            isolation: isolation,
             of: value
         ) { emission in
             switch emission {
@@ -426,17 +426,17 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
 private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     options: ObservationOptions,
-    observationIsolation: (any Actor)?,
+    isolation: (any Actor)?,
     @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
-    let resolvedObservationIsolation = observationIsolation ?? value.isolation
+    let resolvedIsolation = isolation ?? value.isolation
     // NOTE:
     // `Observations.Iterator.next(isolation:)` does not rebind `emit` closure isolation.
     // If the projected closure lost actor metadata (e.g. key path getter composition),
     // native Observations can evaluate it off-actor and trip dynamic isolation checks.
-    // Legacy path can still execute under `resolvedObservationIsolation`, so bridge there.
-    let requiresLegacyIsolationBridge = resolvedObservationIsolation != nil && value.isolation == nil
+    // Legacy path can still execute under `resolvedIsolation`, so bridge there.
+    let requiresLegacyIsolationBridge = resolvedIsolation != nil && value.isolation == nil
 
     let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<Value> = {
         guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
@@ -456,7 +456,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
            !requiresLegacyIsolationBridge {
             await forEachNativeEmission(
                 observeOwnerValue,
-                observationIsolation: resolvedObservationIsolation,
+                isolation: resolvedIsolation,
                 consume: consume
             )
             return
@@ -466,7 +466,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
         let stream = makeLegacyObservationStream(
             observeOwnerValue,
             isDuplicate: nil,
-            observationIsolation: resolvedObservationIsolation
+            isolation: resolvedIsolation
         )
         for await emission in stream {
             guard !Task.isCancelled else {
@@ -482,12 +482,12 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
 @available(iOS 26.0, macOS 26.0, *)
 private func forEachNativeEmission<Value: Sendable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> OwnerValueEmission<Value>,
-    observationIsolation: (any Actor)?,
+    isolation: (any Actor)?,
     consume: @escaping @Sendable (OwnerValueEmission<Value>) async -> Bool
 ) async {
     await drainNativeOwnerValueEmissions(
         observe: observe,
-        isolation: observationIsolation,
+        isolation: isolation,
         consume: consume
     )
 }
