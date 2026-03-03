@@ -414,6 +414,32 @@ public extension Observable where Self: AnyObject {
     }
 
     @discardableResult
+    func observe<Value: Sendable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeImpl(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: makeKeyPathGetter(keyPath),
+            onChange: { _ in
+                await onChange()
+            }
+        )
+    }
+
+    @discardableResult
     func observe<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
         options: ObservationOptions = [],
@@ -430,6 +456,28 @@ public extension Observable where Self: AnyObject {
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             onChange: makeOnChangeAdapter(onChange)
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Sendable & Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        observeImpl(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: makeKeyPathGetter(keyPath),
+            onChange: { _ in
+                await onChange()
+            }
         )
     }
 
@@ -458,6 +506,32 @@ public extension Observable where Self: AnyObject {
     }
 
     @discardableResult
+    func observeTask<Value: Sendable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        return observeTaskImpl(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: makeKeyPathGetter(keyPath),
+            task: { _ in
+                await task()
+            }
+        )
+    }
+
+    @discardableResult
     func observeTask<Value: Sendable & Equatable>(
         _ keyPath: sending KeyPath<Self, Value>,
         options: ObservationOptions = [],
@@ -474,6 +548,28 @@ public extension Observable where Self: AnyObject {
             isolation: isolation,
             of: makeKeyPathGetter(keyPath),
             task: task
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Sendable & Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        observeTaskImpl(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: makeKeyPathGetter(keyPath),
+            task: { _ in
+                await task()
+            }
         )
     }
 

@@ -35,6 +35,26 @@ model.observeTask(\.count) { value in
 }
 ```
 
+### Single key path (no-arg callback)
+
+```swift
+model.observe(\.count) {
+    analytics.markCountChanged()
+}
+
+model.observeTask(\.count) {
+    await analytics.markCountChangedAsync()
+}
+```
+
+### Optional key path values
+
+```swift
+model.observe(\.selectedID, options: [.removeDuplicates]) { selectedID in
+    print("selectedID = \(String(describing: selectedID))")
+}
+```
+
 ### Early stop with `ObservationHandle`
 
 ```swift

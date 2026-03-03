@@ -1004,6 +1004,126 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observeSingleKeyPathNoArgEmitsInitialAndSubsequentChanges() async {
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe(\.value, options: []) {
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 4
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = 9
+        #expect(await waitUntilCount(3, in: recorder))
+    }
+
+    @Test
+    func observeSingleKeyPathNoArgSupportsRemoveDuplicates() async {
+        let model = CounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observe(
+            \.parity,
+            options: [.removeDuplicates]
+        ) {
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = 3
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 2)
+
+        model.value = 2
+        #expect(await waitUntilCount(3, in: recorder))
+    }
+
+    @Test
+    func observeTaskSingleKeyPathNoArgEmitsInitialAndSubsequentChanges() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+
+        let handle = model.observeTask(\.value, options: []) {
+            await queue.push(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 10
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 11
+        #expect(await nextWithTimeout(from: queue) == 1)
+    }
+
+    @Test
+    func observeOptionalKeyPathEmitsInitialNilAndTransitions() async {
+        let model = OptionalCounterModel()
+        let recorder = ValueRecorder<Int?>()
+
+        let handle = model.observe(\.value, options: [.removeDuplicates]) { value in
+            recorder.append(value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+        #expect(recorder.snapshot() == [nil])
+
+        model.value = nil
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 1)
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = nil
+        #expect(await waitUntilCount(3, in: recorder))
+        #expect(recorder.snapshot().prefix(3).elementsEqual([nil, 1, nil]))
+
+        model.value = nil
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 3)
+    }
+
+    @Test
+    func observeTaskOptionalKeyPathNoArgSupportsRemoveDuplicates() async {
+        let model = OptionalCounterModel()
+        let recorder = ValueRecorder<Int>()
+
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) {
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = nil
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 1)
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = nil
+        #expect(await waitUntilCount(3, in: recorder))
+
+        model.value = nil
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 3)
+    }
+
+    @Test
     func observeTaskRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
         let model = OptionalCounterModel()
         let queue = ValueQueue<Int?>()
@@ -1155,6 +1275,30 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observeNoArgMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let recorder = ValueRecorder<Int>()
+        let handle = model.observe(\.value, options: [.removeDuplicates]) {
+            MainActor.assertIsolated()
+            recorder.append(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilCount(1, in: recorder))
+
+        model.value = 1
+        #expect(await waitUntilCount(2, in: recorder))
+
+        model.value = 1
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(recorder.count() == 2)
+    }
+
+    @Test
     func observeTaskMaintainsMainActorIsolationForMainActorModel() async {
         if #unavailable(iOS 26.0, macOS 26.0) {
             return
@@ -1169,6 +1313,29 @@ struct ObservationsCompatTests {
         defer { handle.cancel() }
 
         #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue) == 1)
+
+        model.value = 1
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskNoArgMaintainsMainActorIsolationForMainActorModel() async {
+        if #unavailable(iOS 26.0, macOS 26.0) {
+            return
+        }
+
+        let model = MainActorCounterModel()
+        let queue = ValueQueue<Int>()
+        let handle = model.observeTask(\.value, options: [.removeDuplicates]) {
+            MainActor.assertIsolated()
+            await queue.push(1)
+        }
+        defer { handle.cancel() }
+
+        #expect(await nextWithTimeout(from: queue) == 1)
 
         model.value = 1
         #expect(await nextWithTimeout(from: queue) == 1)
@@ -1690,7 +1857,7 @@ struct ObservationsCompatTests {
             }
             weakModel = model
 
-            model.observeTask(\.value, options: []) { _ in
+            model.observeTask(\.value, options: []) {
             }
         }
 
