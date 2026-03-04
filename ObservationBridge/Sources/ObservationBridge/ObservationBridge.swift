@@ -718,6 +718,380 @@ public extension Observable where Self: AnyObject {
     }
 }
 
+public extension Observable where Self: AnyObject {
+    @discardableResult
+    func observe<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            onChange: makeNonSendableOnChangeAdapter(onChange)
+        )
+    }
+
+    @discardableResult
+    func observe<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            onChange: { _ in
+                await onChange()
+            }
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            onChange: makeNonSendableOnChangeAdapter(onChange)
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable () -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            onChange: { _ in
+                await onChange()
+            }
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            task: makeNonSendableTaskAdapter(task)
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            task: { _ in
+                await task()
+            }
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            task: makeNonSendableTaskAdapter(task)
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Equatable>(
+        _ keyPath: sending KeyPath<Self, Value>,
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable () async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let getter = makeKeyPathGetter(keyPath)
+        let producerIsolation = getter.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: getter,
+            task: { _ in
+                await task()
+            }
+        )
+    }
+
+    @discardableResult
+    func observe<Value>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping @Sendable (Self) -> Value,
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
+        let producerIsolation = projection.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:of:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: projection,
+            onChange: makeNonSendableOnChangeAdapter(onChange)
+        )
+    }
+
+    @discardableResult
+    func observe<Value: Equatable>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping @Sendable (Self) -> Value,
+        @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
+        let producerIsolation = projection.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: onChange.isolation,
+            operation: "observe(_:options:clock:of:onChange:isolation:)"
+        )
+
+        return observeImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: projection,
+            onChange: makeNonSendableOnChangeAdapter(onChange)
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping @Sendable (Self) -> Value,
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
+        let producerIsolation = projection.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:of:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: projection,
+            task: makeNonSendableTaskAdapter(task)
+        )
+    }
+
+    @discardableResult
+    func observeTask<Value: Equatable>(
+        _ keyPaths: sending [PartialKeyPath<Self>],
+        options: ObservationOptions = [],
+        clock: any Clock<Duration> = ContinuousClock(),
+        of value: @escaping @Sendable (Self) -> Value,
+        @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending Value) async -> Void,
+        isolation: isolated (any Actor)? = #isolation
+    ) -> ObservationHandle {
+        let projection = makeAnyKeyPathsValueGetter(keyPaths, of: value)
+        let producerIsolation = projection.isolation ?? isolation
+        preconditionNonSendableSameIsolation(
+            producerIsolation: producerIsolation,
+            consumerIsolation: task.isolation,
+            operation: "observeTask(_:options:clock:of:task:isolation:)"
+        )
+
+        return observeTaskImplNonSendable(
+            owner: self,
+            options: options,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock,
+            isolation: isolation,
+            of: projection,
+            task: makeNonSendableTaskAdapter(task)
+        )
+    }
+}
+
 // KeyPath / PartialKeyPath are immutable metadata; wrapping allows safe capture in @Sendable closures.
 private struct _UncheckedSendableKeyPath<Owner: AnyObject, Value>: @unchecked Sendable {
     let keyPath: KeyPath<Owner, Value>
@@ -727,7 +1101,32 @@ private struct _UncheckedSendablePartialKeyPaths<Owner: AnyObject>: @unchecked S
     let keyPaths: [PartialKeyPath<Owner>]
 }
 
-private func makeKeyPathGetter<Owner: AnyObject, Value: Sendable>(
+private func hasSameObservationIsolation(
+    _ lhs: (any Actor)?,
+    _ rhs: (any Actor)?
+) -> Bool {
+    switch (lhs, rhs) {
+    case (nil, nil):
+        return true
+    case let (lhs?, rhs?):
+        return ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+    default:
+        return false
+    }
+}
+
+private func preconditionNonSendableSameIsolation(
+    producerIsolation: (any Actor)?,
+    consumerIsolation: (any Actor)?,
+    operation: StaticString
+) {
+    precondition(
+        hasSameObservationIsolation(producerIsolation, consumerIsolation),
+        "\(operation): non-Sendable observation requires producer and consumer closures to share the same actor isolation"
+    )
+}
+
+private func makeKeyPathGetter<Owner: AnyObject, Value>(
     _ keyPath: sending KeyPath<Owner, Value>
 ) -> @isolated(any) @Sendable (Owner) -> Value {
     let keyPath = _UncheckedSendableKeyPath(keyPath: keyPath)
@@ -747,7 +1146,7 @@ private func makeAnyKeyPathsTriggerGetter<Owner: AnyObject>(
     }
 }
 
-private func makeAnyKeyPathsValueGetter<Owner: AnyObject, Value: Sendable>(
+private func makeAnyKeyPathsValueGetter<Owner: AnyObject, Value>(
     _ keyPaths: sending [PartialKeyPath<Owner>],
     of value: @escaping @Sendable (Owner) -> Value
 ) -> @isolated(any) @Sendable (Owner) -> Value {
@@ -765,6 +1164,22 @@ private func makeOnChangeAdapter<Value>(
 ) -> @isolated(any) @Sendable (sending Value) async -> Void {
     { value in
         await onChange(value)
+    }
+}
+
+private func makeNonSendableOnChangeAdapter<Value>(
+    _ onChange: @escaping @isolated(any) @Sendable (sending Value) -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
+    { boxedValue in
+        await onChange(boxedValue.value)
+    }
+}
+
+private func makeNonSendableTaskAdapter<Value>(
+    _ task: @escaping @isolated(any) @Sendable (sending Value) async -> Void
+) -> @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void {
+    { boxedValue in
+        await task(boxedValue.value)
     }
 }
 
@@ -801,6 +1216,65 @@ func makeObservationStream<Value: Sendable>(
         streamWithDebounce,
         isDuplicate: duplicateFilter
     )
+}
+
+func makeObservationStream<Value>(
+    options: ObservationOptions = [],
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
+    isolation: isolated (any Actor)? = #isolation,
+    duplicateFilter: (@Sendable (Value, Value) -> Bool)? = nil,
+    debounce: ObservationDebounce? = nil,
+    debounceClock: any Clock<Duration> = ContinuousClock()
+) -> AsyncStream<Value> {
+    _ = options
+
+    let boxedObserve: @isolated(any) @Sendable () -> _UncheckedSendableValueBox<Value> = {
+        _UncheckedSendableValueBox(
+            _ObservationBridgeLegacy.legacyEvaluateObservedValue(observe: observe)
+        )
+    }
+    let boxedDuplicateFilter: (@Sendable (_UncheckedSendableValueBox<Value>, _UncheckedSendableValueBox<Value>) -> Bool)?
+    if let duplicateFilter {
+        boxedDuplicateFilter = { lhs, rhs in
+            duplicateFilter(lhs.value, rhs.value)
+        }
+    } else {
+        boxedDuplicateFilter = nil
+    }
+
+    let boxedStream = makeLegacyObservationStream(
+        boxedObserve,
+        isDuplicate: boxedDuplicateFilter,
+        isolation: observe.isolation ?? isolation
+    )
+    let stream = AsyncStream<Value> { continuation in
+        let task = Task {
+            for await boxedValue in boxedStream {
+                if Task.isCancelled {
+                    break
+                }
+                continuation.yield(boxedValue.value)
+            }
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
+
+    let streamWithDebounce: AsyncStream<Value>
+    if let debounce {
+        streamWithDebounce = makeDebouncedValueStreamNonSendable(
+            stream,
+            debounce: debounce,
+            debounceClock: debounceClock
+        )
+    } else {
+        streamWithDebounce = stream
+    }
+
+    return streamWithDebounce
 }
 
 private func makeRawObservationStream<Value: Sendable>(
@@ -918,7 +1392,7 @@ private func drainNativeObservationValues<Value: Sendable>(
     }
 }
 
-public struct ObservationBridge<Value: Sendable>: AsyncSequence, Sendable {
+public struct ObservationBridge<Value>: AsyncSequence {
     public typealias Element = Value
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -962,6 +1436,28 @@ public struct ObservationBridge<Value: Sendable>: AsyncSequence, Sendable {
     }
 }
 
+extension ObservationBridge: Sendable where Value: Sendable {}
+
+public extension ObservationBridge where Value: Sendable {
+    init(
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        if options.contains(.removeDuplicates) {
+            preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
+        }
+
+        self.init(stream: makeObservationStream(
+            options: options,
+            observe,
+            duplicateFilter: nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
+    }
+}
+
 public extension ObservationBridge where Value: Equatable {
     init(
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
@@ -987,13 +1483,68 @@ public extension ObservationBridge where Value: Equatable {
     }
 }
 
+public extension ObservationBridge where Value: Sendable & Equatable {
+    init(
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self.init(
+            options: [.removeDuplicates],
+            observe
+        )
+    }
+
+    init(
+        options: ObservationOptions,
+        clock: any Clock<Duration> = ContinuousClock(),
+        @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+    ) {
+        self.init(stream: makeObservationStream(
+            options: options,
+            observe,
+            duplicateFilter: options.contains(.removeDuplicates) ? { @Sendable lhs, rhs in lhs == rhs } : nil,
+            debounce: options.debounceForObservation,
+            debounceClock: clock
+        ))
+    }
+}
+
+public func makeObservationBridgeStream<Value: Equatable>(
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    ObservationBridge(observe)
+}
+
 public func makeObservationBridgeStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
 ) -> ObservationBridge<Value> {
     ObservationBridge(observe)
 }
 
+public func makeObservationBridgeStream<Value>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    ObservationBridge(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
 public func makeObservationBridgeStream<Value: Sendable>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    ObservationBridge(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+public func makeObservationBridgeStream<Value: Equatable>(
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value

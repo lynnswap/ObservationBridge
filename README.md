@@ -147,6 +147,7 @@ Both APIs:
 
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
+- support non-`Sendable` observed values when producer and consumer closures share the same actor isolation
 - require retaining the returned `ObservationHandle` to keep observation active
 - cancel automatically if the observed owner is released
 
@@ -156,6 +157,8 @@ Backend behavior note:
 - `.legacyBackend` forces legacy behavior on `iOS/macOS 26.0+`
 - legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
 - native uses Swift `Observations` transaction semantics; both backends preserve `latest wins` cancellation for `observeTask`
+- non-`Sendable` values always use the legacy backend, even on `iOS/macOS 26.0+`
+- non-`Sendable` observation preconditions producer/callback isolation equality; mismatch traps at runtime
 - `latest wins` means newer values are prioritized; when a running task is cancelled, completion timing depends on cooperative cancellation in user task code
 - keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
 - `cancel()` does not remove handles from your `Set`; remove them explicitly if desired

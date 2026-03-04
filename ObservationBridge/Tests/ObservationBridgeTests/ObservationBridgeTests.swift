@@ -56,6 +56,20 @@ private final class MainActorCounterModel {
     var value: Int = 0
 }
 
+private final class NonSendablePayload {
+    let value: Int
+
+    init(value: Int) {
+        self.value = value
+    }
+}
+
+@MainActor
+@Observable
+private final class MainActorNonSendablePayloadModel {
+    var payload = NonSendablePayload(value: 0)
+}
+
 private struct CounterSnapshot: Sendable, Equatable {
     let value: Int
     let isEnabled: Bool
@@ -423,6 +437,21 @@ private func waitUntilValueReceived<Value: Sendable & Equatable>(
         }
     }
     return reached == true
+}
+
+@MainActor
+private func waitUntilMainActorCondition(
+    nanoseconds: UInt64 = 5_000_000_000,
+    _ condition: @MainActor () -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock().now + .nanoseconds(Int64(nanoseconds))
+    while ContinuousClock().now < deadline {
+        if condition() {
+            return true
+        }
+        await Task.yield()
+    }
+    return condition()
 }
 
 private actor StressFailureRecorder {
@@ -1949,6 +1978,74 @@ struct ObservationBridgeTests {
 
         model.value = 42
         #expect(await nextWithTimeout(from: queue) == 42)
+    }
+
+    @Test
+    func observeSupportsNonSendableValuesOnMainActorIsolation() async {
+        let model = MainActorNonSendablePayloadModel()
+        var observedValues: [Int] = []
+
+        let handle = model.observe(\.payload, options: []) { payload in
+            MainActor.assertIsolated()
+            observedValues.append(payload.value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
+        #expect(observedValues.first == 0)
+
+        model.payload = NonSendablePayload(value: 1)
+        #expect(await waitUntilMainActorCondition { observedValues.count == 2 })
+        #expect(observedValues.prefix(2).elementsEqual([0, 1]))
+    }
+
+    @Test
+    func observeTaskSupportsNonSendableValuesOnMainActorIsolation() async {
+        let model = MainActorNonSendablePayloadModel()
+        var observedValues: [Int] = []
+
+        let handle = model.observeTask(\.payload, options: []) { payload in
+            MainActor.assertIsolated()
+            observedValues.append(payload.value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
+        #expect(observedValues.first == 0)
+
+        model.payload = NonSendablePayload(value: 2)
+        #expect(await waitUntilMainActorCondition { observedValues.count == 2 })
+        #expect(observedValues.prefix(2).elementsEqual([0, 2]))
+    }
+
+    @Test
+    func observationBridgeSupportsNonSendableValuesOnMainActorIsolation() async {
+        let model = MainActorNonSendablePayloadModel()
+        let stream = ObservationBridge(options: []) {
+            model.payload
+        }
+
+        var observedValues: [Int] = []
+        let consumer = Task { @MainActor in
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let payload = await iterator.next() {
+                observedValues.append(payload.value)
+                if observedValues.count >= 2 {
+                    break
+                }
+            }
+        }
+        defer { consumer.cancel() }
+
+        #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
+        #expect(observedValues.first == 0)
+
+        model.payload = NonSendablePayload(value: 3)
+        #expect(await waitUntilMainActorCondition { observedValues.count >= 2 })
+        #expect(observedValues.prefix(2).elementsEqual([0, 3]))
+
+        consumer.cancel()
+        await consumer.value
     }
 
     @Test

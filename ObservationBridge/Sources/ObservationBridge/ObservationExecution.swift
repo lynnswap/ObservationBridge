@@ -3,10 +3,12 @@ import Observation
 internal import _ObservationBridgeLegacy
 import Synchronization
 
-private enum OwnerValueEmission<Value: Sendable>: Sendable {
+private enum OwnerValueEmission<Value> {
     case value(Value)
     case ownerGone
 }
+
+extension OwnerValueEmission: Sendable where Value: Sendable {}
 
 private struct ObservedValueChannel<Value: Sendable>: Sendable {
     let channel: AsyncChannel<Value>
@@ -18,6 +20,14 @@ private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var activeOperationID: UInt64? = nil
     var nextOperationID: UInt64 = 0
     var pendingLatestValue: Value? = nil
+    var isCancelled = false
+}
+
+private struct ObserveTaskExecutionStateNonSendable<Value> {
+    var activeOperationTask: Task<Void, Never>? = nil
+    var activeOperationID: UInt64? = nil
+    var nextOperationID: UInt64 = 0
+    var pendingLatestValue: _UncheckedSendableValueBox<Value>? = nil
     var isCancelled = false
 }
 
@@ -43,6 +53,39 @@ private struct DuplicateEmissionState<Value: Sendable>: Sendable {
         }
         previous = .value(value)
         return true
+    }
+}
+
+private struct DuplicateEmissionStateNonSendable<Value> {
+    private enum Previous {
+        case none
+        case value(Value)
+    }
+
+    private var previous: Previous = .none
+    let isDuplicate: (@Sendable (Value, Value) -> Bool)?
+
+    init(isDuplicate: (@Sendable (Value, Value) -> Bool)?) {
+        self.isDuplicate = isDuplicate
+    }
+
+    mutating func shouldEmit(_ value: Value) -> Bool {
+        if case let .value(previousValue) = previous,
+           let isDuplicate,
+           isDuplicate(previousValue, value)
+        {
+            return false
+        }
+        previous = .value(value)
+        return true
+    }
+}
+
+final class _UncheckedSendableValueBox<Value>: @unchecked Sendable {
+    let value: Value
+
+    init(_ value: Value) {
+        self.value = value
     }
 }
 
@@ -99,6 +142,71 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
                     continue
                 }
                 await onChange(observedValue)
+            }
+        }
+    }
+
+    let handle = ObservationHandle {
+        monitorTask.cancel()
+    }
+    handle.box.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
+
+    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    return handle
+}
+
+func observeImplNonSendable<Owner: AnyObject, Value>(
+    owner: Owner,
+    options: ObservationOptions,
+    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
+    debounce: ObservationDebounce?,
+    debounceClock: any Clock<Duration>,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    @_inheritActorContext onChange: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
+) -> ObservationHandle {
+    _ = options
+
+    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let monitorTask = Task {
+        defer {
+            WeakOwnerRegistry.removeToken(ownerToken)
+        }
+
+        let observedValues = makeObservedValueStreamNonSendable(
+            ownerToken: ownerToken,
+            isolation: isolation,
+            of: value
+        )
+
+        var duplicateState = DuplicateEmissionStateNonSendable(isDuplicate: duplicateFilter)
+
+        if let debounce {
+            let debouncedValues = makeDebouncedValueStreamNonSendable(
+                observedValues,
+                debounce: debounce,
+                debounceClock: debounceClock
+            )
+            for await observedValue in debouncedValues {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
+                }
+                await onChange(_UncheckedSendableValueBox(observedValue))
+            }
+        } else {
+            for await observedValue in observedValues {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
+                }
+                await onChange(_UncheckedSendableValueBox(observedValue))
             }
         }
     }
@@ -296,6 +404,185 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     return handle
 }
 
+func observeTaskImplNonSendable<Owner: AnyObject, Value>(
+    owner: Owner,
+    options: ObservationOptions,
+    duplicateFilter: (@Sendable (Value, Value) -> Bool)?,
+    debounce: ObservationDebounce?,
+    debounceClock: any Clock<Duration>,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value,
+    @_inheritActorContext task: @escaping @isolated(any) @Sendable (sending _UncheckedSendableValueBox<Value>) async -> Void
+) -> ObservationHandle {
+    _ = options
+
+    let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
+    let observeTaskState = Mutex(ObserveTaskExecutionStateNonSendable<Value>())
+    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+
+    let operationDidFinish: @Sendable (UInt64) -> Void = { operationID in
+        let shouldWake = observeTaskState.withLock { state in
+            guard state.activeOperationID == operationID else {
+                return false
+            }
+
+            state.activeOperationTask = nil
+            state.activeOperationID = nil
+            guard !state.isCancelled else {
+                return false
+            }
+            return state.pendingLatestValue != nil
+        }
+
+        if shouldWake {
+            operationWakeSignal.yield(())
+        }
+    }
+
+    let shutdownObserveTaskExecution: @Sendable () -> Void = {
+        let activeTask: Task<Void, Never>? = observeTaskState.withLock { state -> Task<Void, Never>? in
+            guard !state.isCancelled else {
+                return nil
+            }
+
+            state.isCancelled = true
+            state.pendingLatestValue = nil
+            state.activeOperationID = nil
+            let activeTask = state.activeOperationTask
+            state.activeOperationTask = nil
+            return activeTask
+        }
+
+        activeTask?.cancel()
+        operationWakeSignal.finish()
+    }
+
+    let enqueueLatestValue: @Sendable (sending _UncheckedSendableValueBox<Value>) -> Bool = { observedValue in
+        let transition: (accepted: Bool, activeTask: Task<Void, Never>?) = observeTaskState.withLock { state -> (accepted: Bool, activeTask: Task<Void, Never>?) in
+            guard !state.isCancelled else {
+                return (accepted: false, activeTask: nil)
+            }
+
+            state.pendingLatestValue = observedValue
+            let activeTask = state.activeOperationTask
+            if activeTask != nil {
+                state.activeOperationTask = nil
+                state.activeOperationID = nil
+            }
+            return (accepted: true, activeTask: activeTask)
+        }
+
+        guard transition.accepted else {
+            return false
+        }
+
+        transition.activeTask?.cancel()
+        operationWakeSignal.yield(())
+        return true
+    }
+
+    let drainTask = Task {
+        for await _ in operationWakeStream {
+            guard !Task.isCancelled else {
+                break
+            }
+
+            while true {
+                let startedOperation: Bool = observeTaskState.withLock { state -> Bool in
+                    guard !state.isCancelled else {
+                        return false
+                    }
+                    guard state.activeOperationTask == nil, let nextValue = state.pendingLatestValue else {
+                        return false
+                    }
+
+                    state.pendingLatestValue = nil
+                    let operationID = state.nextOperationID
+                    state.nextOperationID &+= 1
+                    let operation = Task {
+                        await task(nextValue)
+                        operationDidFinish(operationID)
+                    }
+                    state.activeOperationID = operationID
+                    state.activeOperationTask = operation
+                    return true
+                }
+
+                guard startedOperation else {
+                    break
+                }
+            }
+        }
+
+        let remainingTask: Task<Void, Never>? = observeTaskState.withLock { state -> Task<Void, Never>? in
+            let remainingTask = state.activeOperationTask
+            state.activeOperationTask = nil
+            state.activeOperationID = nil
+            return remainingTask
+        }
+        remainingTask?.cancel()
+    }
+
+    let monitorTask = Task {
+        defer {
+            WeakOwnerRegistry.removeToken(ownerToken)
+        }
+
+        let observedValues = makeObservedValueStreamNonSendable(
+            ownerToken: ownerToken,
+            isolation: isolation,
+            of: value
+        )
+
+        var duplicateState = DuplicateEmissionStateNonSendable(isDuplicate: duplicateFilter)
+
+        if let debounce {
+            let debouncedValues = makeDebouncedValueStreamNonSendable(
+                observedValues,
+                debounce: debounce,
+                debounceClock: debounceClock
+            )
+            for await observedValue in debouncedValues {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
+                }
+                guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
+                    break
+                }
+            }
+        } else {
+            for await observedValue in observedValues {
+                guard !Task.isCancelled else {
+                    break
+                }
+                guard duplicateState.shouldEmit(observedValue) else {
+                    continue
+                }
+                guard enqueueLatestValue(_UncheckedSendableValueBox(observedValue)) else {
+                    break
+                }
+            }
+        }
+
+        shutdownObserveTaskExecution()
+    }
+
+    let handle = ObservationHandle {
+        monitorTask.cancel()
+        drainTask.cancel()
+        shutdownObserveTaskExecution()
+    }
+    handle.box.addCancellationHandler {
+        WeakOwnerRegistry.removeToken(ownerToken)
+    }
+
+    OwnerCancellationRegistry.register(handle.box, owner: owner)
+    return handle
+}
+
 private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
     ownerToken: UInt64,
     options: ObservationOptions,
@@ -329,6 +616,54 @@ private func makeObservedValueChannel<Owner: AnyObject, Value: Sendable>(
         channel: channel,
         producerTask: producerTask
     )
+}
+
+private func makeObservedValueStreamNonSendable<Owner: AnyObject, Value>(
+    ownerToken: UInt64,
+    isolation: (any Actor)?,
+    @_inheritActorContext of value: @escaping @isolated(any) @Sendable (Owner) -> Value
+) -> AsyncStream<Value> {
+    let resolvedIsolation = value.isolation ?? isolation
+    let observeOwnerValue: @isolated(any) @Sendable () -> OwnerValueEmission<_UncheckedSendableValueBox<Value>> = {
+        switch _ObservationBridgeLegacy.legacyEvaluateObservedOwnerValue(
+            owner: WeakOwnerRegistry.owner(token: ownerToken) as? Owner,
+            value: value,
+            map: _UncheckedSendableValueBox.init
+        ) {
+        case .ownerGone:
+            return .ownerGone
+        case .value(let observedValue):
+            return .value(observedValue)
+        }
+    }
+
+    let stream = makeLegacyObservationStream(
+        observeOwnerValue,
+        isDuplicate: nil,
+        isolation: resolvedIsolation
+    )
+    return AsyncStream { continuation in
+        let task = Task {
+            for await emission in stream {
+                guard !Task.isCancelled else {
+                    break
+                }
+
+                switch emission {
+                case .ownerGone:
+                    continuation.finish()
+                    return
+                case .value(let observedValue):
+                    continuation.yield(observedValue.value)
+                }
+            }
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
 }
 
 func makeDebouncedValueStream<S: AsyncSequence & Sendable>(
@@ -427,6 +762,79 @@ func makeDebouncedValueStream<S: AsyncSequence & Sendable, C: Clock<Duration>>(
             continuation.onTermination = { _ in
                 task.cancel()
             }
+        }
+    }
+}
+
+func makeDebouncedValueStreamNonSendable<S: AsyncSequence>(
+    _ source: S,
+    debounce: ObservationDebounce,
+    debounceClock: any Clock<Duration>
+) -> AsyncStream<S.Element> {
+    makeDebouncedValueStreamNonSendable(
+        source,
+        debounce: debounce,
+        clock: debounceClock
+    )
+}
+
+func makeDebouncedValueStreamNonSendable<S: AsyncSequence, C: Clock<Duration>>(
+    _ source: S,
+    debounce: ObservationDebounce,
+    clock: C
+) -> AsyncStream<S.Element> {
+    let boxedSource = makeUncheckedSendableBoxedStream(source)
+    let debouncedBoxes = makeDebouncedValueStream(
+        boxedSource,
+        debounce: debounce,
+        clock: clock
+    )
+    return makeUncheckedSendableUnboxedStream(debouncedBoxes)
+}
+
+private func makeUncheckedSendableBoxedStream<S: AsyncSequence>(
+    _ source: S
+) -> AsyncStream<_UncheckedSendableValueBox<S.Element>> {
+    let sourceBox = _UncheckedSendableValueBox(source)
+    return AsyncStream { continuation in
+        let task = Task {
+            do {
+                var iterator = sourceBox.value.makeAsyncIterator()
+                while let nextValue = try await iterator.next() {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    continuation.yield(_UncheckedSendableValueBox(nextValue))
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish()
+                preconditionFailure("source unexpectedly threw")
+            }
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
+}
+
+private func makeUncheckedSendableUnboxedStream<Element>(
+    _ source: AsyncStream<_UncheckedSendableValueBox<Element>>
+) -> AsyncStream<Element> {
+    AsyncStream { continuation in
+        let task = Task {
+            for await boxedValue in source {
+                guard !Task.isCancelled else {
+                    break
+                }
+                continuation.yield(boxedValue.value)
+            }
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
         }
     }
 }
