@@ -12,6 +12,10 @@ let package = Package(
         .library(
             name: "ObservationBridge",
             targets: ["ObservationBridge"]
+        ),
+        .library(
+            name: "ObservationsCompat",
+            targets: ["ObservationBridge"]
         )
     ],
     dependencies: [
