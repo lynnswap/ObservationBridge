@@ -1716,21 +1716,21 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskKeepsObservationWithoutHandle() async {
-#if canImport(ObjectiveC)
+    func observeTaskStopsAfterHandleRelease() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
-
-        model.observeTask(\.value, options: []) { value in
+        var handle: ObservationHandle? = model.observeTask(\.value, options: []) { value in
             await queue.push(value)
         }
 
         #expect(await nextWithTimeout(from: queue) == 0)
+        #expect(handle != nil)
+
+        handle = nil
+        await Task.yield()
+
         model.value = 9
-        #expect(await nextWithTimeout(from: queue) == 9)
-#else
-        return
-#endif
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
     }
 
     @Test

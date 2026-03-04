@@ -7,6 +7,9 @@ It provides two usage styles:
 - owner-bound callbacks: `observe` / `observeTask`
 - `AsyncSequence` wrappers: `ObservationBridge` / `makeObservationBridgeStream`
 
+`observe` / `observeTask` return an `ObservationHandle`.
+Retain the handle while observation should stay active.
+
 ## Requirements
 
 - Swift 6.2
@@ -20,9 +23,12 @@ It provides two usage styles:
 ```swift
 import ObservationBridge
 
+var cancellables = Set<ObservationHandle>()
+
 model.observe(\.count) { value in
-    print("count = \(value)")
+    analytics.markCountChanged(value)
 }
+.store(in: &cancellables)
 ```
 
 ### Async updates (`observeTask`)
@@ -30,48 +36,18 @@ model.observe(\.count) { value in
 ```swift
 import ObservationBridge
 
+var cancellables = Set<ObservationHandle>()
+
 model.observeTask(\.count) { value in
     await analytics.trackCount(value)
 }
-```
-
-### Single key path (no-arg callback)
-
-```swift
-model.observe(\.count) {
-    analytics.markCountChanged()
-}
-
-model.observeTask(\.count) {
-    await analytics.markCountChangedAsync()
-}
-```
-
-### Optional key path values
-
-```swift
-model.observe(\.selectedID, options: [.removeDuplicates]) { selectedID in
-    print("selectedID = \(String(describing: selectedID))")
-}
-```
-
-### Early stop with `ObservationHandle`
-
-```swift
-import ObservationBridge
-
-let handle = model.observe(\.count) { value in
-    print("count = \(value)")
-}
-
-// Stop observation when needed.
-handle.cancel()
+.store(in: &cancellables)
 ```
 
 ### Multiple key paths (trigger-only)
 
 ```swift
-model.observeTask([\.count, \.isEnabled]) {
+let stateChangeHandle = model.observeTask([\.count, \.isEnabled]) {
     await analytics.trackStateChanged()
 }
 ```
@@ -79,7 +55,7 @@ model.observeTask([\.count, \.isEnabled]) {
 ### Multiple key paths with value projection
 
 ```swift
-model.observeTask(
+let stateProjectionHandle = model.observeTask(
     [\.count, \.isEnabled],
     options: [.removeDuplicates],
     of: { owner in
@@ -152,29 +128,18 @@ for await value in stream {
 }
 ```
 
-## Manual Handle Retention
+## Direct Handle Control
 
-If you want Combine-like explicit lifetime control, retain handles in `Set<ObservationHandle>`:
+Use direct handle retention if you prefer property-based lifetime control:
 
 ```swift
-var cancellables = Set<ObservationHandle>()
-
-model.observe(\.count) { value in
-    analytics.markCountChanged(value)
+let countHandle = model.observe(\.count) { value in
+    print("count = \(value)")
 }
-.store(in: &cancellables)
 
-model.observeTask(\.count) { value in
-    await analytics.markCountChangedAsync(value)
-}
-.store(in: &cancellables)
-
-// Stop all retained observations early.
-cancellables.removeAll()
+// Stop observation when needed.
+countHandle.cancel()
 ```
-
-Calling `.store(in:)` switches that handle from owner-lifetime automatic retention to explicit `Set`-managed retention.
-Stored handles are still cancelled automatically if the observed owner is released.
 
 ## Behavior Notes
 
@@ -182,8 +147,8 @@ Both APIs:
 
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
-- are retained for the owner's lifetime and auto-cancel when the owner is released
-- calling `.store(in:)` opts a handle into explicit `Set`-managed lifetime instead of owner-lifetime automatic retention
+- require retaining the returned `ObservationHandle` to keep observation active
+- cancel automatically if the observed owner is released
 
 Backend behavior note:
 
@@ -192,5 +157,11 @@ Backend behavior note:
 - legacy coalesces burst mutations and emits the latest observed value instead of replaying every intermediate mutation
 - native uses Swift `Observations` transaction semantics; both backends preserve `latest wins` cancellation for `observeTask`
 - `latest wins` means newer values are prioritized; when a running task is cancelled, completion timing depends on cooperative cancellation in user task code
-- keeping the returned `ObservationHandle` is optional; use `cancel()` only when early stop is needed
+- keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
 - `cancel()` does not remove handles from your `Set`; remove them explicitly if desired
+
+## Compatibility Note for v0.5.0
+
+- Up to `v0.4.x`, `observe` / `observeTask` included owner-lifetime automatic handle retention.
+- Starting with `v0.5.0`, automatic handle retention is no longer supported.
+- Retain the returned `ObservationHandle` explicitly (for example, a stored property or `Set<ObservationHandle>`), or observation will stop when the handle is released.

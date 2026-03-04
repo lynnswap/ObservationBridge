@@ -4,23 +4,21 @@ import Synchronization
 import ObjectiveC
 #endif
 
-enum AutomaticRetentionRegistry {
+enum OwnerCancellationRegistry {
 #if canImport(ObjectiveC)
     private static let storeLock = Mutex(())
     nonisolated(unsafe) private static var lifetimeStoreKey: UInt8 = 0
 #endif
 
-    static func retain(
+    static func register(
         _ box: ObservationHandleBox,
         owner: AnyObject
     ) {
 #if canImport(ObjectiveC)
         let boxID = ObjectIdentifier(box)
         let store = loadOrCreateStore(owner: owner)
-        store.insert(box, id: boxID)
-
-        box.setAutomaticRetentionDetacher { [weak store] in
-            store?.disableStrongRetention(id: boxID)
+        store.insertCancellationHandler(id: boxID) { [weak box] in
+            box?.cancel()
         }
 
         box.addCancellationHandler { [weak store] in
@@ -33,16 +31,16 @@ enum AutomaticRetentionRegistry {
     }
 
 #if canImport(ObjectiveC)
-    private static func loadOrCreateStore(owner: AnyObject) -> ObservationLifetimeStore {
+    private static func loadOrCreateStore(owner: AnyObject) -> ObservationOwnerCancellationStore {
         storeLock.withLock { (_: inout ()) in
-            if let existing = unsafe objc_getAssociatedObject(owner, &lifetimeStoreKey) as? ObservationLifetimeStore {
+            if let existing = unsafe objc_getAssociatedObject(owner, &lifetimeStoreKey) as? ObservationOwnerCancellationStore {
                 return existing
             }
 
-            let store = ObservationLifetimeStore()
+            let store = ObservationOwnerCancellationStore()
             unsafe objc_setAssociatedObject(owner, &lifetimeStoreKey, store, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-            guard let attached = unsafe objc_getAssociatedObject(owner, &lifetimeStoreKey) as? ObservationLifetimeStore else {
-                preconditionFailure("automatic retention is unsupported for this owner type")
+            guard let attached = unsafe objc_getAssociatedObject(owner, &lifetimeStoreKey) as? ObservationOwnerCancellationStore else {
+                preconditionFailure("owner cancellation registration is unsupported for this owner type")
             }
             return attached
         }

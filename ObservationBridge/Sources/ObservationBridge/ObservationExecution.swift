@@ -58,6 +58,10 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let monitorTask = Task {
+        defer {
+            WeakOwnerRegistry.removeToken(ownerToken)
+        }
+
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
@@ -106,7 +110,7 @@ func observeImpl<Owner: AnyObject, Value: Sendable>(
         WeakOwnerRegistry.removeToken(ownerToken)
     }
 
-    AutomaticRetentionRegistry.retain(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle.box, owner: owner)
     return handle
 }
 
@@ -228,6 +232,10 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     }
 
     let monitorTask = Task {
+        defer {
+            WeakOwnerRegistry.removeToken(ownerToken)
+        }
+
         let observedValues = makeObservedValueChannel(
             ownerToken: ownerToken,
             options: options,
@@ -284,7 +292,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
         WeakOwnerRegistry.removeToken(ownerToken)
     }
 
-    AutomaticRetentionRegistry.retain(handle.box, owner: owner)
+    OwnerCancellationRegistry.register(handle.box, owner: owner)
     return handle
 }
 

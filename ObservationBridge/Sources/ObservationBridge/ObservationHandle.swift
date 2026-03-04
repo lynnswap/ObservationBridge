@@ -20,7 +20,6 @@ public struct ObservationHandle: Sendable, Hashable {
     }
 
     public func store(in set: inout Set<ObservationHandle>) {
-        box.detachAutomaticRetention()
         set.insert(self)
     }
 }
@@ -29,37 +28,12 @@ final class ObservationHandleBox: Sendable {
     private struct State {
         var isCancelled = false
         var handlers: [@Sendable () -> Void]
-        var automaticRetentionDetacher: (@Sendable () -> Void)?
     }
 
     private let state: Mutex<State>
 
     init(handlers: [@Sendable () -> Void]) {
-        state = Mutex(State(handlers: handlers, automaticRetentionDetacher: nil))
-    }
-
-    func setAutomaticRetentionDetacher(_ detacher: @escaping @Sendable () -> Void) {
-        let shouldRunImmediately = state.withLock { state in
-            if state.isCancelled {
-                return true
-            }
-
-            state.automaticRetentionDetacher = detacher
-            return false
-        }
-
-        if shouldRunImmediately {
-            detacher()
-        }
-    }
-
-    func detachAutomaticRetention() {
-        let detacher = state.withLock { state in
-            let detacher = state.automaticRetentionDetacher
-            state.automaticRetentionDetacher = nil
-            return detacher
-        }
-        detacher?()
+        state = Mutex(State(handlers: handlers))
     }
 
     func addCancellationHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -83,7 +57,6 @@ final class ObservationHandleBox: Sendable {
             }
 
             state.isCancelled = true
-            state.automaticRetentionDetacher = nil
             let handlers = state.handlers
             state.handlers = []
             return handlers
