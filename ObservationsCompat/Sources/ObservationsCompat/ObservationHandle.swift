@@ -1,14 +1,27 @@
 import Synchronization
 
-public struct ObservationHandle: Sendable {
+public struct ObservationHandle: Sendable, Hashable {
     let box: ObservationHandleBox
 
     init(onCancel: @escaping @Sendable () -> Void) {
         box = ObservationHandleBox(handlers: [onCancel])
     }
 
+    public static func == (lhs: ObservationHandle, rhs: ObservationHandle) -> Bool {
+        ObjectIdentifier(lhs.box) == ObjectIdentifier(rhs.box)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(box))
+    }
+
     public func cancel() {
         box.cancel()
+    }
+
+    public func store(in set: inout Set<ObservationHandle>) {
+        box.detachAutomaticRetention()
+        set.insert(self)
     }
 }
 
@@ -16,12 +29,37 @@ final class ObservationHandleBox: Sendable {
     private struct State {
         var isCancelled = false
         var handlers: [@Sendable () -> Void]
+        var automaticRetentionDetacher: (@Sendable () -> Void)?
     }
 
     private let state: Mutex<State>
 
     init(handlers: [@Sendable () -> Void]) {
-        state = Mutex(State(handlers: handlers))
+        state = Mutex(State(handlers: handlers, automaticRetentionDetacher: nil))
+    }
+
+    func setAutomaticRetentionDetacher(_ detacher: @escaping @Sendable () -> Void) {
+        let shouldRunImmediately = state.withLock { state in
+            if state.isCancelled {
+                return true
+            }
+
+            state.automaticRetentionDetacher = detacher
+            return false
+        }
+
+        if shouldRunImmediately {
+            detacher()
+        }
+    }
+
+    func detachAutomaticRetention() {
+        let detacher = state.withLock { state in
+            let detacher = state.automaticRetentionDetacher
+            state.automaticRetentionDetacher = nil
+            return detacher
+        }
+        detacher?()
     }
 
     func addCancellationHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -45,6 +83,7 @@ final class ObservationHandleBox: Sendable {
             }
 
             state.isCancelled = true
+            state.automaticRetentionDetacher = nil
             let handlers = state.handlers
             state.handlers = []
             return handlers

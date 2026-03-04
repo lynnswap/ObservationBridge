@@ -152,6 +152,30 @@ for await value in stream {
 }
 ```
 
+## Manual Handle Retention
+
+If you want Combine-like explicit lifetime control, retain handles in `Set<ObservationHandle>`:
+
+```swift
+var cancellables = Set<ObservationHandle>()
+
+model.observe(\.count) { value in
+    analytics.markCountChanged(value)
+}
+.store(in: &cancellables)
+
+model.observeTask(\.count) { value in
+    await analytics.markCountChangedAsync(value)
+}
+.store(in: &cancellables)
+
+// Stop all retained observations early.
+cancellables.removeAll()
+```
+
+Calling `.store(in:)` switches that handle from owner-lifetime automatic retention to explicit `Set`-managed retention.
+Stored handles are still cancelled automatically if the observed owner is released.
+
 ## Behavior Notes
 
 Both APIs:
@@ -159,6 +183,7 @@ Both APIs:
 - use native `Observations` on supported OS versions
 - fall back to legacy `withObservationTracking` on older OS versions
 - are retained for the owner's lifetime and auto-cancel when the owner is released
+- calling `.store(in:)` opts a handle into explicit `Set`-managed lifetime instead of owner-lifetime automatic retention
 
 Backend behavior note:
 
@@ -168,3 +193,4 @@ Backend behavior note:
 - native uses Swift `Observations` transaction semantics; both backends preserve `latest wins` cancellation for `observeTask`
 - `latest wins` means newer values are prioritized; when a running task is cancelled, completion timing depends on cooperative cancellation in user task code
 - keeping the returned `ObservationHandle` is optional; use `cancel()` only when early stop is needed
+- `cancel()` does not remove handles from your `Set`; remove them explicitly if desired

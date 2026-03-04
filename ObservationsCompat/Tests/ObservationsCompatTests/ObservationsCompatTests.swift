@@ -1733,6 +1733,113 @@ struct ObservationsCompatTests {
     }
 
     @Test
+    func observeTaskStoreInSetKeepsObservationAlive() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        var cancellables = Set<ObservationHandle>()
+
+        model.observeTask(\.value, options: []) { value in
+            await queue.push(value)
+        }
+        .store(in: &cancellables)
+
+        #expect(cancellables.count == 1)
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        model.value = 9
+        #expect(await nextWithTimeout(from: queue) == 9)
+    }
+
+    @Test
+    func observeTaskStoreInSetStopsAfterRemoval() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        var cancellables = Set<ObservationHandle>()
+
+        model.observeTask(\.value, options: []) { value in
+            await queue.push(value)
+        }
+        .store(in: &cancellables)
+
+        #expect(await nextWithTimeout(from: queue) == 0)
+
+        cancellables.removeAll(keepingCapacity: false)
+        await Task.yield()
+
+        model.value = 10
+        #expect(await nextWithTimeout(from: queue, nanoseconds: 300_000_000) == nil)
+    }
+
+    @Test
+    func observeTaskStoreInSetDeduplicatesSameHandle() async {
+        let model = CounterModel()
+        let queue = ValueQueue<Int>()
+        var cancellables = Set<ObservationHandle>()
+        let handle = model.observeTask(\.value, options: []) { value in
+            await queue.push(value)
+        }
+
+        handle.store(in: &cancellables)
+        handle.store(in: &cancellables)
+
+        #expect(cancellables.count == 1)
+        #expect(await nextWithTimeout(from: queue) == 0)
+    }
+
+    @Test
+    func observeTaskStoreInSetCancelsWhenOwnerDeinitializes() async {
+#if canImport(ObjectiveC)
+        let started = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let deinitFlag = DeinitFlag()
+        let gate = OperationGate()
+        var cancellables = Set<ObservationHandle>()
+        weak var weakModel: DeinitProbeCounterModel?
+
+        do {
+            let model = DeinitProbeCounterModel {
+                Task {
+                    await deinitFlag.mark()
+                }
+            }
+            weakModel = model
+
+            model.observeTask(\.value, options: []) { value in
+                await started.push(value)
+                await withTaskCancellationHandler {
+                    await gate.wait(for: value)
+                } onCancel: {
+                    Task {
+                        await cancelled.push(value)
+                        await gate.release(value)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
+            #expect(await nextWithTimeout(from: started) == 0)
+        }
+
+        let deinitDeadline = ContinuousClock().now + .seconds(2)
+        while !(await deinitFlag.didDeinit), ContinuousClock().now < deinitDeadline {
+            await Task.yield()
+        }
+        #expect(await deinitFlag.didDeinit)
+
+        let ownerReleaseDeadline = ContinuousClock().now + .seconds(2)
+        while weakModel != nil, ContinuousClock().now < ownerReleaseDeadline {
+            await Task.yield()
+        }
+        #expect(weakModel == nil)
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
+
+        cancellables.removeAll(keepingCapacity: false)
+#else
+        return
+#endif
+    }
+
+    @Test
     func observeTaskStopsAfterHandleCancel() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()

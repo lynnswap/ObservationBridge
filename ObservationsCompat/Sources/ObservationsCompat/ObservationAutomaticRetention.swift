@@ -19,6 +19,10 @@ enum AutomaticRetentionRegistry {
         let store = loadOrCreateStore(owner: owner)
         store.insert(box, id: boxID)
 
+        box.setAutomaticRetentionDetacher { [weak store] in
+            store?.disableStrongRetention(id: boxID)
+        }
+
         box.addCancellationHandler { [weak store] in
             store?.remove(id: boxID)
         }
