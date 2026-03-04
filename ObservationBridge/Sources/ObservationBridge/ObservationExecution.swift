@@ -1,6 +1,6 @@
 import AsyncAlgorithms
 import Observation
-import ObservationsCompatLegacy
+import ObservationBridgeLegacy
 import Synchronization
 
 private enum OwnerValueEmission<Value: Sendable>: Sendable {
@@ -442,7 +442,7 @@ private func forEachOwnerValueEmission<Owner: AnyObject, Value: Sendable>(
         guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
             return .ownerGone
         }
-        switch ObservationsCompatLegacy.legacyEvaluateObservedOwnerValue(owner: owner, value: value) {
+        switch ObservationBridgeLegacy.legacyEvaluateObservedOwnerValue(owner: owner, value: value) {
         case .ownerGone:
             return .ownerGone
         case .value(let observedValue):

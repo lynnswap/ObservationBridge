@@ -3,15 +3,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "ObservationsCompat",
+    name: "ObservationBridge",
     platforms: [
         .iOS(.v18),
         .macOS(.v15)
     ],
     products: [
         .library(
-            name: "ObservationsCompat",
-            targets: ["ObservationsCompat"]
+            name: "ObservationBridge",
+            targets: ["ObservationBridge"]
         )
     ],
     dependencies: [
@@ -19,8 +19,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ObservationsCompatLegacy",
-            path: "ObservationsCompat/Sources/ObservationsCompatLegacy",
+            name: "ObservationBridgeLegacy",
+            path: "ObservationBridge/Sources/ObservationBridgeLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
@@ -28,12 +28,12 @@ let package = Package(
             ]
         ),
         .target(
-            name: "ObservationsCompat",
+            name: "ObservationBridge",
             dependencies: [
-                "ObservationsCompatLegacy",
+                "ObservationBridgeLegacy",
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
             ],
-            path: "ObservationsCompat/Sources/ObservationsCompat",
+            path: "ObservationBridge/Sources/ObservationBridge",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
@@ -41,9 +41,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "ObservationsCompatTests",
-            dependencies: ["ObservationsCompat"],
-            path: "ObservationsCompat/Tests/ObservationsCompatTests",
+            name: "ObservationBridgeTests",
+            dependencies: ["ObservationBridge"],
+            path: "ObservationBridge/Tests/ObservationBridgeTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),

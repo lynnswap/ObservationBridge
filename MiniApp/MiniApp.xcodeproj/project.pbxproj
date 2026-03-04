@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		F0A100000000000000000001 /* ObservationsCompat in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* ObservationsCompat */; };
+		F0A100000000000000000001 /* ObservationBridge in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* ObservationBridge */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,7 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F0A100000000000000000001 /* ObservationsCompat in Frameworks */,
+				F0A100000000000000000001 /* ObservationBridge in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +70,7 @@
 			);
 			name = MiniApp;
 			packageProductDependencies = (
-				F0A100000000000000000003 /* ObservationsCompat */,
+				F0A100000000000000000003 /* ObservationBridge */,
 			);
 			productName = MiniApp;
 			productReference = AB9693312F4F379B00DA34DE /* MiniApp.app */;
@@ -369,10 +369,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		F0A100000000000000000003 /* ObservationsCompat */ = {
+		F0A100000000000000000003 /* ObservationBridge */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference ".." */;
-			productName = ObservationsCompat;
+			productName = ObservationBridge;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

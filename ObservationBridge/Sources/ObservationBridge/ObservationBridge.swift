@@ -1,5 +1,5 @@
 import Observation
-import ObservationsCompatLegacy
+import ObservationBridgeLegacy
 
 public enum ObservationDebounceMode: Sendable, Hashable {
     case immediateFirst
@@ -918,7 +918,7 @@ private func drainNativeObservationValues<Value: Sendable>(
     }
 }
 
-public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
+public struct ObservationBridge<Value: Sendable>: AsyncSequence, Sendable {
     public typealias Element = Value
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -962,7 +962,7 @@ public struct ObservationsCompat<Value: Sendable>: AsyncSequence, Sendable {
     }
 }
 
-public extension ObservationsCompat where Value: Equatable {
+public extension ObservationBridge where Value: Equatable {
     init(
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
@@ -987,30 +987,66 @@ public extension ObservationsCompat where Value: Equatable {
     }
 }
 
-public func makeObservationsCompatStream<Value: Sendable & Equatable>(
+public func makeObservationBridgeStream<Value: Sendable & Equatable>(
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompat<Value> {
-    ObservationsCompat(observe)
+) -> ObservationBridge<Value> {
+    ObservationBridge(observe)
 }
 
-public func makeObservationsCompatStream<Value: Sendable>(
+public func makeObservationBridgeStream<Value: Sendable>(
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompat<Value> {
-    ObservationsCompat(
+) -> ObservationBridge<Value> {
+    ObservationBridge(
         options: options,
         clock: clock,
         observe
     )
 }
 
+public func makeObservationBridgeStream<Value: Sendable & Equatable>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    ObservationBridge(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+@available(*, deprecated, renamed: "ObservationBridge")
+public typealias ObservationsCompat<Value: Sendable> = ObservationBridge<Value>
+
+@available(*, deprecated, renamed: "makeObservationBridgeStream")
+public func makeObservationsCompatStream<Value: Sendable & Equatable>(
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    makeObservationBridgeStream(observe)
+}
+
+@available(*, deprecated, renamed: "makeObservationBridgeStream")
+public func makeObservationsCompatStream<Value: Sendable>(
+    options: ObservationOptions,
+    clock: any Clock<Duration> = ContinuousClock(),
+    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
+) -> ObservationBridge<Value> {
+    makeObservationBridgeStream(
+        options: options,
+        clock: clock,
+        observe
+    )
+}
+
+@available(*, deprecated, renamed: "makeObservationBridgeStream")
 public func makeObservationsCompatStream<Value: Sendable & Equatable>(
     options: ObservationOptions,
     clock: any Clock<Duration> = ContinuousClock(),
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationsCompat<Value> {
-    ObservationsCompat(
+) -> ObservationBridge<Value> {
+    makeObservationBridgeStream(
         options: options,
         clock: clock,
         observe

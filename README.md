@@ -1,11 +1,11 @@
-# ObservationsCompat
+# ObservationBridge
 
-`ObservationsCompat` is a compatibility layer for Swift Observation.
+ObservationBridge is an integration layer that provides a consistent API for Swift Observations.
 
 It provides two usage styles:
 
 - owner-bound callbacks: `observe` / `observeTask`
-- `AsyncSequence` wrappers: `ObservationsCompat` / `makeObservationsCompatStream`
+- `AsyncSequence` wrappers: `ObservationBridge` / `makeObservationBridgeStream`
 
 ## Requirements
 
@@ -18,7 +18,7 @@ It provides two usage styles:
 ### Synchronous updates (`observe`)
 
 ```swift
-import ObservationsCompat
+import ObservationBridge
 
 model.observe(\.count) { value in
     print("count = \(value)")
@@ -28,7 +28,7 @@ model.observe(\.count) { value in
 ### Async updates (`observeTask`)
 
 ```swift
-import ObservationsCompat
+import ObservationBridge
 
 model.observeTask(\.count) { value in
     await analytics.trackCount(value)
@@ -58,7 +58,7 @@ model.observe(\.selectedID, options: [.removeDuplicates]) { selectedID in
 ### Early stop with `ObservationHandle`
 
 ```swift
-import ObservationsCompat
+import ObservationBridge
 
 let handle = model.observe(\.count) { value in
     print("count = \(value)")
@@ -113,7 +113,7 @@ In tests, pass your own `Clock` implementation to drive debounce timing manually
 let clock = MyTestClock() // your Clock implementation for tests
 let debounce = ObservationDebounce(interval: .milliseconds(250), mode: .delayedFirst)
 
-let stream = ObservationsCompat(
+let stream = ObservationBridge(
     options: [.debounce(debounce)],
     clock: clock
 ) {
@@ -126,12 +126,12 @@ clock.advance(by: .milliseconds(250))  // deterministic time progression
 
 ## AsyncSequence Style
 
-### `ObservationsCompat`
+### `ObservationBridge`
 
 ```swift
-import ObservationsCompat
+import ObservationBridge
 
-let stream = ObservationsCompat {
+let stream = ObservationBridge {
     model.count
 }
 
@@ -140,10 +140,10 @@ for await value in stream {
 }
 ```
 
-### `makeObservationsCompatStream`
+### `makeObservationBridgeStream`
 
 ```swift
-let stream = makeObservationsCompatStream {
+let stream = makeObservationBridgeStream {
     model.count
 }
 

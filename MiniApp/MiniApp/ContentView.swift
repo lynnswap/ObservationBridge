@@ -7,7 +7,7 @@
 
 import Foundation
 import Observation
-import ObservationsCompat
+import ObservationBridge
 import Synchronization
 import SwiftUI
 

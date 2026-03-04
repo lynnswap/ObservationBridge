@@ -1,9 +1,9 @@
 # Repository Guidelines
 
 ## Test Commands
-- `xcodebuild -workspace ObservationsCompat.xcworkspace -scheme ObservationsCompatTests -destination 'platform=macOS' test`
+- `xcodebuild -workspace ObservationBridge.xcworkspace -scheme ObservationBridgeTests -destination 'platform=macOS' test`
   - Run macOS test suite via workspace scheme.
-- `xcodebuild -workspace ObservationsCompat.xcworkspace -scheme ObservationsCompatTests -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' test`
+- `xcodebuild -workspace ObservationBridge.xcworkspace -scheme ObservationBridgeTests -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' test`
   - Run iOS simulator tests.
 - `xcrun simctl list devices available`
   - Check valid simulator names before running iOS commands.

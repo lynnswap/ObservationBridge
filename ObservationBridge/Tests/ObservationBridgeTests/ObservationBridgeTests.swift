@@ -2,7 +2,7 @@ import Observation
 import Foundation
 import Synchronization
 import Testing
-@testable import ObservationsCompat
+@testable import ObservationBridge
 
 @Observable
 private final class CounterModel {
@@ -545,11 +545,11 @@ private func runRandomizedObservationStress(
 
 @MainActor
 @Suite
-struct ObservationsCompatTests {
+struct ObservationBridgeTests {
     @Test
     func legacyBackendEmitsInitialAndDistinctChanges() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -576,7 +576,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendCoalescesBurstAndEventuallyEmitsLatestValue() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -609,7 +609,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendSuppressesHighFrequencyDuplicateValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -638,7 +638,7 @@ struct ObservationsCompatTests {
         }
 
         let model = CounterModel()
-        let stream = ObservationsCompat(options: []) {
+        let stream = ObservationBridge(options: []) {
             model.value
         }
         let queue = ValueQueue<Int>()
@@ -659,7 +659,7 @@ struct ObservationsCompatTests {
     @Test
     func legacyBackendEmitsInitialOptionalNilValue() async {
         let model = OptionalCounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
         let queue = ValueQueue<Int?>()
@@ -686,7 +686,7 @@ struct ObservationsCompatTests {
         }
         let observe: @isolated(any) @Sendable () -> Int = observeOnMainActor
         let stream = await Task.detached {
-            ObservationsCompat(options: legacyOptionsForCurrentRuntime(), observe)
+            ObservationBridge(options: legacyOptionsForCurrentRuntime(), observe)
         }.value
         let queue = ValueQueue<Int>()
         let consumer = Task.detached(priority: nil) {
@@ -706,7 +706,7 @@ struct ObservationsCompatTests {
     @Test
     func streamCanBeCancelledSafely() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.value
         }
 
@@ -742,7 +742,7 @@ struct ObservationsCompatTests {
             }
             weakModel = model
 
-            var stream: ObservationsCompat<Int>? = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+            var stream: ObservationBridge<Int>? = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
                 model.value
             }
 
@@ -767,9 +767,9 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observationsCompatOptionsEmptyEmitsConsecutiveEqualValues() async {
+    func observationBridgeOptionsEmptyEmitsConsecutiveEqualValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime()) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
             model.parity
         }
         let queue = ValueQueue<Int>()
@@ -791,9 +791,9 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observationsCompatRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
+    func observationBridgeRemoveDuplicatesSuppressesConsecutiveEqualValues() async {
         let model = CounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
             model.parity
         }
         let queue = ValueQueue<Int>()
@@ -818,9 +818,9 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observationsCompatRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
+    func observationBridgeRemoveDuplicatesSuppressesConsecutiveOptionalNilValues() async {
         let model = OptionalCounterModel()
-        let stream = ObservationsCompat(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
+        let stream = ObservationBridge(options: legacyOptionsForCurrentRuntime([.removeDuplicates])) {
             model.value
         }
         let queue = ValueQueue<Int?>()
@@ -848,12 +848,12 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observationsCompatDebounceImmediateFirstSupportsDeterministicClockControl() async {
+    func observationBridgeDebounceImmediateFirstSupportsDeterministicClockControl() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-        let stream = ObservationsCompat(
+        let stream = ObservationBridge(
             options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
             clock: clock
         ) {
@@ -884,12 +884,12 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func observationsCompatRemoveDuplicatesAppliesToDebouncedOutputs() async {
+    func observationBridgeRemoveDuplicatesAppliesToDebouncedOutputs() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-        let stream = ObservationsCompat(
+        let stream = ObservationBridge(
             options: legacyOptionsForCurrentRuntime([.removeDuplicates, .debounce(debounce)]),
             clock: clock
         ) {
@@ -923,12 +923,12 @@ struct ObservationsCompatTests {
     }
 
     @Test
-    func makeObservationsCompatStreamSupportsOptionsAndClock() async {
+    func makeObservationBridgeStreamSupportsOptionsAndClock() async {
         let model = CounterModel()
         let queue = ValueQueue<Int>()
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-        let stream = makeObservationsCompatStream(
+        let stream = makeObservationBridgeStream(
             options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
             clock: clock
         ) {
@@ -951,6 +951,7 @@ struct ObservationsCompatTests {
         clock.advance(by: .milliseconds(200))
         #expect(await nextWithTimeout(from: queue) == 2)
     }
+
 
     @Test
     func observeEmitsInitialAndDuplicateValuesByDefault() async {
