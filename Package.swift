@@ -19,8 +19,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ObservationBridgeLegacy",
-            path: "ObservationBridge/Sources/ObservationBridgeLegacy",
+            name: "_ObservationBridgeLegacy",
+            path: "ObservationBridge/Sources/_ObservationBridgeLegacy",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),
@@ -30,7 +30,7 @@ let package = Package(
         .target(
             name: "ObservationBridge",
             dependencies: [
-                "ObservationBridgeLegacy",
+                "_ObservationBridgeLegacy",
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
             ],
             path: "ObservationBridge/Sources/ObservationBridge",

@@ -1,5 +1,5 @@
 import Observation
-import ObservationBridgeLegacy
+internal import _ObservationBridgeLegacy
 
 public enum ObservationDebounceMode: Sendable, Hashable {
     case immediateFirst
