@@ -1016,39 +1016,3 @@ public func makeObservationBridgeStream<Value: Sendable & Equatable>(
         observe
     )
 }
-
-@available(*, deprecated, renamed: "ObservationBridge")
-public typealias ObservationsCompat<Value: Sendable> = ObservationBridge<Value>
-
-@available(*, deprecated, renamed: "makeObservationBridgeStream")
-public func makeObservationsCompatStream<Value: Sendable & Equatable>(
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationBridge<Value> {
-    makeObservationBridgeStream(observe)
-}
-
-@available(*, deprecated, renamed: "makeObservationBridgeStream")
-public func makeObservationsCompatStream<Value: Sendable>(
-    options: ObservationOptions,
-    clock: any Clock<Duration> = ContinuousClock(),
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationBridge<Value> {
-    makeObservationBridgeStream(
-        options: options,
-        clock: clock,
-        observe
-    )
-}
-
-@available(*, deprecated, renamed: "makeObservationBridgeStream")
-public func makeObservationsCompatStream<Value: Sendable & Equatable>(
-    options: ObservationOptions,
-    clock: any Clock<Duration> = ContinuousClock(),
-    @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
-) -> ObservationBridge<Value> {
-    makeObservationBridgeStream(
-        options: options,
-        clock: clock,
-        observe
-    )
-}
