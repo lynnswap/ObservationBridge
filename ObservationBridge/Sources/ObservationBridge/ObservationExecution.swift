@@ -1,7 +1,7 @@
 import AsyncAlgorithms
 import Observation
-internal import _ObservationBridgeLegacy
 import Synchronization
+internal import _ObservationBridgeLegacy
 
 private enum OwnerValueEmission<Value> {
     case value(Value)
@@ -18,16 +18,12 @@ private struct ObservedValueChannel<Value: Sendable>: Sendable {
 private struct ObserveTaskExecutionState<Value: Sendable>: Sendable {
     var activeOperationTask: Task<Void, Never>? = nil
     var activeOperationID: UInt64? = nil
+    var activeOperationValue: Value? = nil
     var nextOperationID: UInt64 = 0
-    var pendingLatestValue: Value? = nil
-    var isCancelled = false
-}
-
-private struct ObserveTaskExecutionStateNonSendable<Value> {
-    var activeOperationTask: Task<Void, Never>? = nil
-    var activeOperationID: UInt64? = nil
-    var nextOperationID: UInt64 = 0
-    var pendingLatestValue: _UncheckedSendableValueBox<Value>? = nil
+    var pendingNextValue: Value? = nil
+    var pendingFollowingValue: Value? = nil
+    var pendingCoalescedValue: Value? = nil
+    var lastDeliveredValue: Value? = nil
     var isCancelled = false
 }
 
@@ -234,7 +230,9 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
 ) -> ObservationHandle {
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
     let observeTaskState = Mutex(ObserveTaskExecutionState<Value>())
-    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(
+        bufferingPolicy: .bufferingNewest(1)
+    )
 
     let operationDidFinish: @Sendable (UInt64) -> Void = { operationID in
         let shouldWake = observeTaskState.withLock { state in
@@ -242,12 +240,16 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                 return false
             }
 
+            if let activeOperationValue = state.activeOperationValue {
+                state.lastDeliveredValue = activeOperationValue
+            }
+            state.activeOperationValue = nil
             state.activeOperationTask = nil
             state.activeOperationID = nil
             guard !state.isCancelled else {
                 return false
             }
-            return state.pendingLatestValue != nil
+            return state.pendingNextValue != nil
         }
 
         if shouldWake {
@@ -262,8 +264,11 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             }
 
             state.isCancelled = true
-            state.pendingLatestValue = nil
+            state.pendingNextValue = nil
+            state.pendingFollowingValue = nil
+            state.pendingCoalescedValue = nil
             state.activeOperationID = nil
+            state.activeOperationValue = nil
             let activeTask = state.activeOperationTask
             state.activeOperationTask = nil
             return activeTask
@@ -274,26 +279,53 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
     }
 
     let enqueueLatestValue: @Sendable (Value) -> Bool = { observedValue in
-        let transition: (accepted: Bool, activeTask: Task<Void, Never>?) = observeTaskState.withLock { state -> (accepted: Bool, activeTask: Task<Void, Never>?) in
+        let transition: (accepted: Bool, shouldWake: Bool) = observeTaskState.withLock { state -> (accepted: Bool, shouldWake: Bool) in
             guard !state.isCancelled else {
-                return (accepted: false, activeTask: nil)
+                return (accepted: false, shouldWake: false)
             }
 
-            state.pendingLatestValue = observedValue
-            let activeTask = state.activeOperationTask
-            if activeTask != nil {
-                state.activeOperationTask = nil
-                state.activeOperationID = nil
+            if let duplicateFilter,
+               let previousDeliveredValue = state.activeOperationValue ?? state.lastDeliveredValue,
+               state.pendingNextValue == nil
+            {
+                if duplicateFilter(previousDeliveredValue, observedValue) {
+                    return (accepted: true, shouldWake: false)
+                }
+            } else if let duplicateFilter,
+                      let pendingCoalescedValue = state.pendingCoalescedValue,
+                      duplicateFilter(pendingCoalescedValue, observedValue)
+            {
+                return (accepted: true, shouldWake: false)
             }
-            return (accepted: true, activeTask: activeTask)
+
+            if state.pendingNextValue == nil {
+                state.pendingNextValue = observedValue
+                return (accepted: true, shouldWake: state.activeOperationTask == nil)
+            }
+
+            if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
+                if let duplicateFilter,
+                   let pendingNextValue = state.pendingNextValue,
+                   duplicateFilter(pendingNextValue, observedValue)
+                {
+                    return (accepted: true, shouldWake: false)
+                }
+
+                state.pendingFollowingValue = observedValue
+                return (accepted: true, shouldWake: false)
+            }
+
+            state.pendingCoalescedValue = observedValue
+            return (accepted: true, shouldWake: false)
         }
 
         guard transition.accepted else {
             return false
         }
 
-        transition.activeTask?.cancel()
-        operationWakeSignal.yield(())
+        if transition.shouldWake {
+            operationWakeSignal.yield(())
+        }
         return true
     }
 
@@ -308,18 +340,32 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
                     guard !state.isCancelled else {
                         return false
                     }
-                    guard state.activeOperationTask == nil, let nextValue = state.pendingLatestValue else {
+                    guard state.activeOperationTask == nil, let nextValue = state.pendingNextValue else {
                         return false
                     }
 
-                    state.pendingLatestValue = nil
+                    if let pendingFollowingValue = state.pendingFollowingValue {
+                        state.pendingNextValue = pendingFollowingValue
+                        state.pendingFollowingValue = nil
+                    } else {
+                        if let duplicateFilter,
+                           let pendingCoalescedValue = state.pendingCoalescedValue,
+                           duplicateFilter(nextValue, pendingCoalescedValue)
+                        {
+                            state.pendingNextValue = nil
+                        } else {
+                            state.pendingNextValue = state.pendingCoalescedValue
+                        }
+                        state.pendingCoalescedValue = nil
+                    }
                     let operationID = state.nextOperationID
                     state.nextOperationID &+= 1
+                    state.activeOperationID = operationID
+                    state.activeOperationValue = nextValue
                     let operation = Task {
                         await task(nextValue)
                         operationDidFinish(operationID)
                     }
-                    state.activeOperationID = operationID
                     state.activeOperationTask = operation
                     return true
                 }
@@ -334,6 +380,7 @@ func observeTaskImpl<Owner: AnyObject, Value: Sendable>(
             let remainingTask = state.activeOperationTask
             state.activeOperationTask = nil
             state.activeOperationID = nil
+            state.activeOperationValue = nil
             return remainingTask
         }
         remainingTask?.cancel()
@@ -417,8 +464,10 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
     _ = options
 
     let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-    let observeTaskState = Mutex(ObserveTaskExecutionStateNonSendable<Value>())
-    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let observeTaskState = Mutex(ObserveTaskExecutionState<_UncheckedSendableValueBox<Value>>())
+    let (operationWakeStream, operationWakeSignal) = AsyncStream<Void>.makeStream(
+        bufferingPolicy: .bufferingNewest(1)
+    )
 
     let operationDidFinish: @Sendable (UInt64) -> Void = { operationID in
         let shouldWake = observeTaskState.withLock { state in
@@ -426,12 +475,16 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                 return false
             }
 
+            if let activeOperationValue = state.activeOperationValue {
+                state.lastDeliveredValue = activeOperationValue
+            }
+            state.activeOperationValue = nil
             state.activeOperationTask = nil
             state.activeOperationID = nil
             guard !state.isCancelled else {
                 return false
             }
-            return state.pendingLatestValue != nil
+            return state.pendingNextValue != nil
         }
 
         if shouldWake {
@@ -446,8 +499,11 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
             }
 
             state.isCancelled = true
-            state.pendingLatestValue = nil
+            state.pendingNextValue = nil
+            state.pendingFollowingValue = nil
+            state.pendingCoalescedValue = nil
             state.activeOperationID = nil
+            state.activeOperationValue = nil
             let activeTask = state.activeOperationTask
             state.activeOperationTask = nil
             return activeTask
@@ -458,26 +514,54 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
     }
 
     let enqueueLatestValue: @Sendable (sending _UncheckedSendableValueBox<Value>) -> Bool = { observedValue in
-        let transition: (accepted: Bool, activeTask: Task<Void, Never>?) = observeTaskState.withLock { state -> (accepted: Bool, activeTask: Task<Void, Never>?) in
+        let transition: (accepted: Bool, shouldWake: Bool) = observeTaskState.withLock { state -> (accepted: Bool, shouldWake: Bool) in
             guard !state.isCancelled else {
-                return (accepted: false, activeTask: nil)
+                return (accepted: false, shouldWake: false)
             }
 
-            state.pendingLatestValue = observedValue
-            let activeTask = state.activeOperationTask
-            if activeTask != nil {
-                state.activeOperationTask = nil
-                state.activeOperationID = nil
+            if let duplicateFilter,
+               state.pendingNextValue == nil
+            {
+                if let previousDeliveredValue = state.activeOperationValue ?? state.lastDeliveredValue,
+                   duplicateFilter(previousDeliveredValue.value, observedValue.value)
+                {
+                    return (accepted: true, shouldWake: false)
+                }
+            } else if let duplicateFilter,
+                      let pendingCoalescedValue = state.pendingCoalescedValue,
+                      duplicateFilter(pendingCoalescedValue.value, observedValue.value)
+            {
+                return (accepted: true, shouldWake: false)
             }
-            return (accepted: true, activeTask: activeTask)
+
+            if state.pendingNextValue == nil {
+                state.pendingNextValue = observedValue
+                return (accepted: true, shouldWake: state.activeOperationTask == nil)
+            }
+
+            if state.activeOperationTask == nil, state.lastDeliveredValue == nil, state.pendingFollowingValue == nil {
+                if let duplicateFilter,
+                   let pendingNextValue = state.pendingNextValue,
+                   duplicateFilter(pendingNextValue.value, observedValue.value)
+                {
+                    return (accepted: true, shouldWake: false)
+                }
+
+                state.pendingFollowingValue = observedValue
+                return (accepted: true, shouldWake: false)
+            }
+
+            state.pendingCoalescedValue = observedValue
+            return (accepted: true, shouldWake: false)
         }
 
         guard transition.accepted else {
             return false
         }
 
-        transition.activeTask?.cancel()
-        operationWakeSignal.yield(())
+        if transition.shouldWake {
+            operationWakeSignal.yield(())
+        }
         return true
     }
 
@@ -492,18 +576,32 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
                     guard !state.isCancelled else {
                         return false
                     }
-                    guard state.activeOperationTask == nil, let nextValue = state.pendingLatestValue else {
+                    guard state.activeOperationTask == nil, let nextValue = state.pendingNextValue else {
                         return false
                     }
 
-                    state.pendingLatestValue = nil
+                    if let pendingFollowingValue = state.pendingFollowingValue {
+                        state.pendingNextValue = pendingFollowingValue
+                        state.pendingFollowingValue = nil
+                    } else {
+                        if let duplicateFilter,
+                           let pendingCoalescedValue = state.pendingCoalescedValue,
+                           duplicateFilter(nextValue.value, pendingCoalescedValue.value)
+                        {
+                            state.pendingNextValue = nil
+                        } else {
+                            state.pendingNextValue = state.pendingCoalescedValue
+                        }
+                        state.pendingCoalescedValue = nil
+                    }
                     let operationID = state.nextOperationID
                     state.nextOperationID &+= 1
+                    state.activeOperationID = operationID
+                    state.activeOperationValue = nextValue
                     let operation = Task {
                         await task(nextValue)
                         operationDidFinish(operationID)
                     }
-                    state.activeOperationID = operationID
                     state.activeOperationTask = operation
                     return true
                 }
@@ -518,6 +616,7 @@ func observeTaskImplNonSendable<Owner: AnyObject, Value>(
             let remainingTask = state.activeOperationTask
             state.activeOperationTask = nil
             state.activeOperationID = nil
+            state.activeOperationValue = nil
             return remainingTask
         }
         remainingTask?.cancel()

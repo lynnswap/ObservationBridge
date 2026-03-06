@@ -3,10 +3,6 @@
 ## Test Commands
 - `xcodebuild -workspace ObservationBridge.xcworkspace -scheme ObservationBridgeTests -destination 'platform=macOS' test`
   - Run macOS test suite via workspace scheme.
-- `xcodebuild -workspace ObservationBridge.xcworkspace -scheme ObservationBridgeTests -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' test`
-  - Run iOS simulator tests.
-- `xcrun simctl list devices available`
-  - Check valid simulator names before running iOS commands.
 
 ## Coding Style & Naming Conventions
 - Swift 6.2 / Swift language mode 6 is the baseline.
