@@ -774,12 +774,13 @@ struct ObservationBridgeTests {
             var stream: ObservationBridge<Int>? = ObservationBridge(options: legacyOptionsForCurrentRuntime()) {
                 model.value
             }
+            let capturedStream = stream
 
             let consumer = Task<Void, Never> {
-                guard let stream else {
+                guard let capturedStream else {
                     return
                 }
-                var iterator = stream.makeAsyncIterator()
+                var iterator = capturedStream.makeAsyncIterator()
                 while await iterator.next() != nil {}
             }
 
@@ -1888,7 +1889,33 @@ struct ObservationBridgeTests {
     }
 
     @Test
-    func observeTaskLatestWinsCancelsPreviousInFlightTask() async {
+    func observeTaskCancelsInFlightTaskOnHandleCancel() async {
+        let model = CounterModel()
+        let started = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.value, options: []) { value in
+            await started.push(value)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
+            }
+        }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        handle.cancel()
+
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
+    }
+
+    @Test
+    func observeTaskCompletesInFlightTasksInOrder() async {
         let model = CounterModel()
         let started = ValueQueue<Int>()
         let completed = ValueQueue<Int>()
@@ -1915,24 +1942,32 @@ struct ObservationBridgeTests {
         #expect(await nextWithTimeout(from: started) == 0)
 
         model.value = 1
-        #expect(await waitUntilValueReceived(0, from: cancelled, nanoseconds: 15_000_000_000))
-        #expect(await waitUntilValueReceived(1, from: started, nanoseconds: 15_000_000_000))
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 1)
 
         model.value = 2
-        #expect(await waitUntilValueReceived(1, from: cancelled, nanoseconds: 15_000_000_000))
-        #expect(await waitUntilValueReceived(2, from: started, nanoseconds: 15_000_000_000))
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
+
+        await gate.release(1)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 1)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 2)
 
         await gate.release(2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
-    func observeTaskDebounceStillPreservesLatestWinsCancellation() async {
+    func observeTaskDebounceProcessesSelectedValuesWithoutCancellation() async {
         let model = CounterModel()
         let started = ValueQueue<Int>()
         let completed = ValueQueue<Int>()
         let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
         let debounce = ObservationDebounce(interval: .milliseconds(150), mode: .immediateFirst)
 
         let handle = model.observeTask(
@@ -1940,11 +1975,17 @@ struct ObservationBridgeTests {
             options: [.debounce(debounce)]
         ) { value in
             await started.push(value)
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
+            await withTaskCancellationHandler {
+                await gate.wait(for: value)
+                guard !Task.isCancelled else {
+                    return
+                }
                 await completed.push(value)
-            } catch {
-                await cancelled.push(value)
+            } onCancel: {
+                Task {
+                    await cancelled.push(value)
+                    await gate.release(value)
+                }
             }
         }
         defer { handle.cancel() }
@@ -1953,11 +1994,16 @@ struct ObservationBridgeTests {
 
         model.value = 1
         model.value = 2
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
 
-        let cancelledValue = await nextWithTimeout(from: cancelled)
-        #expect(cancelledValue == 0)
-        #expect(await nextWithTimeout(from: completed) == 2)
+        await gate.release(0)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 0)
+        #expect(await nextWithTimeout(from: started, nanoseconds: 15_000_000_000) == 2)
+
+        await gate.release(2)
+        #expect(await nextWithTimeout(from: completed, nanoseconds: 15_000_000_000) == 2)
         #expect(await nextWithTimeout(from: completed, nanoseconds: 300_000_000) == nil)
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 300_000_000) == nil)
     }
 
     @Test
@@ -2031,6 +2077,55 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func observeTaskSupportsSequentialNonSendableValuesOnMainActorIsolation() async {
+        let model = MainActorNonSendablePayloadModel()
+        var observedValues: [Int] = []
+
+        let handle = model.observeTask(\.payload, options: []) { payload in
+            observedValues.append(payload.value)
+        }
+        defer { handle.cancel() }
+
+        #expect(await waitUntilMainActorCondition { observedValues.count == 1 })
+        #expect(observedValues.first == 0)
+
+        model.payload = NonSendablePayload(value: 1)
+        #expect(await waitUntilMainActorCondition { observedValues.count == 2 })
+        #expect(observedValues.prefix(2).elementsEqual([0, 1]))
+
+        model.payload = NonSendablePayload(value: 2)
+        #expect(await waitUntilMainActorCondition { observedValues.count == 3 })
+        #expect(observedValues.prefix(3).elementsEqual([0, 1, 2]))
+    }
+
+    @Test
+    func observeTaskCancelsInFlightNonSendableTaskOnHandleCancel() async {
+        let model = MainActorNonSendablePayloadModel()
+        let started = ValueQueue<Int>()
+        let cancelled = ValueQueue<Int>()
+        let gate = OperationGate()
+
+        let handle = model.observeTask(\.payload, options: []) { payload in
+            let payloadValue = payload.value
+            await started.push(payloadValue)
+            await withTaskCancellationHandler {
+                await gate.wait(for: payloadValue)
+            } onCancel: {
+                Task {
+                    await cancelled.push(payloadValue)
+                    await gate.release(payloadValue)
+                }
+            }
+        }
+
+        #expect(await nextWithTimeout(from: started) == 0)
+
+        handle.cancel()
+
+        #expect(await nextWithTimeout(from: cancelled, nanoseconds: 2_000_000_000) == 0)
+    }
+
+    @Test
     func observationBridgeSupportsNonSendableValuesOnMainActorIsolation() async {
         let model = MainActorNonSendablePayloadModel()
         let stream = ObservationBridge(options: []) {
@@ -2061,6 +2156,40 @@ struct ObservationBridgeTests {
     }
 
     @Test
+    func observationBridgeIteratorsReceiveIndependentInitialAndUpdatedValues() async {
+        let model = CounterModel()
+        let stream = ObservationBridge(options: []) {
+            model.value
+        }
+        let firstQueue = ValueQueue<Int>()
+        let secondQueue = ValueQueue<Int>()
+
+        let firstConsumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await firstQueue.push(value)
+            }
+        }
+        let secondConsumer = Task<Void, Never> {
+            var iterator = stream.makeAsyncIterator()
+            while !Task.isCancelled, let value = await iterator.next() {
+                await secondQueue.push(value)
+            }
+        }
+        defer {
+            firstConsumer.cancel()
+            secondConsumer.cancel()
+        }
+
+        #expect(await nextWithTimeout(from: firstQueue) == 0)
+        #expect(await nextWithTimeout(from: secondQueue) == 0)
+
+        model.value = 7
+        #expect(await nextWithTimeout(from: firstQueue) == 7)
+        #expect(await nextWithTimeout(from: secondQueue) == 7)
+    }
+
+    @Test
     func observeTaskDoesNotPreventOwnerDeinit() async {
 #if canImport(ObjectiveC)
         let deinitFlag = DeinitFlag()
@@ -2087,6 +2216,11 @@ struct ObservationBridgeTests {
 #endif
     }
 
+}
+
+@MainActor
+@Suite(.serialized)
+struct ObservationBridgeStressTests {
     @Test
     func legacyBackendObserveTaskStressNoRaceAcrossOneMillionIterations() async {
         let iterations = 1_000_000
@@ -2128,5 +2262,4 @@ struct ObservationBridgeTests {
         #expect(result.completed)
         #expect(result.firstFailure == nil)
     }
-
 }

@@ -1213,6 +1213,14 @@ enum ResolvedBackend: Sendable {
     case legacy
 }
 
+private final class ObservationBridgeStreamFactory<Value>: @unchecked Sendable {
+    let makeStream: () -> AsyncStream<Value>
+
+    init(makeStream: @escaping () -> AsyncStream<Value>) {
+        self.makeStream = makeStream
+    }
+}
+
 func makeObservationStream<Value: Sendable>(
     options: ObservationOptions = [],
     @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value,
@@ -1439,10 +1447,10 @@ public struct ObservationBridge<Value>: AsyncSequence {
         }
     }
 
-    private let stream: AsyncStream<Value>
+    private let streamFactory: ObservationBridgeStreamFactory<Value>
 
-    fileprivate init(stream: AsyncStream<Value>) {
-        self.stream = stream
+    fileprivate init(streamFactory: @escaping () -> AsyncStream<Value>) {
+        self.streamFactory = ObservationBridgeStreamFactory(makeStream: streamFactory)
     }
 
     public init(
@@ -1454,17 +1462,19 @@ public struct ObservationBridge<Value>: AsyncSequence {
             preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
         }
 
-        self.init(stream: makeObservationStream(
-            options: options,
-            observe,
-            duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
-        ))
+        self.init(streamFactory: {
+            makeObservationStream(
+                options: options,
+                observe,
+                duplicateFilter: nil,
+                debounce: options.debounceForObservation,
+                debounceClock: clock
+            )
+        })
     }
 
     public func makeAsyncIterator() -> Iterator {
-        Iterator(base: stream.makeAsyncIterator())
+        Iterator(base: streamFactory.makeStream().makeAsyncIterator())
     }
 }
 
@@ -1480,13 +1490,15 @@ public extension ObservationBridge where Value: Sendable {
             preconditionFailure(".removeDuplicates requires Value to conform to Equatable")
         }
 
-        self.init(stream: makeObservationStream(
-            options: options,
-            observe,
-            duplicateFilter: nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
-        ))
+        self.init(streamFactory: {
+            makeObservationStream(
+                options: options,
+                observe,
+                duplicateFilter: nil,
+                debounce: options.debounceForObservation,
+                debounceClock: clock
+            )
+        })
     }
 }
 
@@ -1505,13 +1517,15 @@ public extension ObservationBridge where Value: Equatable {
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
-        self.init(stream: makeObservationStream(
-            options: options,
-            observe,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
-        ))
+        self.init(streamFactory: {
+            makeObservationStream(
+                options: options,
+                observe,
+                duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterNonSendable() : nil,
+                debounce: options.debounceForObservation,
+                debounceClock: clock
+            )
+        })
     }
 }
 
@@ -1530,13 +1544,15 @@ public extension ObservationBridge where Value: Sendable & Equatable {
         clock: any Clock<Duration> = ContinuousClock(),
         @_inheritActorContext _ observe: @escaping @isolated(any) @Sendable () -> Value
     ) {
-        self.init(stream: makeObservationStream(
-            options: options,
-            observe,
-            duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
-            debounce: options.debounceForObservation,
-            debounceClock: clock
-        ))
+        self.init(streamFactory: {
+            makeObservationStream(
+                options: options,
+                observe,
+                duplicateFilter: options.contains(.removeDuplicates) ? makeEquatableDuplicateFilterSendable() : nil,
+                debounce: options.debounceForObservation,
+                debounceClock: clock
+            )
+        })
     }
 }
 
