@@ -73,8 +73,6 @@ let stateProjectionHandle = model.observeTask(
 Available options:
 
 - `.removeDuplicates`: suppresses consecutive equal values.
-- `.debounce(ObservationDebounce)`: coalesces high-frequency updates and emits on debounce boundaries.
-- `.throttle(ObservationThrottle)`: emits immediately, then rate-limits subsequent outputs to one value per interval.
 - `.rateLimit(ObservationRateLimit)`: explicit rate-limit configuration (`.debounce(...)` / `.throttle(...)`).
 - `.legacyBackend` (`iOS 26.0+` / `macOS 26.0+`): forces legacy `withObservationTracking` backend even on modern OS.
 - `ObservationDebounce` fields: `interval`, `tolerance` (optional), `mode` (`.immediateFirst` / `.delayedFirst`).
@@ -98,7 +96,7 @@ let clock = MyTestClock() // your Clock implementation for tests
 let throttle = ObservationThrottle(interval: .milliseconds(250))
 
 let stream = ObservationBridge(
-    options: [.throttle(throttle)],
+    options: [.rateLimit(.throttle(throttle))],
     clock: clock
 ) {
     model.count
@@ -173,7 +171,14 @@ Backend behavior note:
 - keep the returned `ObservationHandle` (or store it in `Set<ObservationHandle>`) while observation should continue
 - `cancel()` does not remove handles from your `Set`; remove them explicitly if desired
 
-## Compatibility Note for v0.5.0
+## Migration
+
+### v0.6.0
+
+- `.debounce(ObservationDebounce)` is deprecated; use `.rateLimit(.debounce(...))` instead.
+- Inspect `options.rateLimit` instead of relying on the deprecated `options.debounce` convenience accessor.
+
+### v0.5.0
 
 - Up to `v0.4.x`, `observe` / `observeTask` included owner-lifetime automatic handle retention.
 - Starting with `v0.5.0`, automatic handle retention is no longer supported.

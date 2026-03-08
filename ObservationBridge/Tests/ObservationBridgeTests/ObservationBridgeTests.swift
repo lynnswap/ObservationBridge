@@ -884,7 +884,7 @@ struct ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
+            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
             clock: clock
         ) {
             model.value
@@ -920,7 +920,7 @@ struct ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.removeDuplicates, .debounce(debounce)]),
+            options: legacyOptionsForCurrentRuntime([.removeDuplicates, .rateLimit(.debounce(debounce))]),
             clock: clock
         ) {
             model.value
@@ -959,7 +959,7 @@ struct ObservationBridgeTests {
         let clock = TestDebounceClock()
         let throttle = ObservationThrottle(interval: .milliseconds(200))
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.throttle(throttle)]),
+            options: legacyOptionsForCurrentRuntime([.rateLimit(.throttle(throttle))]),
             clock: clock
         ) {
             model.value
@@ -998,7 +998,7 @@ struct ObservationBridgeTests {
             mode: .earliest
         )
         let stream = ObservationBridge(
-            options: legacyOptionsForCurrentRuntime([.throttle(throttle)]),
+            options: legacyOptionsForCurrentRuntime([.rateLimit(.throttle(throttle))]),
             clock: clock
         ) {
             model.value
@@ -1033,7 +1033,7 @@ struct ObservationBridgeTests {
         let clock = TestDebounceClock()
         let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
         let stream = makeObservationBridgeStream(
-            options: legacyOptionsForCurrentRuntime([.debounce(debounce)]),
+            options: legacyOptionsForCurrentRuntime([.rateLimit(.debounce(debounce))]),
             clock: clock
         ) {
             model.value
@@ -1265,7 +1265,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.debounce(debounce)],
+            options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1297,7 +1297,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.debounce(debounce)],
+            options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1336,7 +1336,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.debounce(debounce)],
+            options: [.rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1366,7 +1366,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.throttle(throttle)],
+            options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1401,7 +1401,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.throttle(throttle)],
+            options: [.rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1581,7 +1581,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.parity,
-            options: [.removeDuplicates, .debounce(debounce)],
+            options: [.removeDuplicates, .rateLimit(.debounce(debounce))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1607,7 +1607,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.parity,
-            options: [.removeDuplicates, .throttle(throttle)],
+            options: [.removeDuplicates, .rateLimit(.throttle(throttle))],
             clock: clock
         ) { value in
             await queue.push(value)
@@ -1728,27 +1728,20 @@ struct ObservationBridgeTests {
             mode: .immediateFirst
         )
 
-        let debounceOnly: ObservationOptions = [.debounce(debounce)]
+        let debounceOnly: ObservationOptions = [.rateLimit(.debounce(debounce))]
         #expect(debounceOnly.rateLimit == .debounce(debounce))
-        #expect(debounceOnly.debounce?.interval == .milliseconds(100))
-        #expect(debounceOnly.debounce?.tolerance == .milliseconds(20))
-        #expect(debounceOnly.debounce?.mode == .immediateFirst)
-        #expect(debounceOnly.throttle == nil)
 
-        let sameDebounce = ObservationOptions.debounce(debounce)
+        let sameDebounce = ObservationOptions.rateLimit(.debounce(debounce))
         #expect(sameDebounce.rawValue == debounceOnly.rawValue)
         #expect(sameDebounce == debounceOnly)
         #expect(ObservationOptions.rateLimit(.debounce(debounce)) == sameDebounce)
 
         let roundTrippedDebounce = ObservationOptions(rawValue: debounceOnly.rawValue)
         #expect(roundTrippedDebounce.rateLimit == .debounce(debounce))
-        #expect(roundTrippedDebounce.debounce?.interval == .milliseconds(100))
-        #expect(roundTrippedDebounce.debounce?.tolerance == .milliseconds(20))
-        #expect(roundTrippedDebounce.debounce?.mode == .immediateFirst)
 
         let withFlag = debounceOnly.union([.removeDuplicates])
         #expect(withFlag.contains(.removeDuplicates))
-        #expect(withFlag.debounce?.interval == .milliseconds(100))
+        #expect(withFlag.rateLimit == .debounce(debounce))
 
         if #available(iOS 26.0, macOS 26.0, *) {
             let legacyOnly: ObservationOptions = [.legacyBackend]
@@ -1767,18 +1760,18 @@ struct ObservationBridgeTests {
 
         let roundTrippedWithFlag = ObservationOptions(rawValue: withFlag.rawValue)
         #expect(roundTrippedWithFlag.contains(.removeDuplicates))
-        #expect(roundTrippedWithFlag.debounce?.interval == .milliseconds(100))
+        #expect(roundTrippedWithFlag.rateLimit == .debounce(debounce))
 
         let otherDebounce = ObservationDebounce(interval: .milliseconds(150), mode: .delayedFirst)
-        #expect(!withFlag.contains(.debounce(otherDebounce)))
+        #expect(!withFlag.contains(.rateLimit(.debounce(otherDebounce))))
 
         var unchanged = withFlag
-        let removedDifferentDebounce = unchanged.remove(.debounce(otherDebounce))
+        let removedDifferentDebounce = unchanged.remove(.rateLimit(.debounce(otherDebounce)))
         #expect(removedDifferentDebounce == nil)
-        #expect(unchanged.debounce?.interval == .milliseconds(100))
+        #expect(unchanged.rateLimit == .debounce(debounce))
 
-        let a = ObservationOptions.debounce(debounce)
-        let b = ObservationOptions.debounce(otherDebounce)
+        let a = ObservationOptions.rateLimit(.debounce(debounce))
+        let b = ObservationOptions.rateLimit(.debounce(otherDebounce))
         let conflictingUnionAB = a.union(b)
         let conflictingUnionBA = b.union(a)
         #expect(conflictingUnionAB == conflictingUnionBA)
@@ -1786,81 +1779,77 @@ struct ObservationBridgeTests {
         #expect(!a.hasRateLimitConflict)
         #expect(!b.hasRateLimitConflict)
         #expect(conflictingUnionAB.rateLimit == nil)
-        #expect(conflictingUnionAB.debounce == nil)
-        #expect(conflictingUnionAB.throttle == nil)
         #expect(!conflictingUnionAB.contains(a))
         #expect(!conflictingUnionAB.contains(b))
 
-        let literalMerged: ObservationOptions = [.debounce(debounce), .debounce(otherDebounce)]
+        let literalMerged: ObservationOptions = [
+            .rateLimit(.debounce(debounce)),
+            .rateLimit(.debounce(otherDebounce)),
+        ]
         #expect(literalMerged.hasRateLimitConflict)
         #expect(literalMerged.rateLimit == nil)
-        #expect(literalMerged.debounce == nil)
         #expect(literalMerged == ObservationOptions(rawValue: literalMerged.rawValue))
 
-        let subtractSpecificFromConflict = literalMerged.subtracting([.debounce(debounce)])
+        let subtractSpecificFromConflict = literalMerged.subtracting([.rateLimit(.debounce(debounce))])
         #expect(subtractSpecificFromConflict == literalMerged)
 
         let clearedConflict = literalMerged.subtracting(literalMerged)
         #expect(clearedConflict == ObservationOptions())
 
         let thirdDebounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
-        let c = ObservationOptions.debounce(thirdDebounce)
+        let c = ObservationOptions.rateLimit(.debounce(thirdDebounce))
         let mergedLeftAssociative = a.union(b).union(c)
         let mergedRightAssociative = a.union(b.union(c))
         #expect(mergedLeftAssociative == mergedRightAssociative)
-        #expect(mergedLeftAssociative.debounce == nil)
+        #expect(mergedLeftAssociative.rateLimit == nil)
         #expect(!mergedLeftAssociative.contains(c))
 
         let symmetricAB = a.symmetricDifference(b)
         let symmetricBA = b.symmetricDifference(a)
         #expect(symmetricAB == symmetricBA)
-        #expect(symmetricAB.debounce == nil)
+        #expect(symmetricAB.rateLimit == nil)
 
-        let intersected = withFlag.intersection([.debounce(debounce)])
+        let intersected = withFlag.intersection([.rateLimit(.debounce(debounce))])
         #expect(!intersected.contains(.removeDuplicates))
-        #expect(intersected.debounce?.interval == .milliseconds(100))
+        #expect(intersected.rateLimit == .debounce(debounce))
 
         let withoutFlag = withFlag.subtracting([.removeDuplicates])
         #expect(!withoutFlag.contains(.removeDuplicates))
-        #expect(withoutFlag.debounce?.interval == .milliseconds(100))
+        #expect(withoutFlag.rateLimit == .debounce(debounce))
 
         var removedFlag = withFlag
         let removed = removedFlag.remove(.removeDuplicates)
         #expect(removed != nil)
         #expect(!removedFlag.contains(.removeDuplicates))
-        #expect(removedFlag.debounce?.interval == .milliseconds(100))
+        #expect(removedFlag.rateLimit == .debounce(debounce))
 
-        let clearedDebounce = withFlag.subtracting([.debounce(debounce)])
-        #expect(clearedDebounce.debounce == nil)
+        let clearedDebounce = withFlag.subtracting([.rateLimit(.debounce(debounce))])
+        #expect(clearedDebounce.rateLimit == nil)
 
         let throttle = ObservationThrottle(
             interval: .milliseconds(120),
             mode: .earliest
         )
-        let throttleOnly: ObservationOptions = [.throttle(throttle)]
+        let throttleOnly: ObservationOptions = [.rateLimit(.throttle(throttle))]
         #expect(throttleOnly.rateLimit == .throttle(throttle))
-        #expect(throttleOnly.debounce == nil)
-        #expect(throttleOnly.throttle?.interval == .milliseconds(120))
-        #expect(throttleOnly.throttle?.mode == .earliest)
 
-        let sameThrottle = ObservationOptions.throttle(throttle)
+        let sameThrottle = ObservationOptions.rateLimit(.throttle(throttle))
         #expect(sameThrottle == throttleOnly)
         #expect(ObservationOptions.rateLimit(.throttle(throttle)) == sameThrottle)
 
         let roundTrippedThrottle = ObservationOptions(rawValue: throttleOnly.rawValue)
         #expect(roundTrippedThrottle.rateLimit == .throttle(throttle))
-        #expect(roundTrippedThrottle.throttle?.interval == .milliseconds(120))
-        #expect(roundTrippedThrottle.throttle?.mode == .earliest)
 
         let mixedConflict = debounceOnly.union(throttleOnly)
         #expect(mixedConflict.hasRateLimitConflict)
         #expect(mixedConflict.rateLimit == nil)
-        #expect(mixedConflict.debounce == nil)
-        #expect(mixedConflict.throttle == nil)
         #expect(!mixedConflict.contains(debounceOnly))
         #expect(!mixedConflict.contains(throttleOnly))
 
-        let literalMixedConflict: ObservationOptions = [.debounce(debounce), .throttle(throttle)]
+        let literalMixedConflict: ObservationOptions = [
+            .rateLimit(.debounce(debounce)),
+            .rateLimit(.throttle(throttle)),
+        ]
         #expect(literalMixedConflict.hasRateLimitConflict)
         #expect(literalMixedConflict.rateLimit == nil)
         #expect(literalMixedConflict == ObservationOptions(rawValue: literalMixedConflict.rawValue))
@@ -1879,11 +1868,10 @@ struct ObservationBridgeTests {
             mode: .delayedFirst
         )
 
-        let submillisecondOptions = ObservationOptions.debounce(submillisecondDebounce)
-        let canonicalOptions: ObservationOptions = [.debounce(canonicalDebounce)]
+        let submillisecondOptions = ObservationOptions.rateLimit(.debounce(submillisecondDebounce))
+        let canonicalOptions: ObservationOptions = [.rateLimit(.debounce(canonicalDebounce))]
 
-        #expect(submillisecondOptions.debounce?.interval == .milliseconds(1))
-        #expect(submillisecondOptions.debounce?.tolerance == .milliseconds(2))
+        #expect(submillisecondOptions.rateLimit == .debounce(canonicalDebounce))
         #expect(submillisecondOptions.contains(canonicalOptions))
         #expect(canonicalOptions.contains(submillisecondOptions))
         #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
@@ -1900,11 +1888,10 @@ struct ObservationBridgeTests {
             mode: .earliest
         )
 
-        let submillisecondOptions = ObservationOptions.throttle(submillisecondThrottle)
-        let canonicalOptions: ObservationOptions = [.throttle(canonicalThrottle)]
+        let submillisecondOptions = ObservationOptions.rateLimit(.throttle(submillisecondThrottle))
+        let canonicalOptions: ObservationOptions = [.rateLimit(.throttle(canonicalThrottle))]
 
-        #expect(submillisecondOptions.throttle?.interval == .milliseconds(1))
-        #expect(submillisecondOptions.throttle?.mode == .earliest)
+        #expect(submillisecondOptions.rateLimit == .throttle(canonicalThrottle))
         #expect(submillisecondOptions.contains(canonicalOptions))
         #expect(canonicalOptions.contains(submillisecondOptions))
         #expect(submillisecondOptions.intersection(canonicalOptions) == canonicalOptions)
@@ -1913,20 +1900,33 @@ struct ObservationBridgeTests {
     @Test
     func observationOptionsRawValueCanonicalizesLegacyDebounceEncoding() {
         let legacyRawValue: UInt64 = (1 << 1) | (1 << 2) | (1 << 3) | (100 << 4) | (20 << 32)
-        let canonical = ObservationOptions.debounce(
-            ObservationDebounce(
-                interval: .milliseconds(100),
-                tolerance: .milliseconds(20),
-                mode: .delayedFirst
-            )
+        let expectedDebounce = ObservationDebounce(
+            interval: .milliseconds(100),
+            tolerance: .milliseconds(20),
+            mode: .delayedFirst
         )
+        let canonical = ObservationOptions.rateLimit(.debounce(expectedDebounce))
 
         let options = ObservationOptions(rawValue: legacyRawValue)
-        #expect(options.debounce?.interval == .milliseconds(100))
-        #expect(options.debounce?.tolerance == .milliseconds(20))
-        #expect(options.debounce?.mode == .delayedFirst)
+        #expect(options.rateLimit == .debounce(expectedDebounce))
         #expect(options.rawValue == canonical.rawValue)
         #expect(options.rawValue != legacyRawValue)
+    }
+
+    @available(*, deprecated, message: "Compatibility coverage for deprecated debounce sugar.")
+    @Test
+    func observationOptionsDeprecatedDebounceSugarRemainsEquivalentToRateLimit() {
+        let debounce = ObservationDebounce(
+            interval: .milliseconds(80),
+            tolerance: .milliseconds(10),
+            mode: .immediateFirst
+        )
+        let deprecatedOptions = ObservationOptions.debounce(debounce)
+        let canonicalOptions = ObservationOptions.rateLimit(.debounce(debounce))
+
+        #expect(deprecatedOptions == canonicalOptions)
+        #expect(deprecatedOptions.rawValue == canonicalOptions.rawValue)
+        #expect(deprecatedOptions.debounce == debounce)
     }
 
     @Test
@@ -1980,7 +1980,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             [\.value, \.isEnabled],
-            options: [.debounce(debounce)],
+            options: [.rateLimit(.debounce(debounce))],
             of: { owner in
                 CounterSnapshot(value: owner.value, isEnabled: owner.isEnabled)
             }
@@ -2030,7 +2030,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             [\.value, \.isEnabled],
-            options: [.debounce(debounce)]
+            options: [.rateLimit(.debounce(debounce))]
         ) {
             recorder.append(1)
         }
@@ -2444,7 +2444,7 @@ struct ObservationBridgeTests {
 
         let handle = model.observeTask(
             \.value,
-            options: [.debounce(debounce)]
+            options: [.rateLimit(.debounce(debounce))]
         ) { value in
             await started.push(value)
             await withTaskCancellationHandler {

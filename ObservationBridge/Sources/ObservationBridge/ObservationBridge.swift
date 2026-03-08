@@ -130,27 +130,18 @@ public struct ObservationOptions: OptionSet, Sendable {
         ObservationOptions(removeDuplicates: false, usesLegacyBackend: false, rateLimitConfiguration: configuration)
     }
 
+    @available(*, deprecated, message: "Use .rateLimit(.debounce(configuration)) instead.")
     public static func debounce(_ configuration: ObservationDebounce) -> ObservationOptions {
         rateLimit(.debounce(configuration))
-    }
-
-    public static func throttle(_ configuration: ObservationThrottle) -> ObservationOptions {
-        rateLimit(.throttle(configuration))
     }
 
     public var rateLimit: ObservationRateLimit? {
         rateLimitConfiguration
     }
 
+    @available(*, deprecated, message: "Inspect options.rateLimit and pattern-match .debounce instead.")
     public var debounce: ObservationDebounce? {
         guard case let .debounce(configuration)? = rateLimitConfiguration else {
-            return nil
-        }
-        return configuration
-    }
-
-    public var throttle: ObservationThrottle? {
-        guard case let .throttle(configuration)? = rateLimitConfiguration else {
             return nil
         }
         return configuration
