@@ -124,6 +124,59 @@ Backend notes:
 - `.legacyBackend` keeps forcing the legacy backend after native support is added
 - non-`Sendable` stream values use the legacy backend
 
+## Testing Observation Timing
+
+This section is for tests. UIKit/AppKit rendering code should usually keep using
+the `Void` callback form shown above:
+
+```swift
+observations.observe(model) { _, model in
+    titleLabel.text = model.title
+}
+```
+
+When a test needs to assert values delivered by an owner-bound observation,
+return the value from `observe`. The returned `ObservedValues` records delivered
+values and provides async wait points, so the test does not need a separate
+recorder or wall-clock polling loop.
+
+```swift
+let titles = observations.observe(model) { _, model in
+    model.title
+}
+
+#expect(await titles.waitUntilValue("Loading"))
+
+model.title = "Loaded"
+#expect(await titles.waitUntilValue("Loaded"))
+```
+
+`ObservedValues<Value>` is limited to `Value: Sendable` because values can cross
+an async boundary while tests wait. It exposes `latestValue`, `snapshot()`,
+`waitUntilValue(_:timeout:)`, `waitUntil(timeout:_:)`, `cancel()`, and
+`isActive`. Keep the `ObservedValues` instance alive for as long as the test
+expects updates; call `cancel()` when the test no longer needs that observation.
+
+The `timeout` on `ObservedValues` wait methods is only a test guard. It does not
+inject a clock into owner-bound observation delivery.
+
+For stream debounce or throttle tests, inject a `Clock` into the stream API
+instead:
+
+```swift
+let debounce = ObservationDebounce(interval: .milliseconds(250))
+
+let stream = makeObservationBridgeStream(
+    options: .rateLimit(.debounce(debounce)),
+    clock: testClock
+) {
+    model.title
+}
+```
+
+That `clock:` controls stream rate-limit timing only. It is separate from
+`ObservedValues` timeouts and from the owner-bound `observe` callback pipeline.
+
 ## Migration
 
 ### v0.9.0

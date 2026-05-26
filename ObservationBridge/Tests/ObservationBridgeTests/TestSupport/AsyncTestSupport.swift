@@ -50,28 +50,6 @@ actor AlternateGlobalActor {
     static let shared = AlternateGlobalActor()
 }
 
-final class ValueRecorder<Value: Sendable>: Sendable {
-    private let storage = Mutex<[Value]>([])
-
-    func append(_ value: Value) {
-        storage.withLock { values in
-            values.append(value)
-        }
-    }
-
-    func snapshot() -> [Value] {
-        storage.withLock { values in
-            values
-        }
-    }
-
-    func count() -> Int {
-        storage.withLock { values in
-            values.count
-        }
-    }
-}
-
 final class TestDebounceClock: Clock, @unchecked Sendable {
     typealias Instant = ContinuousClock.Instant
     typealias Duration = Swift.Duration
@@ -285,23 +263,6 @@ func nextWithTimeout<Value: Sendable>(
     await waitWithTimeout(nanoseconds: nanoseconds) {
         await queue.next()
     } ?? nil
-}
-
-func waitUntilCount<Value: Sendable>(
-    _ expectedCount: Int,
-    in recorder: ValueRecorder<Value>,
-    nanoseconds: UInt64 = 5_000_000_000
-) async -> Bool {
-    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
-        while recorder.count() < expectedCount {
-            if Task.isCancelled {
-                return false
-            }
-            await Task.yield()
-        }
-        return true
-    }
-    return reached == true
 }
 
 func waitUntilValueReceived<Value: Sendable & Equatable>(

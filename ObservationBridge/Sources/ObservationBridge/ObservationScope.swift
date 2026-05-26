@@ -35,42 +35,57 @@ public final class ObservationScope: @unchecked Sendable {
         _line: UInt = #line,
         _column: UInt = #column
     ) {
-        let cancellationGeneration = storage.withLock { storage in
-            storage.cancellationGeneration
-        }
-        let observationIsolation = apply.isolation ?? isolation
-        let id = ObservationScopeID(
-            fileID: String(describing: _fileID),
-            line: _line,
-            column: _column
-        )
-        let descriptor = ObservationScopeDescriptor(
+        installObservation(
             owner: owner,
             options: options,
-            observationIsolation: observationIsolation,
-            callbackIsolation: apply.isolation
+            startIsolation: isolation,
+            observationIsolation: apply.isolation ?? isolation,
+            callbackIsolation: apply.isolation,
+            apply: apply,
+            _fileID: _fileID,
+            _line: _line,
+            _column: _column
         )
+    }
 
-        let slot = makeObservationSlot(
+    /// Starts or replaces an owner-bound observation that records callback-produced values.
+    ///
+    /// This overload is intended for tests that need to wait for a specific observed value without
+    /// maintaining a separate recorder. The callback body is still the tracking body.
+    ///
+    /// - Returns: A value recorder tied to the lifetime of the installed observation.
+    public func observe<Owner: AnyObject & Observable, Value: Sendable>(
+        _ owner: Owner,
+        options: ObservationOptions = .didSet,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Value,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservedValues<Value> {
+        let values = ObservedValues<Value>()
+        let valueCallbackBox: any ObservationScopeAnyValueCallbackBox =
+            ObservationScopeValueCallbackBox(callback: apply, values: values)
+        let recordingCallback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Void =
+            makeObservationValueRecordingCallback(valueCallbackBox)
+        let handle = installObservation(
             owner: owner,
-            descriptor: descriptor,
             options: options,
-            isolation: observationIsolation,
-            apply: apply
+            startIsolation: isolation,
+            observationIsolation: apply.isolation ?? isolation,
+            callbackIsolation: apply.isolation,
+            onFinish: { [values] in
+                values.finish()
+            },
+            apply: recordingCallback,
+            _fileID: _fileID,
+            _line: _line,
+            _column: _column
         )
-        let insertion = storage.withLock { storage -> (slotToStart: (any ObservationScopeSlotProtocol)?, shouldCancelNewSlot: Bool) in
-            guard storage.cancellationGeneration == cancellationGeneration else {
-                return (nil, true)
-            }
-
-            let replacedSlot = storage.slots.updateValue(slot, forKey: id)
-            replacedSlot?.cancel()
-            return (slot, false)
+        values.setCancelOperation {
+            handle.cancel()
         }
-        if insertion.shouldCancelNewSlot {
-            slot.cancel()
-        }
-        insertion.slotToStart?.start(isolation: isolation)
+        return values
     }
 
     /// Cancels every observation currently owned by the scope.
@@ -91,11 +106,63 @@ public final class ObservationScope: @unchecked Sendable {
         cancelAll()
     }
 
+    @discardableResult
+    private func installObservation<Owner: AnyObject & Observable>(
+        owner: Owner,
+        options: ObservationOptions,
+        startIsolation: isolated (any Actor)?,
+        observationIsolation: (any Actor)?,
+        callbackIsolation: (any Actor)?,
+        onFinish: @escaping @Sendable () -> Void = {},
+        apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        _fileID: StaticString,
+        _line: UInt,
+        _column: UInt
+    ) -> ObservationHandle {
+        let cancellationGeneration = storage.withLock { storage in
+            storage.cancellationGeneration
+        }
+        let id = ObservationScopeID(
+            fileID: String(describing: _fileID),
+            line: _line,
+            column: _column
+        )
+        let descriptor = ObservationScopeDescriptor(
+            owner: owner,
+            options: options,
+            observationIsolation: observationIsolation,
+            callbackIsolation: callbackIsolation
+        )
+        let slot = makeObservationSlot(
+            owner: owner,
+            descriptor: descriptor,
+            options: options,
+            isolation: observationIsolation,
+            onFinish: onFinish,
+            apply: apply
+        )
+        let insertion = storage.withLock { storage -> (slotToStart: (any ObservationScopeSlotProtocol)?, shouldCancelNewSlot: Bool) in
+            guard storage.cancellationGeneration == cancellationGeneration else {
+                return (nil, true)
+            }
+
+            let replacedSlot = storage.slots.updateValue(slot, forKey: id)
+            replacedSlot?.cancel()
+            return (slot, false)
+        }
+        if insertion.shouldCancelNewSlot {
+            slot.cancel()
+        }
+        insertion.slotToStart?.start(isolation: startIsolation)
+        return slot.handle
+    }
+
     private func makeObservationSlot<Owner: AnyObject & Observable>(
         owner: Owner,
         descriptor: ObservationScopeDescriptor,
         options: ObservationOptions,
         isolation: (any Actor)?,
+        onFinish: @escaping @Sendable () -> Void,
         apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     ) -> ObservationScopeSlot<Owner> {
         let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
@@ -111,6 +178,7 @@ public final class ObservationScope: @unchecked Sendable {
         lifetime.addCancellationHandler {
             state.terminate()
         }
+        lifetime.addCancellationHandler(onFinish)
         lifetime.addCancellationHandler {
             callbackCleaner.clear()
         }

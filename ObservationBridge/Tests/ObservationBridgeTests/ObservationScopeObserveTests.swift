@@ -27,53 +27,65 @@ final class ObservationScopeObserveTests {
     func observeStartsImmediatelyAndTracksPropertiesReadByCallback() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
+        let passes = observations.observe(model) { event, model in
             MainActor.assertIsolated()
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: model.isEnabled
-                )
+            return ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: model.isEnabled
             )
         }
 
-        #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
 
         model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 1, isEnabled: false))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: false)))
+        #expect(passes.latestValue == ScopePass(kind: .didSet, value: 1, isEnabled: false))
 
         model.isEnabled = true
-        #expect(await waitUntilCount(3, in: recorder))
-        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 1, isEnabled: true))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: true)))
+        #expect(passes.latestValue == ScopePass(kind: .didSet, value: 1, isEnabled: true))
+    }
+
+    @Test
+    func valueProducingObserveWaitsForReturnedValues() async {
+        let model = CounterModel()
+        model.name = "Loading"
+        let observations = ObservationScope()
+        defer { observations.cancelAll() }
+
+        let titles = observations.observe(model) { _, model in
+            model.name
+        }
+
+        #expect(await titles.waitUntilValue("Loading"))
+
+        model.name = "Loaded"
+        #expect(await titles.waitUntilValue("Loaded"))
+        #expect(titles.snapshot() == ["Loading", "Loaded"])
     }
 
     @Test
     func didSetPassReadsValueAfterMutationBody() async {
         let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: false
-                )
+        let passes = observations.observe(model) { event, model in
+            ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: false
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
 
         model.value = 7
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot().last == ScopePass(kind: .didSet, value: 7, isEnabled: false))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 7, isEnabled: false)))
+        #expect(passes.latestValue == ScopePass(kind: .didSet, value: 7, isEnabled: false))
     }
 
     @Test
@@ -85,24 +97,21 @@ final class ObservationScopeObserveTests {
 
         let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: false
-                )
+        let passes = observations.observe(model) { event, model in
+            ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: false
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(passes.isActive == false)
 
         model.value = 11
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
 
     @MainActor
@@ -110,31 +119,28 @@ final class ObservationScopeObserveTests {
     func didSetTrackingIsCancelledAfterEachChange() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
+        let passes = observations.observe(model) { event, model in
             MainActor.assertIsolated()
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: false
-                )
+            return ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: false
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
 
         model.value = 1
-        #expect(await waitUntilCount(2, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: false)))
 
         model.value = 2
-        #expect(await waitUntilCount(3, in: recorder))
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 2, isEnabled: false)))
+        #expect(await receivesNoNewValue(in: passes))
 
         #expect(
-            recorder.snapshot() == [
+            passes.snapshot() == [
                 ScopePass(kind: .initial, value: 0, isEnabled: false),
                 ScopePass(kind: .didSet, value: 1, isEnabled: false),
                 ScopePass(kind: .didSet, value: 2, isEnabled: false),
@@ -146,23 +152,37 @@ final class ObservationScopeObserveTests {
     func emptyOptionsDeliverOnlyInitialEvent() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
         defer { observations.cancelAll() }
 
-        observations.observe(model, options: []) { event, model in
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: model.isEnabled
-                )
+        let passes = observations.observe(model, options: []) { event, model in
+            ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: model.isEnabled
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(passes.isActive == false)
+
         model.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+    }
+
+    @Test
+    func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        defer { observations.cancelAll() }
+
+        let values = observations.observe(model) { _, model in
+            model.value
+        }
+
+        #expect(await values.waitUntilValue(0))
+        model.value = 0
+        #expect(await receivesNoNewValue(in: values))
+        #expect(values.snapshot() == [0])
     }
 
     @MainActor
@@ -170,28 +190,28 @@ final class ObservationScopeObserveTests {
     func repeatedObserveFromSameCallSiteReplacesCallbackWithoutDuplicatingPipeline() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<String>()
         defer { observations.cancelAll() }
 
-        installReplacingObservation(
+        let first = installReplacingObservation(
             observations: observations,
             model: model,
-            label: "first",
-            recorder: recorder
+            label: "first"
         )
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await first.waitUntilValue("first:initial:0"))
 
-        installReplacingObservation(
+        let second = installReplacingObservation(
             observations: observations,
             model: model,
-            label: "second",
-            recorder: recorder
+            label: "second"
         )
 
-        #expect(await waitUntilCount(2, in: recorder))
+        #expect(first.isActive == false)
+        #expect(await second.waitUntilValue("second:initial:0"))
+
         model.value = 1
-        #expect(await waitUntilCount(3, in: recorder))
-        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0", "second:didSet:1"])
+        #expect(await second.waitUntilValue("second:didSet:1"))
+        #expect(first.snapshot() == ["first:initial:0"])
+        #expect(second.snapshot() == ["second:initial:0", "second:didSet:1"])
     }
 
     @MainActor
@@ -199,34 +219,32 @@ final class ObservationScopeObserveTests {
     func repeatedObserveFromSameCallSiteRetracksReplacementCallbackBody() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<String>()
         defer { observations.cancelAll() }
 
-        installReplacingObservation(
+        let valuePasses = installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .value,
-            label: "value",
-            recorder: recorder
+            label: "value"
         )
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await valuePasses.waitUntilValue("value:initial:value:0"))
 
-        installReplacingObservation(
+        let enabledPasses = installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .isEnabled,
-            label: "enabled",
-            recorder: recorder
+            label: "enabled"
         )
-        #expect(await waitUntilCount(2, in: recorder))
+        #expect(valuePasses.isActive == false)
+        #expect(await enabledPasses.waitUntilValue("enabled:initial:isEnabled:false"))
 
         model.isEnabled = true
-        #expect(await waitUntilCount(3, in: recorder))
+        #expect(await enabledPasses.waitUntilValue("enabled:didSet:isEnabled:true"))
+
         model.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await receivesNoNewValue(in: enabledPasses))
         #expect(
-            recorder.snapshot() == [
-                "value:initial:value:0",
+            enabledPasses.snapshot() == [
                 "enabled:initial:isEnabled:false",
                 "enabled:didSet:isEnabled:true",
             ]
@@ -238,108 +256,119 @@ final class ObservationScopeObserveTests {
     func repeatedObserveFromSameCallSiteWithDifferentOptionsReplacesPipeline() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<String>()
         defer { observations.cancelAll() }
 
-        installReplacingObservation(
+        let initialOnlyPasses = installReplacingObservation(
             observations: observations,
             model: model,
             options: [],
-            label: "initial",
-            recorder: recorder
+            label: "initial"
         )
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await initialOnlyPasses.waitUntilValue("initial:initial:0"))
+        #expect(initialOnlyPasses.isActive == false)
 
-        installReplacingObservation(
+        let didSetPasses = installReplacingObservation(
             observations: observations,
             model: model,
             options: .didSet,
-            label: "did",
-            recorder: recorder
+            label: "did"
         )
-        #expect(await waitUntilCount(2, in: recorder))
+        #expect(await didSetPasses.waitUntilValue("did:initial:0"))
 
         model.value = 1
-        #expect(await waitUntilCount(3, in: recorder))
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == ["initial:initial:0", "did:initial:0", "did:didSet:1"])
+        #expect(await didSetPasses.waitUntilValue("did:didSet:1"))
+        #expect(didSetPasses.snapshot() == ["did:initial:0", "did:didSet:1"])
     }
 
     @MainActor
     @Test
     func repeatedObserveFromSameCallSiteWithDifferentOwnerReplacesPipeline() async {
-        let first = MainActorCounterModel()
-        let second = MainActorCounterModel()
+        let firstModel = MainActorCounterModel()
+        let secondModel = MainActorCounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<String>()
         defer { observations.cancelAll() }
 
-        installReplacingObservation(
+        let firstPasses = installReplacingObservation(
             observations: observations,
-            model: first,
-            label: "first",
-            recorder: recorder
+            model: firstModel,
+            label: "first"
         )
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await firstPasses.waitUntilValue("first:initial:0"))
 
-        installReplacingObservation(
+        let secondPasses = installReplacingObservation(
             observations: observations,
-            model: second,
-            label: "second",
-            recorder: recorder
+            model: secondModel,
+            label: "second"
         )
-        #expect(await waitUntilCount(2, in: recorder))
+        #expect(firstPasses.isActive == false)
+        #expect(await secondPasses.waitUntilValue("second:initial:0"))
 
-        first.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0"])
+        firstModel.value = 1
+        #expect(await receivesNoNewValue(in: secondPasses))
+        #expect(firstPasses.snapshot() == ["first:initial:0"])
+        #expect(secondPasses.snapshot() == ["second:initial:0"])
 
-        second.value = 2
-        #expect(await waitUntilCount(3, in: recorder))
-        #expect(recorder.snapshot() == ["first:initial:0", "second:initial:0", "second:didSet:2"])
+        secondModel.value = 2
+        #expect(await secondPasses.waitUntilValue("second:didSet:2"))
+        #expect(secondPasses.snapshot() == ["second:initial:0", "second:didSet:2"])
     }
 
     @Test
     func cancelAllStopsLaterEvents() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ScopePass>()
 
-        observations.observe(model) { event, model in
-            recorder.append(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: model.isEnabled
-                )
+        let passes = observations.observe(model) { event, model in
+            ScopePass(
+                kind: event.kind,
+                value: model.value,
+                isEnabled: model.isEnabled
             )
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
         observations.cancelAll()
+        #expect(passes.isActive == false)
 
         model.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+    }
+
+    @Test
+    func observedValuesCancelStopsLaterEvents() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        defer { observations.cancelAll() }
+
+        let values = observations.observe(model) { _, model in
+            model.value
+        }
+
+        #expect(await values.waitUntilValue(0))
+        values.cancel()
+        #expect(values.isActive == false)
+
+        model.value = 1
+        #expect(values.snapshot() == [0])
     }
 
     @Test
     func eventCancelStopsCurrentObservationOnly() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<ObservationEvent.Kind>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
-            recorder.append(event.kind)
+        let kinds = observations.observe(model) { event, model in
             _ = model.value
             event.cancel()
+            return event.kind
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await kinds.waitUntilValue(.initial))
+        #expect(kinds.isActive == false)
+
         model.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [.initial])
+        #expect(kinds.snapshot() == [.initial])
     }
 
     @Test
@@ -347,19 +376,19 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
-        let recorder = ValueRecorder<ObservationEvent.Kind>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
-            recorder.append(event.kind)
+        let kinds = observations.observe(model) { event, model in
             _ = model.value
             probe.cancelAll()
+            return event.kind
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
+        #expect(await kinds.waitUntilValue(.initial))
+        #expect(kinds.isActive == false)
+
         model.value = 1
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(recorder.snapshot() == [.initial])
+        #expect(kinds.snapshot() == [.initial])
     }
 
     @Test
@@ -371,7 +400,7 @@ final class ObservationScopeObserveTests {
             state.terminate()
             taskBox.finish()
         }
-        let recorder = ValueRecorder<String>()
+        let started = ObservedValues<String>()
         let slot = ObservationScopeSlot(
             descriptor: ObservationScopeDescriptor(
                 owner: model,
@@ -384,7 +413,7 @@ final class ObservationScopeObserveTests {
             taskBox: taskBox,
             callbackBox: ObservationScopeCallbackBox<CounterModel> { _, _ in }
         ) { _ in
-            recorder.append("started")
+            started.record("started")
             return Task {}
         }
 
@@ -394,14 +423,14 @@ final class ObservationScopeObserveTests {
         slot.cancel()
         start?()
 
-        #expect(recorder.snapshot().isEmpty)
+        #expect(started.snapshot().isEmpty)
+        started.cancel()
     }
 
     @Test
     func initialOnlyObservationReleasesCallbackAfterNaturalCompletion() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<Int>()
         let didDeinit = DeinitFlag()
 
         do {
@@ -410,11 +439,11 @@ final class ObservationScopeObserveTests {
                     await didDeinit.mark()
                 }
             }
-            observations.observe(model, options: []) { _, model in
+            let values = observations.observe(model, options: []) { _, model in
                 probe.record(model.value)
-                recorder.append(model.value)
+                return model.value
             }
-            #expect(await waitUntilCount(1, in: recorder))
+            #expect(await values.waitUntilValue(0))
         }
 
         let releasedCallbackCapture = await waitWithTimeout {
@@ -468,20 +497,19 @@ final class ObservationScopeObserveTests {
     func observeSupportsMainActorNonSendableValues() async {
         let model = MainActorNonSendablePayloadModel()
         let observations = ObservationScope()
-        let recorder = ValueRecorder<Int>()
         defer { observations.cancelAll() }
 
-        observations.observe(model) { _, model in
+        let values = observations.observe(model) { _, model in
             MainActor.assertIsolated()
-            recorder.append(model.payload.value)
+            return model.payload.value
         }
 
-        #expect(await waitUntilCount(1, in: recorder))
-        #expect(recorder.snapshot() == [0])
+        #expect(await values.waitUntilValue(0))
+        #expect(values.snapshot() == [0])
 
         model.payload = NonSendablePayload(value: 2)
-        #expect(await waitUntilCount(2, in: recorder))
-        #expect(recorder.snapshot() == [0, 2])
+        #expect(await values.waitUntilValue(2))
+        #expect(values.snapshot() == [0, 2])
     }
 
     @Test
@@ -489,11 +517,12 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let probe = CustomActorObservationProbe()
 
-        await probe.observe(model)
-        #expect(await waitUntilValues([0], in: probe))
+        let values = await probe.observe(model)
+        #expect(await values.waitUntilValue(0))
 
         model.value = 4
-        #expect(await waitUntilValues([0, 4], in: probe))
+        #expect(await values.waitUntilValue(4))
+        #expect(values.snapshot() == [0, 4])
         await probe.cancelAll()
     }
 
@@ -501,14 +530,15 @@ final class ObservationScopeObserveTests {
     func observeTracksMultiplePassesOnCustomActorOwnedModel() async {
         let probe = CustomActorOwnedObservationProbe()
 
-        await probe.observe()
-        #expect(await waitUntilValues([0], in: probe))
+        let values = await probe.observe()
+        #expect(await values.waitUntilValue(0))
 
         await probe.setValue(1)
-        #expect(await waitUntilValues([0, 1], in: probe))
+        #expect(await values.waitUntilValue(1))
 
         await probe.setValue(2)
-        #expect(await waitUntilValues([0, 1, 2], in: probe))
+        #expect(await values.waitUntilValue(2))
+        #expect(values.snapshot() == [0, 1, 2])
         await probe.cancelAll()
     }
 
@@ -519,21 +549,23 @@ final class ObservationScopeObserveTests {
         let probe = CustomActorObservationProbe()
         defer { observations.cancelAll() }
 
-        await observations.observe(
+        let values = await observations.observe(
             model,
             options: .didSet,
             { _, model in
                 probe.assumeIsolated { isolatedProbe in
-                    isolatedProbe.record(model.value)
+                    isolatedProbe.preconditionIsolated()
+                    return model.value
                 }
             },
             isolation: probe
         )
 
-        #expect(await waitUntilValues([0], in: probe))
+        #expect(await values.waitUntilValue(0))
 
         model.value = 5
-        #expect(await waitUntilValues([0, 5], in: probe))
+        #expect(await values.waitUntilValue(5))
+        #expect(values.snapshot() == [0, 5])
     }
 }
 
@@ -542,86 +574,76 @@ private enum ReplacementReadTarget {
     case isEnabled
 }
 
+@discardableResult
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
     options: ObservationOptions = .didSet,
-    label: String,
-    recorder: ValueRecorder<String>
-) {
+    label: String
+) -> ObservedValues<String> {
     observations.observe(model, options: options) { event, model in
-        recorder.append("\(label):\(event.kind):\(model.value)")
+        "\(label):\(event.kind):\(model.value)"
     }
 }
 
 @MainActor
+@discardableResult
 private func installReplacingObservation(
     observations: ObservationScope,
     model: MainActorCounterModel,
     options: ObservationOptions = .didSet,
-    label: String,
-    recorder: ValueRecorder<String>
-) {
+    label: String
+) -> ObservedValues<String> {
     observations.observe(model, options: options) { event, model in
         MainActor.assertIsolated()
-        recorder.append("\(label):\(event.kind):\(model.value)")
+        return "\(label):\(event.kind):\(model.value)"
     }
 }
 
+@discardableResult
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
     readTarget: ReplacementReadTarget,
-    label: String,
-    recorder: ValueRecorder<String>
-) {
+    label: String
+) -> ObservedValues<String> {
     observations.observe(model) { event, model in
         switch readTarget {
         case .value:
-            recorder.append("\(label):\(event.kind):value:\(model.value)")
+            return "\(label):\(event.kind):value:\(model.value)"
         case .isEnabled:
-            recorder.append("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
+            return "\(label):\(event.kind):isEnabled:\(model.isEnabled)"
         }
     }
 }
 
 @MainActor
+@discardableResult
 private func installReplacingObservation(
     observations: ObservationScope,
     model: MainActorCounterModel,
     readTarget: ReplacementReadTarget,
-    label: String,
-    recorder: ValueRecorder<String>
-) {
+    label: String
+) -> ObservedValues<String> {
     observations.observe(model) { event, model in
         MainActor.assertIsolated()
         switch readTarget {
         case .value:
-            recorder.append("\(label):\(event.kind):value:\(model.value)")
+            return "\(label):\(event.kind):value:\(model.value)"
         case .isEnabled:
-            recorder.append("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
+            return "\(label):\(event.kind):isEnabled:\(model.isEnabled)"
         }
     }
 }
 
 private actor CustomActorObservationProbe {
     private let observations = ObservationScope()
-    private var values: [Int] = []
 
-    func observe(_ model: CounterModel) {
+    func observe(_ model: CounterModel) -> ObservedValues<Int> {
         observations.observe(model) { _, model in
             self.preconditionIsolated()
-            self.values.append(model.value)
+            return model.value
         }
-    }
-
-    func record(_ value: Int) {
-        preconditionIsolated()
-        values.append(value)
-    }
-
-    func snapshot() -> [Int] {
-        values
     }
 
     func cancelAll() {
@@ -632,12 +654,11 @@ private actor CustomActorObservationProbe {
 private actor CustomActorOwnedObservationProbe {
     private let observations = ObservationScope()
     private let model = CounterModel()
-    private var values: [Int] = []
 
-    func observe() {
+    func observe() -> ObservedValues<Int> {
         observations.observe(model) { _, model in
             self.preconditionIsolated()
-            self.values.append(model.value)
+            return model.value
         }
     }
 
@@ -646,45 +667,15 @@ private actor CustomActorOwnedObservationProbe {
         model.value = value
     }
 
-    func snapshot() -> [Int] {
-        values
-    }
-
     func cancelAll() {
         observations.cancelAll()
     }
 }
 
-private func waitUntilValues(
-    _ expected: [Int],
-    in probe: CustomActorObservationProbe,
-    nanoseconds: UInt64 = 5_000_000_000
+private func receivesNoNewValue<Value: Sendable>(
+    in values: ObservedValues<Value>,
+    timeout: Duration = .milliseconds(100)
 ) async -> Bool {
-    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
-        while await probe.snapshot() != expected {
-            if Task.isCancelled {
-                return false
-            }
-            await Task.yield()
-        }
-        return true
-    }
-    return reached == true
-}
-
-private func waitUntilValues(
-    _ expected: [Int],
-    in probe: CustomActorOwnedObservationProbe,
-    nanoseconds: UInt64 = 5_000_000_000
-) async -> Bool {
-    let reached = await waitWithTimeout(nanoseconds: nanoseconds) {
-        while await probe.snapshot() != expected {
-            if Task.isCancelled {
-                return false
-            }
-            await Task.yield()
-        }
-        return true
-    }
-    return reached == true
+    let existingCount = values.snapshot().count
+    return await values.waitUntilNewValue(after: existingCount, timeout: timeout) == nil
 }
