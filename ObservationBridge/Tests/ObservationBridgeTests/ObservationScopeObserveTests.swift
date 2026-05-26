@@ -37,15 +37,16 @@ final class ObservationScopeObserveTests {
                 isEnabled: model.isEnabled
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
 
         model.value = 1
-        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
         #expect(passes.latestValue == ScopePass(kind: .didSet, value: 1, isEnabled: false))
 
         model.isEnabled = true
-        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: true)))
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: true))
         #expect(passes.latestValue == ScopePass(kind: .didSet, value: 1, isEnabled: true))
     }
 
@@ -80,11 +81,12 @@ final class ObservationScopeObserveTests {
                 isEnabled: false
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
 
         model.value = 7
-        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 7, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 7, isEnabled: false))
         #expect(passes.latestValue == ScopePass(kind: .didSet, value: 7, isEnabled: false))
     }
 
@@ -106,8 +108,9 @@ final class ObservationScopeObserveTests {
                 isEnabled: false
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
         #expect(passes.isActive == false)
 
         model.value = 11
@@ -129,15 +132,16 @@ final class ObservationScopeObserveTests {
                 isEnabled: false
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
 
         model.value = 1
-        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 1, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
 
         model.value = 2
-        #expect(await passes.waitUntilValue(ScopePass(kind: .didSet, value: 2, isEnabled: false)))
-        #expect(await receivesNoNewValue(in: passes))
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 2, isEnabled: false))
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
 
         #expect(
             passes.snapshot() == [
@@ -161,8 +165,9 @@ final class ObservationScopeObserveTests {
                 isEnabled: model.isEnabled
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
         #expect(passes.isActive == false)
 
         model.value = 1
@@ -178,10 +183,11 @@ final class ObservationScopeObserveTests {
         let values = observations.observe(model) { _, model in
             model.value
         }
+        var cursor = ObservedValuesCursor(values)
 
-        #expect(await values.waitUntilValue(0))
+        #expect(await cursor.next() == 0)
         model.value = 0
-        #expect(await receivesNoNewValue(in: values))
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
         #expect(values.snapshot() == [0])
     }
 
@@ -197,19 +203,21 @@ final class ObservationScopeObserveTests {
             model: model,
             label: "first"
         )
-        #expect(await first.waitUntilValue("first:initial:0"))
+        var firstCursor = ObservedValuesCursor(first)
+        #expect(await firstCursor.next() == "first:initial:0")
 
         let second = installReplacingObservation(
             observations: observations,
             model: model,
             label: "second"
         )
+        var secondCursor = ObservedValuesCursor(second)
 
         #expect(first.isActive == false)
-        #expect(await second.waitUntilValue("second:initial:0"))
+        #expect(await secondCursor.next() == "second:initial:0")
 
         model.value = 1
-        #expect(await second.waitUntilValue("second:didSet:1"))
+        #expect(await secondCursor.next() == "second:didSet:1")
         #expect(first.snapshot() == ["first:initial:0"])
         #expect(second.snapshot() == ["second:initial:0", "second:didSet:1"])
     }
@@ -227,7 +235,8 @@ final class ObservationScopeObserveTests {
             readTarget: .value,
             label: "value"
         )
-        #expect(await valuePasses.waitUntilValue("value:initial:value:0"))
+        var valueCursor = ObservedValuesCursor(valuePasses)
+        #expect(await valueCursor.next() == "value:initial:value:0")
 
         let enabledPasses = installReplacingObservation(
             observations: observations,
@@ -235,14 +244,15 @@ final class ObservationScopeObserveTests {
             readTarget: .isEnabled,
             label: "enabled"
         )
+        var enabledCursor = ObservedValuesCursor(enabledPasses)
         #expect(valuePasses.isActive == false)
-        #expect(await enabledPasses.waitUntilValue("enabled:initial:isEnabled:false"))
+        #expect(await enabledCursor.next() == "enabled:initial:isEnabled:false")
 
         model.isEnabled = true
-        #expect(await enabledPasses.waitUntilValue("enabled:didSet:isEnabled:true"))
+        #expect(await enabledCursor.next() == "enabled:didSet:isEnabled:true")
 
         model.value = 1
-        #expect(await receivesNoNewValue(in: enabledPasses))
+        #expect(await enabledCursor.next(timeout: .milliseconds(100)) == nil)
         #expect(
             enabledPasses.snapshot() == [
                 "enabled:initial:isEnabled:false",
@@ -264,7 +274,8 @@ final class ObservationScopeObserveTests {
             options: [],
             label: "initial"
         )
-        #expect(await initialOnlyPasses.waitUntilValue("initial:initial:0"))
+        var initialOnlyCursor = ObservedValuesCursor(initialOnlyPasses)
+        #expect(await initialOnlyCursor.next() == "initial:initial:0")
         #expect(initialOnlyPasses.isActive == false)
 
         let didSetPasses = installReplacingObservation(
@@ -273,10 +284,11 @@ final class ObservationScopeObserveTests {
             options: .didSet,
             label: "did"
         )
-        #expect(await didSetPasses.waitUntilValue("did:initial:0"))
+        var didSetCursor = ObservedValuesCursor(didSetPasses)
+        #expect(await didSetCursor.next() == "did:initial:0")
 
         model.value = 1
-        #expect(await didSetPasses.waitUntilValue("did:didSet:1"))
+        #expect(await didSetCursor.next() == "did:didSet:1")
         #expect(didSetPasses.snapshot() == ["did:initial:0", "did:didSet:1"])
     }
 
@@ -293,23 +305,25 @@ final class ObservationScopeObserveTests {
             model: firstModel,
             label: "first"
         )
-        #expect(await firstPasses.waitUntilValue("first:initial:0"))
+        var firstCursor = ObservedValuesCursor(firstPasses)
+        #expect(await firstCursor.next() == "first:initial:0")
 
         let secondPasses = installReplacingObservation(
             observations: observations,
             model: secondModel,
             label: "second"
         )
+        var secondCursor = ObservedValuesCursor(secondPasses)
         #expect(firstPasses.isActive == false)
-        #expect(await secondPasses.waitUntilValue("second:initial:0"))
+        #expect(await secondCursor.next() == "second:initial:0")
 
         firstModel.value = 1
-        #expect(await receivesNoNewValue(in: secondPasses))
+        #expect(await secondCursor.next(timeout: .milliseconds(100)) == nil)
         #expect(firstPasses.snapshot() == ["first:initial:0"])
         #expect(secondPasses.snapshot() == ["second:initial:0"])
 
         secondModel.value = 2
-        #expect(await secondPasses.waitUntilValue("second:didSet:2"))
+        #expect(await secondCursor.next() == "second:didSet:2")
         #expect(secondPasses.snapshot() == ["second:initial:0", "second:didSet:2"])
     }
 
@@ -325,8 +339,9 @@ final class ObservationScopeObserveTests {
                 isEnabled: model.isEnabled
             )
         }
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await passes.waitUntilValue(ScopePass(kind: .initial, value: 0, isEnabled: false)))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
         observations.cancelAll()
         #expect(passes.isActive == false)
 
@@ -343,8 +358,9 @@ final class ObservationScopeObserveTests {
         let values = observations.observe(model) { _, model in
             model.value
         }
+        var cursor = ObservedValuesCursor(values)
 
-        #expect(await values.waitUntilValue(0))
+        #expect(await cursor.next() == 0)
         values.cancel()
         #expect(values.isActive == false)
 
@@ -363,8 +379,9 @@ final class ObservationScopeObserveTests {
             event.cancel()
             return event.kind
         }
+        var cursor = ObservedValuesCursor(kinds)
 
-        #expect(await kinds.waitUntilValue(.initial))
+        #expect(await cursor.next() == .initial)
         #expect(kinds.isActive == false)
 
         model.value = 1
@@ -383,8 +400,9 @@ final class ObservationScopeObserveTests {
             probe.cancelAll()
             return event.kind
         }
+        var cursor = ObservedValuesCursor(kinds)
 
-        #expect(await kinds.waitUntilValue(.initial))
+        #expect(await cursor.next() == .initial)
         #expect(kinds.isActive == false)
 
         model.value = 1
@@ -443,7 +461,8 @@ final class ObservationScopeObserveTests {
                 probe.record(model.value)
                 return model.value
             }
-            #expect(await values.waitUntilValue(0))
+            var cursor = ObservedValuesCursor(values)
+            #expect(await cursor.next() == 0)
         }
 
         let releasedCallbackCapture = await waitWithTimeout {
@@ -503,12 +522,13 @@ final class ObservationScopeObserveTests {
             MainActor.assertIsolated()
             return model.payload.value
         }
+        var cursor = ObservedValuesCursor(values)
 
-        #expect(await values.waitUntilValue(0))
+        #expect(await cursor.next() == 0)
         #expect(values.snapshot() == [0])
 
         model.payload = NonSendablePayload(value: 2)
-        #expect(await values.waitUntilValue(2))
+        #expect(await cursor.next() == 2)
         #expect(values.snapshot() == [0, 2])
     }
 
@@ -518,10 +538,11 @@ final class ObservationScopeObserveTests {
         let probe = CustomActorObservationProbe()
 
         let values = await probe.observe(model)
-        #expect(await values.waitUntilValue(0))
+        var cursor = ObservedValuesCursor(values)
+        #expect(await cursor.next() == 0)
 
         model.value = 4
-        #expect(await values.waitUntilValue(4))
+        #expect(await cursor.next() == 4)
         #expect(values.snapshot() == [0, 4])
         await probe.cancelAll()
     }
@@ -531,13 +552,14 @@ final class ObservationScopeObserveTests {
         let probe = CustomActorOwnedObservationProbe()
 
         let values = await probe.observe()
-        #expect(await values.waitUntilValue(0))
+        var cursor = ObservedValuesCursor(values)
+        #expect(await cursor.next() == 0)
 
         await probe.setValue(1)
-        #expect(await values.waitUntilValue(1))
+        #expect(await cursor.next() == 1)
 
         await probe.setValue(2)
-        #expect(await values.waitUntilValue(2))
+        #expect(await cursor.next() == 2)
         #expect(values.snapshot() == [0, 1, 2])
         await probe.cancelAll()
     }
@@ -560,11 +582,12 @@ final class ObservationScopeObserveTests {
             },
             isolation: probe
         )
+        var cursor = ObservedValuesCursor(values)
 
-        #expect(await values.waitUntilValue(0))
+        #expect(await cursor.next() == 0)
 
         model.value = 5
-        #expect(await values.waitUntilValue(5))
+        #expect(await cursor.next() == 5)
         #expect(values.snapshot() == [0, 5])
     }
 }
@@ -672,10 +695,27 @@ private actor CustomActorOwnedObservationProbe {
     }
 }
 
-private func receivesNoNewValue<Value: Sendable>(
-    in values: ObservedValues<Value>,
-    timeout: Duration = .milliseconds(100)
-) async -> Bool {
-    let existingCount = values.snapshot().count
-    return await values.waitUntilNewValue(after: existingCount, timeout: timeout) == nil
+private struct ObservedValuesCursor<Value: Sendable> {
+    private let values: ObservedValues<Value>
+    private var nextIndex = 0
+
+    init(_ values: ObservedValues<Value>) {
+        self.values = values
+    }
+
+    mutating func next(timeout: Duration = .seconds(5)) async -> Value? {
+        let snapshot = values.snapshot()
+        if nextIndex < snapshot.count {
+            defer {
+                nextIndex += 1
+            }
+            return snapshot[nextIndex]
+        }
+
+        guard let value = await values.waitUntilNewValue(after: nextIndex, timeout: timeout) else {
+            return nil
+        }
+        nextIndex += 1
+        return value
+    }
 }
