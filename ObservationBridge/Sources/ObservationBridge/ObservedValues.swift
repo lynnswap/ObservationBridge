@@ -1,12 +1,11 @@
 import Foundation
 import Synchronization
 
-/// Records values produced by an owner-bound observation callback.
+/// Records values sampled after owner-bound observation delivery.
 ///
 /// `ObservedValues` is intended for tests that need to synchronize with
-/// `ObservationScope.observe` delivery without sleeping or maintaining a
-/// separate recorder. Keep the instance alive while the observation should stay
-/// active, and call ``cancel()`` when the test no longer needs updates.
+/// `ObservationScope.observe` delivery without sleeping. Instances are produced
+/// by ``ObservationDelivery/values(_:)``.
 public final class ObservedValues<Value: Sendable>: Sendable {
     private struct Waiter: Sendable {
         let predicate: @Sendable (Value) -> Bool
@@ -44,7 +43,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
         }
     }
 
-    /// Whether the backing observation is still active.
+    /// Whether this value recorder is still active.
     public var isActive: Bool {
         state.withLock { state in
             state.isActive
@@ -141,7 +140,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
         }
     }
 
-    /// Cancels the backing observation and wakes any pending waiters.
+    /// Stops this value recorder and wakes any pending waiters.
     public func cancel() {
         let result = deactivate(takeCancelOperation: true)
         result.cancelOperation?()

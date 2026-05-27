@@ -1,4 +1,5 @@
 import Observation
+import Synchronization
 import Testing
 @testable import ObservationBridge
 
@@ -22,20 +23,44 @@ final class ObservationScopeObserveTests {
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
     }
 
+    @Test
+    func observeReturnCanBeIgnoredWithoutCancellingObservation() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+
+        #expect(rendered.value == 0)
+
+        model.value = 1
+        #expect(await waitUntilCondition { rendered.value == 1 })
+    }
+
     @MainActor
     @Test
     func observeStartsImmediatelyAndTracksPropertiesReadByCallback() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let passes = observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             MainActor.assertIsolated()
-            return ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: model.isEnabled
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: model.isEnabled
+                )
             )
+        }
+        let passes = await delivery.values {
+            MainActor.assertIsolated()
+            return rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
@@ -51,14 +76,18 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func valueProducingObserveWaitsForReturnedValues() async {
+    func deliveryValuesWaitForRenderedState() async {
         let model = CounterModel()
         model.name = "Loading"
         let observations = ObservationScope()
+        let renderedTitle = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let titles = observations.observe(model) { _, model in
-            model.name
+        let delivery = observations.observe(model) { _, model in
+            renderedTitle.set(model.name)
+        }
+        let titles = await delivery.values {
+            renderedTitle.value
         }
 
         #expect(await titles.waitUntilValue("Loading"))
@@ -69,17 +98,65 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func deliveryValuesHonorClosureIsolationForImmediateAndLaterSamples() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let sampleProbe = MainActorSampleProbe()
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { _, model in
+            _ = model.value
+        }
+        let samples = await delivery.values { @MainActor in
+            sampleProbe.next()
+        }
+
+        #expect(await samples.waitUntilValue(1))
+
+        model.value = 1
+        #expect(await samples.waitUntilValue(2))
+    }
+
+    @Test
+    func deliveryValuesRegisteredAfterCompletedDeliverySampleBeforeLaterMutation() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+
+        #expect(rendered.value == 0)
+
+        let values = await delivery.values {
+            rendered.value
+        }
+        model.value = 1
+
+        #expect(await values.waitUntilValue(1))
+        #expect(values.snapshot() == [0, 1])
+    }
+
+    @Test
     func didSetPassReadsValueAfterMutationBody() async {
         let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let passes = observations.observe(model) { event, model in
-            ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: false
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
             )
+        }
+        let passes = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
@@ -99,18 +176,25 @@ final class ObservationScopeObserveTests {
 
         let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let passes = observations.observe(model) { event, model in
-            ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: false
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
             )
+        }
+        let passes = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
         #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+        #expect(delivery.isActive == false)
         #expect(passes.isActive == false)
 
         model.value = 11
@@ -122,15 +206,22 @@ final class ObservationScopeObserveTests {
     func didSetTrackingIsCancelledAfterEachChange() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let passes = observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             MainActor.assertIsolated()
-            return ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: false
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
             )
+        }
+        let passes = await delivery.values {
+            MainActor.assertIsolated()
+            return rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
@@ -156,18 +247,25 @@ final class ObservationScopeObserveTests {
     func emptyOptionsDeliverOnlyInitialEvent() async {
         let model = CounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let passes = observations.observe(model, options: []) { event, model in
-            ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: model.isEnabled
+        let delivery = observations.observe(model, options: []) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: model.isEnabled
+                )
             )
+        }
+        let passes = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
         #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+        #expect(delivery.isActive == false)
         #expect(passes.isActive == false)
 
         model.value = 1
@@ -178,10 +276,14 @@ final class ObservationScopeObserveTests {
     func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
         let model = CounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let values = observations.observe(model) { _, model in
-            model.value
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+        let values = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(values)
 
@@ -191,6 +293,32 @@ final class ObservationScopeObserveTests {
         #expect(values.snapshot() == [0])
     }
 
+    @Test
+    func samplerReadsDoNotBecomeObservationDependencies() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+        let sampledEnabledValues = await delivery.values {
+            model.isEnabled
+        }
+        var cursor = ObservedValuesCursor(sampledEnabledValues)
+
+        #expect(await cursor.next() == false)
+
+        model.isEnabled = true
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+
+        model.value = 1
+        #expect(await cursor.next() == true)
+        #expect(rendered.value == 1)
+        #expect(sampledEnabledValues.snapshot() == [false, true])
+    }
+
     @MainActor
     @Test
     func repeatedObserveFromSameCallSiteReplacesCallbackWithoutDuplicatingPipeline() async {
@@ -198,28 +326,29 @@ final class ObservationScopeObserveTests {
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let first = installReplacingObservation(
+        let first = await installReplacingObservation(
             observations: observations,
             model: model,
             label: "first"
         )
-        var firstCursor = ObservedValuesCursor(first)
+        var firstCursor = ObservedValuesCursor(first.values)
         #expect(await firstCursor.next() == "first:initial:0")
 
-        let second = installReplacingObservation(
+        let second = await installReplacingObservation(
             observations: observations,
             model: model,
             label: "second"
         )
-        var secondCursor = ObservedValuesCursor(second)
+        var secondCursor = ObservedValuesCursor(second.values)
 
-        #expect(first.isActive == false)
+        #expect(first.delivery.isActive == false)
+        #expect(first.values.isActive == false)
         #expect(await secondCursor.next() == "second:initial:0")
 
         model.value = 1
         #expect(await secondCursor.next() == "second:didSet:1")
-        #expect(first.snapshot() == ["first:initial:0"])
-        #expect(second.snapshot() == ["second:initial:0", "second:didSet:1"])
+        #expect(first.values.snapshot() == ["first:initial:0"])
+        #expect(second.values.snapshot() == ["second:initial:0", "second:didSet:1"])
     }
 
     @MainActor
@@ -229,23 +358,24 @@ final class ObservationScopeObserveTests {
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let valuePasses = installReplacingObservation(
+        let valuePasses = await installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .value,
             label: "value"
         )
-        var valueCursor = ObservedValuesCursor(valuePasses)
+        var valueCursor = ObservedValuesCursor(valuePasses.values)
         #expect(await valueCursor.next() == "value:initial:value:0")
 
-        let enabledPasses = installReplacingObservation(
+        let enabledPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .isEnabled,
             label: "enabled"
         )
-        var enabledCursor = ObservedValuesCursor(enabledPasses)
-        #expect(valuePasses.isActive == false)
+        var enabledCursor = ObservedValuesCursor(enabledPasses.values)
+        #expect(valuePasses.delivery.isActive == false)
+        #expect(valuePasses.values.isActive == false)
         #expect(await enabledCursor.next() == "enabled:initial:isEnabled:false")
 
         model.isEnabled = true
@@ -254,7 +384,7 @@ final class ObservationScopeObserveTests {
         model.value = 1
         #expect(await enabledCursor.next(timeout: .milliseconds(100)) == nil)
         #expect(
-            enabledPasses.snapshot() == [
+            enabledPasses.values.snapshot() == [
                 "enabled:initial:isEnabled:false",
                 "enabled:didSet:isEnabled:true",
             ]
@@ -268,28 +398,29 @@ final class ObservationScopeObserveTests {
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let initialOnlyPasses = installReplacingObservation(
+        let initialOnlyPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             options: [],
             label: "initial"
         )
-        var initialOnlyCursor = ObservedValuesCursor(initialOnlyPasses)
+        var initialOnlyCursor = ObservedValuesCursor(initialOnlyPasses.values)
         #expect(await initialOnlyCursor.next() == "initial:initial:0")
-        #expect(initialOnlyPasses.isActive == false)
+        #expect(initialOnlyPasses.delivery.isActive == false)
+        #expect(initialOnlyPasses.values.isActive == false)
 
-        let didSetPasses = installReplacingObservation(
+        let didSetPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             options: .didSet,
             label: "did"
         )
-        var didSetCursor = ObservedValuesCursor(didSetPasses)
+        var didSetCursor = ObservedValuesCursor(didSetPasses.values)
         #expect(await didSetCursor.next() == "did:initial:0")
 
         model.value = 1
         #expect(await didSetCursor.next() == "did:didSet:1")
-        #expect(didSetPasses.snapshot() == ["did:initial:0", "did:didSet:1"])
+        #expect(didSetPasses.values.snapshot() == ["did:initial:0", "did:didSet:1"])
     }
 
     @MainActor
@@ -300,49 +431,57 @@ final class ObservationScopeObserveTests {
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let firstPasses = installReplacingObservation(
+        let firstPasses = await installReplacingObservation(
             observations: observations,
             model: firstModel,
             label: "first"
         )
-        var firstCursor = ObservedValuesCursor(firstPasses)
+        var firstCursor = ObservedValuesCursor(firstPasses.values)
         #expect(await firstCursor.next() == "first:initial:0")
 
-        let secondPasses = installReplacingObservation(
+        let secondPasses = await installReplacingObservation(
             observations: observations,
             model: secondModel,
             label: "second"
         )
-        var secondCursor = ObservedValuesCursor(secondPasses)
-        #expect(firstPasses.isActive == false)
+        var secondCursor = ObservedValuesCursor(secondPasses.values)
+        #expect(firstPasses.delivery.isActive == false)
+        #expect(firstPasses.values.isActive == false)
         #expect(await secondCursor.next() == "second:initial:0")
 
         firstModel.value = 1
         #expect(await secondCursor.next(timeout: .milliseconds(100)) == nil)
-        #expect(firstPasses.snapshot() == ["first:initial:0"])
-        #expect(secondPasses.snapshot() == ["second:initial:0"])
+        #expect(firstPasses.values.snapshot() == ["first:initial:0"])
+        #expect(secondPasses.values.snapshot() == ["second:initial:0"])
 
         secondModel.value = 2
         #expect(await secondCursor.next() == "second:didSet:2")
-        #expect(secondPasses.snapshot() == ["second:initial:0", "second:didSet:2"])
+        #expect(secondPasses.values.snapshot() == ["second:initial:0", "second:didSet:2"])
     }
 
     @Test
-    func cancelAllStopsLaterEvents() async {
+    func cancelAllStopsLaterEventsAndFinishesSamplers() async {
         let model = CounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
 
-        let passes = observations.observe(model) { event, model in
-            ScopePass(
-                kind: event.kind,
-                value: model.value,
-                isEnabled: model.isEnabled
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: model.isEnabled
+                )
             )
+        }
+        let passes = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(passes)
 
         #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
         observations.cancelAll()
+        #expect(delivery.isActive == false)
         #expect(passes.isActive == false)
 
         model.value = 1
@@ -350,38 +489,81 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observedValuesCancelStopsLaterEvents() async {
+    func deliveryCancelStopsObservationAndFinishesSamplers() async {
         let model = CounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let values = observations.observe(model) { _, model in
-            model.value
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+        let values = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(values)
 
         #expect(await cursor.next() == 0)
-        values.cancel()
+        delivery.cancel()
+        #expect(delivery.isActive == false)
         #expect(values.isActive == false)
 
         model.value = 1
         #expect(values.snapshot() == [0])
+        #expect(rendered.value == 0)
+    }
+
+    @Test
+    func observedValuesCancelStopsSamplerOnly() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+        let firstValues = await delivery.values {
+            rendered.value
+        }
+        var firstCursor = ObservedValuesCursor(firstValues)
+        #expect(await firstCursor.next() == 0)
+
+        firstValues.cancel()
+        #expect(firstValues.isActive == false)
+        #expect(delivery.isActive == true)
+
+        let secondValues = await delivery.values {
+            rendered.value
+        }
+        var secondCursor = ObservedValuesCursor(secondValues)
+        #expect(await secondCursor.next() == 0)
+
+        model.value = 1
+        #expect(await secondCursor.next() == 1)
+        #expect(firstValues.snapshot() == [0])
+        #expect(secondValues.snapshot() == [0, 1])
     }
 
     @Test
     func eventCancelStopsCurrentObservationOnly() async {
         let model = CounterModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let kinds = observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             event.cancel()
-            return event.kind
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(kinds)
 
         #expect(await cursor.next() == .initial)
+        #expect(delivery.isActive == false)
         #expect(kinds.isActive == false)
 
         model.value = 1
@@ -389,20 +571,25 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func cancelAllDuringInitialCallbackStopsCurrentObservation() async {
+    func cancelAllDuringInitialCallbackStillSamplesInitialRender() async {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let kinds = observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
+            rendered.set(event.kind)
             probe.cancelAll()
-            return event.kind
+        }
+        let kinds = await delivery.values {
+            rendered.value
         }
         var cursor = ObservedValuesCursor(kinds)
 
         #expect(await cursor.next() == .initial)
+        #expect(delivery.isActive == false)
         #expect(kinds.isActive == false)
 
         model.value = 1
@@ -418,7 +605,7 @@ final class ObservationScopeObserveTests {
             state.terminate()
             taskBox.finish()
         }
-        let started = ObservedValues<String>()
+        let started = RenderedValue(false)
         let slot = ObservationScopeSlot(
             descriptor: ObservationScopeDescriptor(
                 owner: model,
@@ -431,7 +618,7 @@ final class ObservationScopeObserveTests {
             taskBox: taskBox,
             callbackBox: ObservationScopeCallbackBox<CounterModel> { _, _ in }
         ) { _ in
-            started.record("started")
+            started.set(true)
             return Task {}
         }
 
@@ -441,8 +628,7 @@ final class ObservationScopeObserveTests {
         slot.cancel()
         start?()
 
-        #expect(started.snapshot().isEmpty)
-        started.cancel()
+        #expect(started.value == false)
     }
 
     @Test
@@ -457,9 +643,13 @@ final class ObservationScopeObserveTests {
                     await didDeinit.mark()
                 }
             }
-            let values = observations.observe(model, options: []) { _, model in
+            let rendered = RenderedValue(-1)
+            let delivery = observations.observe(model, options: []) { _, model in
                 probe.record(model.value)
-                return model.value
+                rendered.set(model.value)
+            }
+            let values = await delivery.values {
+                rendered.value
             }
             var cursor = ObservedValuesCursor(values)
             #expect(await cursor.next() == 0)
@@ -513,14 +703,19 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func observeSupportsMainActorNonSendableValues() async {
+    func deliveryValuesSupportMainActorRenderedValues() async {
         let model = MainActorNonSendablePayloadModel()
         let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let values = observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             MainActor.assertIsolated()
-            return model.payload.value
+            rendered.set(model.payload.value)
+        }
+        let values = await delivery.values {
+            MainActor.assertIsolated()
+            return rendered.value
         }
         var cursor = ObservedValuesCursor(values)
 
@@ -533,26 +728,26 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observeUsesCustomActorIsolationForCallbacks() async {
+    func deliveryValuesUseCustomActorIsolationForCallbacksAndSamplers() async {
         let model = CounterModel()
         let probe = CustomActorObservationProbe()
 
-        let values = await probe.observe(model)
-        var cursor = ObservedValuesCursor(values)
+        let observation = await probe.observe(model)
+        var cursor = ObservedValuesCursor(observation.values)
         #expect(await cursor.next() == 0)
 
         model.value = 4
         #expect(await cursor.next() == 4)
-        #expect(values.snapshot() == [0, 4])
+        #expect(observation.values.snapshot() == [0, 4])
         await probe.cancelAll()
     }
 
     @Test
-    func observeTracksMultiplePassesOnCustomActorOwnedModel() async {
+    func deliveryValuesTrackMultiplePassesOnCustomActorOwnedModel() async {
         let probe = CustomActorOwnedObservationProbe()
 
-        let values = await probe.observe()
-        var cursor = ObservedValuesCursor(values)
+        let observation = await probe.observe()
+        var cursor = ObservedValuesCursor(observation.values)
         #expect(await cursor.next() == 0)
 
         await probe.setValue(1)
@@ -560,28 +755,33 @@ final class ObservationScopeObserveTests {
 
         await probe.setValue(2)
         #expect(await cursor.next() == 2)
-        #expect(values.snapshot() == [0, 1, 2])
+        #expect(observation.values.snapshot() == [0, 1, 2])
         await probe.cancelAll()
     }
 
     @Test
-    func observeHopsToExplicitCustomActorIsolation() async {
+    func deliveryValuesHopToExplicitCustomActorIsolation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let probe = CustomActorObservationProbe()
+        let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let values = await observations.observe(
+        let delivery = await observations.observe(
             model,
             options: .didSet,
             { _, model in
                 probe.assumeIsolated { isolatedProbe in
                     isolatedProbe.preconditionIsolated()
-                    return model.value
+                    rendered.set(model.value)
                 }
             },
             isolation: probe
         )
+        let values = await delivery.values(isolation: probe) { isolatedProbe in
+            isolatedProbe.preconditionIsolated()
+            return rendered.value
+        }
         var cursor = ObservedValuesCursor(values)
 
         #expect(await cursor.next() == 0)
@@ -597,16 +797,55 @@ private enum ReplacementReadTarget {
     case isEnabled
 }
 
+private struct RenderedObservation<Value: Sendable>: Sendable {
+    let delivery: ObservationDelivery
+    let values: ObservedValues<Value>
+}
+
+private final class RenderedValue<Value: Sendable>: @unchecked Sendable {
+    private let storage: Mutex<Value>
+
+    init(_ value: Value) {
+        storage = Mutex(value)
+    }
+
+    var value: Value {
+        storage.withLock { $0 }
+    }
+
+    func set(_ value: Value) {
+        storage.withLock { storedValue in
+            storedValue = value
+        }
+    }
+}
+
+@MainActor
+private final class MainActorSampleProbe: @unchecked Sendable {
+    private var count = 0
+
+    func next() -> Int {
+        MainActor.assertIsolated()
+        count += 1
+        return count
+    }
+}
+
 @discardableResult
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
     options: ObservationOptions = .didSet,
     label: String
-) -> ObservedValues<String> {
-    observations.observe(model, options: options) { event, model in
-        "\(label):\(event.kind):\(model.value)"
+) async -> RenderedObservation<String> {
+    let rendered = RenderedValue("")
+    let delivery = observations.observe(model, options: options) { event, model in
+        rendered.set("\(label):\(event.kind):\(model.value)")
     }
+    let values = await delivery.values {
+        rendered.value
+    }
+    return RenderedObservation(delivery: delivery, values: values)
 }
 
 @MainActor
@@ -616,11 +855,17 @@ private func installReplacingObservation(
     model: MainActorCounterModel,
     options: ObservationOptions = .didSet,
     label: String
-) -> ObservedValues<String> {
-    observations.observe(model, options: options) { event, model in
+) async -> RenderedObservation<String> {
+    let rendered = RenderedValue("")
+    let delivery = observations.observe(model, options: options) { event, model in
         MainActor.assertIsolated()
-        return "\(label):\(event.kind):\(model.value)"
+        rendered.set("\(label):\(event.kind):\(model.value)")
     }
+    let values = await delivery.values {
+        MainActor.assertIsolated()
+        return rendered.value
+    }
+    return RenderedObservation(delivery: delivery, values: values)
 }
 
 @discardableResult
@@ -629,15 +874,20 @@ private func installReplacingObservation(
     model: CounterModel,
     readTarget: ReplacementReadTarget,
     label: String
-) -> ObservedValues<String> {
-    observations.observe(model) { event, model in
+) async -> RenderedObservation<String> {
+    let rendered = RenderedValue("")
+    let delivery = observations.observe(model) { event, model in
         switch readTarget {
         case .value:
-            return "\(label):\(event.kind):value:\(model.value)"
+            rendered.set("\(label):\(event.kind):value:\(model.value)")
         case .isEnabled:
-            return "\(label):\(event.kind):isEnabled:\(model.isEnabled)"
+            rendered.set("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
         }
     }
+    let values = await delivery.values {
+        rendered.value
+    }
+    return RenderedObservation(delivery: delivery, values: values)
 }
 
 @MainActor
@@ -647,26 +897,38 @@ private func installReplacingObservation(
     model: MainActorCounterModel,
     readTarget: ReplacementReadTarget,
     label: String
-) -> ObservedValues<String> {
-    observations.observe(model) { event, model in
+) async -> RenderedObservation<String> {
+    let rendered = RenderedValue("")
+    let delivery = observations.observe(model) { event, model in
         MainActor.assertIsolated()
         switch readTarget {
         case .value:
-            return "\(label):\(event.kind):value:\(model.value)"
+            rendered.set("\(label):\(event.kind):value:\(model.value)")
         case .isEnabled:
-            return "\(label):\(event.kind):isEnabled:\(model.isEnabled)"
+            rendered.set("\(label):\(event.kind):isEnabled:\(model.isEnabled)")
         }
     }
+    let values = await delivery.values {
+        MainActor.assertIsolated()
+        return rendered.value
+    }
+    return RenderedObservation(delivery: delivery, values: values)
 }
 
 private actor CustomActorObservationProbe {
     private let observations = ObservationScope()
+    private let rendered = RenderedValue(-1)
 
-    func observe(_ model: CounterModel) -> ObservedValues<Int> {
-        observations.observe(model) { _, model in
+    func observe(_ model: CounterModel) async -> RenderedObservation<Int> {
+        let delivery = observations.observe(model) { _, model in
             self.preconditionIsolated()
-            return model.value
+            self.rendered.set(model.value)
         }
+        let values = await delivery.values {
+            self.preconditionIsolated()
+            return self.rendered.value
+        }
+        return RenderedObservation(delivery: delivery, values: values)
     }
 
     func cancelAll() {
@@ -677,12 +939,18 @@ private actor CustomActorObservationProbe {
 private actor CustomActorOwnedObservationProbe {
     private let observations = ObservationScope()
     private let model = CounterModel()
+    private let rendered = RenderedValue(-1)
 
-    func observe() -> ObservedValues<Int> {
-        observations.observe(model) { _, model in
+    func observe() async -> RenderedObservation<Int> {
+        let delivery = observations.observe(model) { _, model in
             self.preconditionIsolated()
-            return model.value
+            self.rendered.set(model.value)
         }
+        let values = await delivery.values {
+            self.preconditionIsolated()
+            return self.rendered.value
+        }
+        return RenderedObservation(delivery: delivery, values: values)
     }
 
     func setValue(_ value: Int) {

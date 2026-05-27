@@ -26,6 +26,7 @@ public final class ObservationScope: @unchecked Sendable {
     ///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
     ///   - apply: The callback to run for the initial pass and selected subsequent events.
     ///   - isolation: The actor isolation used to start the observation.
+    @discardableResult
     public func observe<Owner: AnyObject & Observable>(
         _ owner: Owner,
         options: ObservationOptions = .didSet,
@@ -34,58 +35,24 @@ public final class ObservationScope: @unchecked Sendable {
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
         _column: UInt = #column
-    ) {
-        installObservation(
-            owner: owner,
-            options: options,
-            startIsolation: isolation,
-            observationIsolation: apply.isolation ?? isolation,
-            callbackIsolation: apply.isolation,
-            apply: apply,
-            _fileID: _fileID,
-            _line: _line,
-            _column: _column
-        )
-    }
-
-    /// Starts or replaces an owner-bound observation that records callback-produced values.
-    ///
-    /// This overload is intended for tests that need to wait for a specific observed value without
-    /// maintaining a separate recorder. The callback body is still the tracking body.
-    ///
-    /// - Returns: A value recorder tied to the lifetime of the installed observation.
-    public func observe<Owner: AnyObject & Observable, Value: Sendable>(
-        _ owner: Owner,
-        options: ObservationOptions = .didSet,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Value,
-        isolation: isolated (any Actor)? = #isolation,
-        _fileID: StaticString = #fileID,
-        _line: UInt = #line,
-        _column: UInt = #column
-    ) -> ObservedValues<Value> {
-        let values = ObservedValues<Value>()
-        let valueCallbackBox: any ObservationScopeAnyValueCallbackBox =
-            ObservationScopeValueCallbackBox(callback: apply, values: values)
-        let recordingCallback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Void =
-            makeObservationValueRecordingCallback(valueCallbackBox)
+    ) -> ObservationDelivery {
+        let delivery = ObservationDelivery()
         let handle = installObservation(
             owner: owner,
             options: options,
             startIsolation: isolation,
             observationIsolation: apply.isolation ?? isolation,
             callbackIsolation: apply.isolation,
-            onFinish: { [values] in
-                values.finish()
-            },
-            apply: recordingCallback,
+            delivery: delivery,
+            apply: apply,
             _fileID: _fileID,
             _line: _line,
             _column: _column
         )
-        values.setCancelOperation {
+        delivery.setCancelOperation {
             handle.cancel()
         }
-        return values
+        return delivery
     }
 
     /// Cancels every observation currently owned by the scope.
@@ -113,7 +80,7 @@ public final class ObservationScope: @unchecked Sendable {
         startIsolation: isolated (any Actor)?,
         observationIsolation: (any Actor)?,
         callbackIsolation: (any Actor)?,
-        onFinish: @escaping @Sendable () -> Void = {},
+        delivery: ObservationDelivery,
         apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
         _fileID: StaticString,
         _line: UInt,
@@ -138,7 +105,7 @@ public final class ObservationScope: @unchecked Sendable {
             descriptor: descriptor,
             options: options,
             isolation: observationIsolation,
-            onFinish: onFinish,
+            delivery: delivery,
             apply: apply
         )
         let insertion = storage.withLock { storage -> (slotToStart: (any ObservationScopeSlotProtocol)?, shouldCancelNewSlot: Bool) in
@@ -162,7 +129,7 @@ public final class ObservationScope: @unchecked Sendable {
         descriptor: ObservationScopeDescriptor,
         options: ObservationOptions,
         isolation: (any Actor)?,
-        onFinish: @escaping @Sendable () -> Void,
+        delivery: ObservationDelivery,
         apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     ) -> ObservationScopeSlot<Owner> {
         let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
@@ -170,7 +137,10 @@ public final class ObservationScope: @unchecked Sendable {
         let lifetime = ObservationExecutionLifetime()
         let callbackBox = ObservationScopeCallbackBox(apply)
         let callbackCleaner: any ObservationScopeCallbackClearing = callbackBox
-        let runner: any ScopedObservationRunner = TypedScopedObservationRunner(callbackBox: callbackBox)
+        let runner: any ScopedObservationRunner = TypedScopedObservationRunner(
+            callbackBox: callbackBox,
+            delivery: delivery
+        )
         let taskBox = ObservationTaskBox()
         lifetime.addCancellationHandler {
             WeakOwnerRegistry.removeToken(ownerToken)
@@ -178,7 +148,9 @@ public final class ObservationScope: @unchecked Sendable {
         lifetime.addCancellationHandler {
             state.terminate()
         }
-        lifetime.addCancellationHandler(onFinish)
+        lifetime.addCancellationHandler {
+            delivery.finish()
+        }
         lifetime.addCancellationHandler {
             callbackCleaner.clear()
         }
@@ -252,7 +224,8 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
     options: ObservationOptions,
     isolation: (any Actor)?,
     state: ScopedObservationState,
-    callbackBox: ObservationScopeCallbackBox<Owner>
+    callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery
 ) async {
     #if compiler(>=6.4)
     // TODO: Replace this fallback with native withContinuousObservation(options:apply:)
@@ -263,7 +236,8 @@ func runScopedObservationLoop<Owner: AnyObject & Observable>(
         options: options,
         isolation: isolation,
         state: state,
-        callbackBox: callbackBox
+        callbackBox: callbackBox,
+        delivery: delivery
     )
 }
 
@@ -272,7 +246,8 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
     options: ObservationOptions,
     isolation: (any Actor)?,
     state: ScopedObservationState,
-    callbackBox: ObservationScopeCallbackBox<Owner>
+    callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery
 ) async {
     var kind = ObservationEvent.Kind.initial
 
@@ -285,7 +260,8 @@ private func runLegacyScopedObservationLoop<Owner: AnyObject & Observable>(
             changeKind: changeKind,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         ) else {
             break
         }
@@ -309,17 +285,22 @@ func runInitialLegacyScopedObservationPass<Owner: AnyObject & Observable>(
     options: ObservationOptions,
     isolation _: isolated (any Actor)?,
     state: ScopedObservationState,
-    callbackBox: ObservationScopeCallbackBox<Owner>
+    callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery
 ) -> InitialLegacyScopedObservationResult {
     let changeKind = legacyChangeKind(for: options)
 
-    guard trackLegacyScopedObservationInCurrentContext(
+    let result = trackLegacyScopedObservationInCurrentContext(
         ownerToken: ownerToken,
         kind: .initial,
         changeKind: changeKind,
         state: state,
-        callbackBox: callbackBox
-    ) else {
+        callbackBox: callbackBox,
+        delivery: delivery
+    )
+    result.finishWithoutSampling()
+
+    guard result.shouldContinue else {
         state.terminate()
         return .finished
     }
@@ -338,6 +319,7 @@ func runLegacyScopedObservationLoopAfterInitialPass<Owner: AnyObject & Observabl
     isolation: (any Actor)?,
     state: ScopedObservationState,
     callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery,
     nextKind: ObservationEvent.Kind
 ) async {
     var kind = nextKind
@@ -355,7 +337,8 @@ func runLegacyScopedObservationLoopAfterInitialPass<Owner: AnyObject & Observabl
             changeKind: changeKind,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         ) else {
             break
         }
@@ -376,16 +359,33 @@ private func trackLegacyScopedObservation<Owner: AnyObject & Observable>(
     changeKind: ObservationEvent.Kind?,
     isolation: (any Actor)?,
     state: ScopedObservationState,
-    callbackBox: ObservationScopeCallbackBox<Owner>
+    callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery
 ) async -> Bool {
-    await withObservationIsolation(isolation: isolation) {
+    let result = await withObservationIsolation(isolation: isolation) {
         trackLegacyScopedObservationInCurrentContext(
             ownerToken: ownerToken,
             kind: kind,
             changeKind: changeKind,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         )
+    }
+    await result.sampleAndFinish()
+    return result.shouldContinue
+}
+
+private struct ScopedObservationTrackResult: Sendable {
+    let shouldContinue: Bool
+    let completion: ObservationDeliveryCompletion?
+
+    func sampleAndFinish() async {
+        await completion?.sampleAndFinish()
+    }
+
+    func finishWithoutSampling() {
+        completion?.finishWithoutSampling()
     }
 }
 
@@ -394,43 +394,66 @@ private func trackLegacyScopedObservationInCurrentContext<Owner: AnyObject & Obs
     kind: ObservationEvent.Kind,
     changeKind: ObservationEvent.Kind?,
     state: ScopedObservationState,
-    callbackBox: ObservationScopeCallbackBox<Owner>
-) -> Bool {
+    callbackBox: ObservationScopeCallbackBox<Owner>,
+    delivery: ObservationDelivery
+) -> ScopedObservationTrackResult {
     guard !state.isTerminated else {
-        return false
+        return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
     guard let owner = WeakOwnerRegistry.owner(token: ownerToken) as? Owner else {
-        return false
+        return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
     let event = ObservationEvent(kind: kind) {
         state.terminate()
     }
 
-    guard let changeKind else {
-        callbackBox.call(event: event, owner: owner)
-        return !state.isTerminated
+    guard delivery.beginDelivery() else {
+        return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
+    func complete(
+        shouldContinue: Bool,
+        didCallCallback: Bool
+    ) -> ScopedObservationTrackResult {
+        if didCallCallback {
+            return ScopedObservationTrackResult(
+                shouldContinue: shouldContinue,
+                completion: delivery.endDelivery()
+            )
+        }
+
+        delivery.discardDelivery()
+        return ScopedObservationTrackResult(shouldContinue: shouldContinue, completion: nil)
+    }
+
+    guard let changeKind else {
+        callbackBox.call(event: event, owner: owner)
+        return complete(shouldContinue: !state.isTerminated, didCallCallback: true)
+    }
+
+    var didCallCallback = false
     if changeKind == .didSet {
         guard withObservationTrackingDidSetIfAvailable({
             callbackBox.call(event: event, owner: owner)
+            didCallCallback = true
         }, didSet: { tracking in
             state.emitChange()
             cancelObservationTrackingIfAvailable(tracking)
         }) else {
-            return false
+            return complete(shouldContinue: false, didCallCallback: didCallCallback)
         }
     } else {
         withObservationTracking {
             callbackBox.call(event: event, owner: owner)
+            didCallCallback = true
         } onChange: {
             state.emitChange()
         }
     }
 
-    return !state.isTerminated
+    return complete(shouldContinue: !state.isTerminated, didCallCallback: didCallCallback)
 }
 
 private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {

@@ -172,50 +172,6 @@ final class ObservationScopeCallbackBox<Owner: AnyObject>: @unchecked Sendable {
 
 extension ObservationScopeCallbackBox: ObservationScopeCallbackClearing {}
 
-protocol ObservationScopeAnyValueCallbackBox: Sendable {
-    func call(event: ObservationEvent, owner: AnyObject)
-}
-
-final class ObservationScopeValueCallbackBox<Owner: AnyObject, Value: Sendable>: ObservationScopeAnyValueCallbackBox, @unchecked Sendable {
-    private let callback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Value
-    private let values: ObservedValues<Value>
-
-    init(
-        callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Value,
-        values: ObservedValues<Value>
-    ) {
-        self.callback = callback
-        self.values = values
-    }
-
-    func call(event: ObservationEvent, owner anyOwner: AnyObject) {
-        guard let owner = anyOwner as? Owner else {
-            return
-        }
-
-        guard values.beginDelivery() else {
-            return
-        }
-        defer {
-            values.endDelivery()
-        }
-
-        values.record(callObservationValueCallback(callback, event, owner))
-    }
-}
-
-func makeObservationValueRecordingCallback<Owner: AnyObject>(
-    _ callbackBox: any ObservationScopeAnyValueCallbackBox
-) -> @isolated(any) @Sendable (ObservationEvent, Owner) -> Void {
-    let erasedCallback: @isolated(any) @Sendable (ObservationEvent, AnyObject) -> Void = { event, owner in
-        callbackBox.call(event: event, owner: owner)
-    }
-    return unsafe unsafeBitCast(
-        erasedCallback,
-        to: (@isolated(any) @Sendable (ObservationEvent, Owner) -> Void).self
-    )
-}
-
 protocol ScopedObservationRunner: Sendable {
     func run(
         ownerToken: UInt64,
@@ -242,9 +198,14 @@ protocol ScopedObservationRunner: Sendable {
 
 final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
     private let callbackBox: ObservationScopeCallbackBox<Owner>
+    private let delivery: ObservationDelivery
 
-    init(callbackBox: ObservationScopeCallbackBox<Owner>) {
+    init(
+        callbackBox: ObservationScopeCallbackBox<Owner>,
+        delivery: ObservationDelivery
+    ) {
         self.callbackBox = callbackBox
+        self.delivery = delivery
     }
 
     func run(
@@ -258,7 +219,8 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             options: options,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         )
     }
 
@@ -273,7 +235,8 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             options: options,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         )
     }
 
@@ -290,6 +253,7 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             isolation: isolation,
             state: state,
             callbackBox: callbackBox,
+            delivery: delivery,
             nextKind: nextKind
         )
     }
@@ -408,17 +372,4 @@ private func callObservationCallback<Owner: AnyObject>(
         to: (@Sendable (ObservationEvent, Owner) -> Void).self
     )
     unisolated(event, owner)
-}
-
-@inline(__always)
-func callObservationValueCallback<Owner: AnyObject, Value: Sendable>(
-    _ callback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Value,
-    _ event: ObservationEvent,
-    _ owner: Owner
-) -> Value {
-    let unisolated = unsafe unsafeBitCast(
-        callback,
-        to: (@Sendable (ObservationEvent, Owner) -> Value).self
-    )
-    return unisolated(event, owner)
 }

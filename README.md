@@ -124,10 +124,10 @@ Backend notes:
 - `.legacyBackend` keeps forcing the legacy backend after native support is added
 - non-`Sendable` stream values use the legacy backend
 
-## Testing Observation Timing
+## Testing
 
-This section is for tests. UIKit/AppKit rendering code should usually keep using
-the `Void` callback form shown above:
+The APIs in this section are for tests. Production UIKit/AppKit rendering code
+should usually keep using the `Void` callback form shown above:
 
 ```swift
 observations.observe(model) { _, model in
@@ -135,30 +135,60 @@ observations.observe(model) { _, model in
 }
 ```
 
-When a test needs to assert values delivered by an owner-bound observation,
-return the value from `observe`. The returned `ObservedValues` records delivered
-values and provides async wait points, so the test does not need a separate
-recorder or wall-clock polling loop.
+### Owner-Bound UI Rendering Timing
+
+Use `ObservationDelivery` when the behavior under test belongs to a native UI
+owner: a view controller, view, cell, toolbar item owner, or AppKit controller
+that renders observable state into existing UI objects. Keep the production
+callback in the normal `Void` form, and attach a sampler that reads a small
+`Sendable` UI-facing snapshot after each delivery.
 
 ```swift
-let titles = observations.observe(model) { _, model in
-    model.title
+struct RenderedState: Sendable, Equatable {
+    var primaryText: String?
+    var actionEnabled: Bool
 }
 
-#expect(await titles.waitUntilValue("Loading"))
+let delivery = observations.observe(model) { _, model in
+    renderNativeViews(from: model)
+}
 
-model.title = "Loaded"
-#expect(await titles.waitUntilValue("Loaded"))
+let renderedStates = await delivery.values {
+    RenderedState(
+        primaryText: primaryTextForTesting,
+        actionEnabled: actionButton.isEnabled
+    )
+}
+
+triggerModelChange()
+
+#expect(await renderedStates.waitUntilValue(
+    RenderedState(primaryText: expectedText, actionEnabled: true)
+))
 ```
 
+Sample rendered facts such as label text, enabled state, selected identifiers,
+row counts, accessibility values, presentation state, or native object identity.
+Do not install a second observation just to wait for the raw model value; that
+does not prove the production callback has rendered. Pure model state changes
+should usually be tested directly against the model, without going through
+`ObservationBridge`.
+
+`ObservationDelivery.cancel()` cancels the backing observation. `values { ... }`
+returns an `ObservedValues<Value>` recorder for one sampled value stream.
+Awaiting `values { ... }` registers the sampler and, when the observation has
+already delivered once, samples the current rendered state before returning.
 `ObservedValues<Value>` is limited to `Value: Sendable` because values can cross
 an async boundary while tests wait. It exposes `latestValue`, `snapshot()`,
 `waitUntilValue(_:timeout:)`, `waitUntil(timeout:_:)`, `cancel()`, and
 `isActive`. Keep the `ObservedValues` instance alive for as long as the test
-expects updates; call `cancel()` when the test no longer needs that observation.
+expects updates; call `cancel()` when the test no longer needs that sampled
+stream.
 
 The `timeout` on `ObservedValues` wait methods is only a test guard. It does not
 inject a clock into owner-bound observation delivery.
+
+### Stream Rate-Limit Timing
 
 For stream debounce or throttle tests, inject a `Clock` into the stream API
 instead:
