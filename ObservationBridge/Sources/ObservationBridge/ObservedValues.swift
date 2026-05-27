@@ -27,6 +27,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
         var values: [Value] = []
         var isActive = true
         var activeDeliveries = 0
+        var recordsInFlightAfterFinish = false
         var shouldFinishAfterDeliveries = false
         var waiters: [UInt64: Waiter] = [:]
         var nextWaiterID: UInt64 = 0
@@ -142,7 +143,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
 
     /// Stops this value recorder and wakes any pending waiters.
     public func cancel() {
-        let result = deactivate(takeCancelOperation: true)
+        let result = deactivate(takeCancelOperation: true, finishInFlightDeliveries: false)
         result.cancelOperation?()
         resume(result.waiters, returning: nil)
     }
@@ -164,7 +165,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
 
     func record(_ value: Value) {
         let resolutions = state.withLock { state -> [WaiterResolution] in
-            guard state.isActive || state.activeDeliveries > 0 else {
+            guard state.isActive || (state.activeDeliveries > 0 && state.recordsInFlightAfterFinish) else {
                 return []
             }
 
@@ -227,7 +228,7 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     }
 
     func finish() {
-        let result = deactivate(takeCancelOperation: false)
+        let result = deactivate(takeCancelOperation: false, finishInFlightDeliveries: true)
         resume(result.waiters, returning: nil)
     }
 
@@ -252,7 +253,8 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     }
 
     private func deactivate(
-        takeCancelOperation: Bool
+        takeCancelOperation: Bool,
+        finishInFlightDeliveries: Bool
     ) -> (cancelOperation: (@Sendable () -> Void)?, waiters: [WaiterResolution]) {
         state.withLock { state in
             guard state.isActive || !state.waiters.isEmpty || state.cancelOperation != nil else {
@@ -263,6 +265,17 @@ public final class ObservedValues<Value: Sendable>: Sendable {
             let cancelOperation = takeCancelOperation ? state.cancelOperation : nil
             state.cancelOperation = nil
             guard state.activeDeliveries == 0 else {
+                state.recordsInFlightAfterFinish = finishInFlightDeliveries
+                if !finishInFlightDeliveries {
+                    let waiters = state.waiters.map { waiter in
+                        WaiterResolution(
+                            continuation: waiter.value.continuation,
+                            timeoutTask: waiter.value.timeoutTask
+                        )
+                    }
+                    state.waiters.removeAll(keepingCapacity: true)
+                    return (cancelOperation, waiters)
+                }
                 state.shouldFinishAfterDeliveries = true
                 return (cancelOperation, [])
             }

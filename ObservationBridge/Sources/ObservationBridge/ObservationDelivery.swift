@@ -131,20 +131,29 @@ public final class ObservationDelivery: Sendable {
     }
 
     func endDelivery() -> ObservationDeliveryCompletion {
-        let samplers = state.withLock { state -> [any ObservationDeliverySampler] in
+        let hasActiveDelivery = state.withLock { state in
             guard state.activeDeliveries > 0 else {
-                return []
+                return false
             }
 
             state.hasDelivered = true
-            state.activeDeliveries -= 1
-            return Array(state.samplers.values)
+            return true
         }
 
         return ObservationDeliveryCompletion(
-            samplers: samplers,
-            finishAfterSampling: { [weak self] in
-                self?.finishAfterActiveDeliveriesIfNeeded()
+            sampleAndFinishOperation: { [weak self] in
+                guard hasActiveDelivery else {
+                    return
+                }
+
+                await self?.sampleActiveDeliveryAndFinish()
+            },
+            finishWithoutSamplingOperation: { [weak self] in
+                guard hasActiveDelivery else {
+                    return
+                }
+
+                self?.finishActiveDelivery()
             }
         )
     }
@@ -158,7 +167,7 @@ public final class ObservationDelivery: Sendable {
             state.activeDeliveries -= 1
         }
 
-        finishAfterActiveDeliveriesIfNeeded()
+        finishSamplersIfInactiveAndIdle()
     }
 
     func finish() {
@@ -190,19 +199,40 @@ public final class ObservationDelivery: Sendable {
         }
     }
 
-    private func finishAfterActiveDeliveriesIfNeeded() {
+    private func sampleActiveDeliveryAndFinish() async {
         let samplers = state.withLock { state -> [any ObservationDeliverySampler] in
-            guard !state.isActive, state.activeDeliveries == 0, state.shouldFinishAfterDeliveries else {
+            guard state.activeDeliveries > 0 else {
                 return []
             }
 
-            state.shouldFinishAfterDeliveries = false
-            let samplers = Array(state.samplers.values)
-            state.samplers.removeAll(keepingCapacity: true)
-            return samplers
+            return Array(state.samplers.values)
         }
 
-        finish(samplers)
+        for sampler in samplers {
+            await sampler.sample()
+        }
+
+        finishActiveDelivery()
+    }
+
+    private func finishActiveDelivery() {
+        state.withLock { state in
+            guard state.activeDeliveries > 0 else {
+                return
+            }
+
+            state.activeDeliveries -= 1
+        }
+
+        finishSamplersIfInactiveAndIdle()
+    }
+
+    private func finishSamplersIfInactiveAndIdle() {
+        finish(
+            state.withLock { state in
+                takeSamplersIfInactiveAndIdle(&state)
+            }
+        )
     }
 
     private func finish(_ samplers: [any ObservationDeliverySampler]) {
@@ -210,29 +240,39 @@ public final class ObservationDelivery: Sendable {
             sampler.finish()
         }
     }
+
+    private func takeSamplersIfInactiveAndIdle(
+        _ state: inout State
+    ) -> [any ObservationDeliverySampler] {
+        guard !state.isActive, state.activeDeliveries == 0, state.shouldFinishAfterDeliveries else {
+            return []
+        }
+
+        state.shouldFinishAfterDeliveries = false
+        let samplers = Array(state.samplers.values)
+        state.samplers.removeAll(keepingCapacity: true)
+        return samplers
+    }
 }
 
 struct ObservationDeliveryCompletion: Sendable {
-    private let samplers: [any ObservationDeliverySampler]
-    private let finishAfterSampling: @Sendable () -> Void
+    private let sampleAndFinishOperation: @Sendable () async -> Void
+    private let finishWithoutSamplingOperation: @Sendable () -> Void
 
     fileprivate init(
-        samplers: [any ObservationDeliverySampler],
-        finishAfterSampling: @escaping @Sendable () -> Void
+        sampleAndFinishOperation: @escaping @Sendable () async -> Void,
+        finishWithoutSamplingOperation: @escaping @Sendable () -> Void
     ) {
-        self.samplers = samplers
-        self.finishAfterSampling = finishAfterSampling
+        self.sampleAndFinishOperation = sampleAndFinishOperation
+        self.finishWithoutSamplingOperation = finishWithoutSamplingOperation
     }
 
     func sampleAndFinish() async {
-        for sampler in samplers {
-            await sampler.sample()
-        }
-        finishAfterSampling()
+        await sampleAndFinishOperation()
     }
 
     func finishWithoutSampling() {
-        finishAfterSampling()
+        finishWithoutSamplingOperation()
     }
 }
 

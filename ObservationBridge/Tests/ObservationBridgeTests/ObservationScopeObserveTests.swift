@@ -546,6 +546,52 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func deliveryFinishAfterCallbackStillSamplesCompletedRender() async {
+        let delivery = ObservationDelivery()
+        let rendered = RenderedValue(0)
+        let values = await delivery.values {
+            rendered.value
+        }
+
+        #expect(delivery.beginDelivery())
+        rendered.set(1)
+        let completion = delivery.endDelivery()
+
+        delivery.finish()
+        await completion.sampleAndFinish()
+
+        #expect(values.snapshot() == [1])
+        #expect(values.isActive == false)
+        #expect(delivery.isActive == false)
+    }
+
+    @Test
+    func observedValuesCancelRejectsInFlightRecord() {
+        let values = ObservedValues<Int>()
+
+        #expect(values.beginDelivery())
+        values.cancel()
+        values.record(1)
+        values.endDelivery()
+
+        #expect(values.snapshot().isEmpty)
+        #expect(values.isActive == false)
+    }
+
+    @Test
+    func observedValuesFinishAllowsInFlightRecordBeforeFinishing() {
+        let values = ObservedValues<Int>()
+
+        #expect(values.beginDelivery())
+        values.finish()
+        values.record(1)
+        values.endDelivery()
+
+        #expect(values.snapshot() == [1])
+        #expect(values.isActive == false)
+    }
+
+    @Test
     func eventCancelStopsCurrentObservationOnly() async {
         let model = CounterModel()
         let observations = ObservationScope()
