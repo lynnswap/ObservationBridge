@@ -6,7 +6,7 @@ import _ObservationBridgePrivateABI
 
 /// Owns owner-bound observations for an explicit lifecycle.
 ///
-/// Call ``observe(_:options:_:isolation:_fileID:_line:_column:)`` at lifecycle boundaries such as
+/// Call `observe(...)` at lifecycle boundaries such as
 /// view setup or cell configuration. The scope cancels all stored observations when it is
 /// deallocated.
 public final class ObservationScope: @unchecked Sendable {
