@@ -53,8 +53,8 @@ protocol ObservationScopeCallbackClearing: Sendable {
 final class ObservationScopeSlot<Owner: AnyObject>: ObservationScopeSlotProtocol, @unchecked Sendable {
     let descriptor: ObservationScopeDescriptor
     let callbackBox: ObservationScopeCallbackBox<Owner>
+    let handle: ObservationHandle
     private let state: ScopedObservationState
-    private let handle: ObservationHandle
     private let taskBox: ObservationTaskBox
     private let startOperation: Mutex<ObservationScopeStartOperation?>
 
@@ -198,9 +198,14 @@ protocol ScopedObservationRunner: Sendable {
 
 final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
     private let callbackBox: ObservationScopeCallbackBox<Owner>
+    private let delivery: ObservationDelivery
 
-    init(callbackBox: ObservationScopeCallbackBox<Owner>) {
+    init(
+        callbackBox: ObservationScopeCallbackBox<Owner>,
+        delivery: ObservationDelivery
+    ) {
         self.callbackBox = callbackBox
+        self.delivery = delivery
     }
 
     func run(
@@ -214,7 +219,8 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             options: options,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         )
     }
 
@@ -229,7 +235,8 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             options: options,
             isolation: isolation,
             state: state,
-            callbackBox: callbackBox
+            callbackBox: callbackBox,
+            delivery: delivery
         )
     }
 
@@ -246,6 +253,7 @@ final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedO
             isolation: isolation,
             state: state,
             callbackBox: callbackBox,
+            delivery: delivery,
             nextKind: nextKind
         )
     }
