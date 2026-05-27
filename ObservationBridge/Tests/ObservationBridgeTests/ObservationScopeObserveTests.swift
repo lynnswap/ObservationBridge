@@ -98,6 +98,23 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func deliveryValuesSampleInitialRenderBeforeReturning() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(-1)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { _, model in
+            rendered.set(model.value)
+        }
+        let values = await delivery.values {
+            rendered.value
+        }
+
+        #expect(values.snapshot() == [0])
+    }
+
+    @Test
     func deliveryValuesHonorClosureIsolationForImmediateAndLaterSamples() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -563,6 +580,27 @@ final class ObservationScopeObserveTests {
         #expect(values.snapshot() == [1])
         #expect(values.isActive == false)
         #expect(delivery.isActive == false)
+    }
+
+    @Test
+    func deliveryValuesRegisteredDuringCompletedActiveDeliverySampleOnce() async {
+        let delivery = ObservationDelivery()
+        let rendered = RenderedValue(0)
+
+        #expect(delivery.beginDelivery())
+        rendered.set(1)
+        let completion = delivery.endDelivery()
+
+        let values = await delivery.values {
+            rendered.value
+        }
+        #expect(values.snapshot() == [1])
+
+        await completion.sampleAndFinish()
+
+        #expect(values.snapshot() == [1])
+        delivery.finish()
+        #expect(values.isActive == false)
     }
 
     @Test

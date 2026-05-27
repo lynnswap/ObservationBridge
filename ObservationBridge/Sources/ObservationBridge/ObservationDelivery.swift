@@ -10,10 +10,17 @@ public final class ObservationDelivery: Sendable {
         var isActive = true
         var hasDelivered = false
         var activeDeliveries = 0
+        var deliveryGeneration: UInt64 = 0
+        var completedDeliveriesAwaitingSampling = 0
         var shouldFinishAfterDeliveries = false
-        var samplers: [UInt64: any ObservationDeliverySampler] = [:]
+        var samplers: [UInt64: SamplerRegistration] = [:]
         var nextSamplerID: UInt64 = 0
         var cancelOperation: (@Sendable () -> Void)?
+    }
+
+    private struct SamplerRegistration: Sendable {
+        let sampler: any ObservationDeliverySampler
+        var lastSampledGeneration: UInt64
     }
 
     private let state = Mutex(State())
@@ -76,14 +83,24 @@ public final class ObservationDelivery: Sendable {
         sampler: any ObservationDeliverySampler
     ) async -> ObservedValues<Value> {
         let registration = state.withLock { state -> (id: UInt64?, sampleImmediately: Bool, finishAfterSample: Bool) in
+            let shouldSampleCurrentDelivery =
+                state.hasDelivered
+                    && (state.activeDeliveries == 0 || state.completedDeliveriesAwaitingSampling > 0)
+
             guard state.isActive else {
-                return (nil, state.hasDelivered && state.activeDeliveries == 0, true)
+                return (nil, shouldSampleCurrentDelivery, true)
             }
 
             let id = state.nextSamplerID
             state.nextSamplerID &+= 1
-            state.samplers[id] = sampler
-            return (id, state.hasDelivered && state.activeDeliveries == 0, false)
+            state.samplers[id] = SamplerRegistration(
+                sampler: sampler,
+                lastSampledGeneration: state.deliveryGeneration
+            )
+            if shouldSampleCurrentDelivery {
+                state.samplers[id]?.lastSampledGeneration = state.deliveryGeneration
+            }
+            return (id, shouldSampleCurrentDelivery, false)
         }
 
         if let id = registration.id {
@@ -131,25 +148,27 @@ public final class ObservationDelivery: Sendable {
     }
 
     func endDelivery() -> ObservationDeliveryCompletion {
-        let hasActiveDelivery = state.withLock { state in
+        let delivery = state.withLock { state -> (isActive: Bool, generation: UInt64) in
             guard state.activeDeliveries > 0 else {
-                return false
+                return (false, state.deliveryGeneration)
             }
 
             state.hasDelivered = true
-            return true
+            state.deliveryGeneration &+= 1
+            state.completedDeliveriesAwaitingSampling += 1
+            return (true, state.deliveryGeneration)
         }
 
         return ObservationDeliveryCompletion(
             sampleAndFinishOperation: { [weak self] in
-                guard hasActiveDelivery else {
+                guard delivery.isActive else {
                     return
                 }
 
-                await self?.sampleActiveDeliveryAndFinish()
+                await self?.sampleActiveDeliveryAndFinish(generation: delivery.generation)
             },
             finishWithoutSamplingOperation: { [weak self] in
-                guard hasActiveDelivery else {
+                guard delivery.isActive else {
                     return
                 }
 
@@ -184,7 +203,7 @@ public final class ObservationDelivery: Sendable {
                 return []
             }
 
-            let samplers = Array(state.samplers.values)
+            let samplers = state.samplers.values.map(\.sampler)
             state.samplers.removeAll(keepingCapacity: true)
             state.shouldFinishAfterDeliveries = false
             return samplers
@@ -199,13 +218,22 @@ public final class ObservationDelivery: Sendable {
         }
     }
 
-    private func sampleActiveDeliveryAndFinish() async {
+    private func sampleActiveDeliveryAndFinish(generation: UInt64) async {
         let samplers = state.withLock { state -> [any ObservationDeliverySampler] in
-            guard state.activeDeliveries > 0 else {
+            guard state.activeDeliveries > 0, state.completedDeliveriesAwaitingSampling > 0 else {
                 return []
             }
 
-            return Array(state.samplers.values)
+            var samplers: [any ObservationDeliverySampler] = []
+            for id in state.samplers.keys {
+                guard let registration = state.samplers[id], registration.lastSampledGeneration < generation else {
+                    continue
+                }
+
+                state.samplers[id]?.lastSampledGeneration = generation
+                samplers.append(registration.sampler)
+            }
+            return samplers
         }
 
         for sampler in samplers {
@@ -221,6 +249,9 @@ public final class ObservationDelivery: Sendable {
                 return
             }
 
+            if state.completedDeliveriesAwaitingSampling > 0 {
+                state.completedDeliveriesAwaitingSampling -= 1
+            }
             state.activeDeliveries -= 1
         }
 
@@ -249,7 +280,7 @@ public final class ObservationDelivery: Sendable {
         }
 
         state.shouldFinishAfterDeliveries = false
-        let samplers = Array(state.samplers.values)
+        let samplers = state.samplers.values.map(\.sampler)
         state.samplers.removeAll(keepingCapacity: true)
         return samplers
     }
