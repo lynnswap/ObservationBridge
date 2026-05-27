@@ -2,7 +2,7 @@ import Synchronization
 
 /// Represents an owner-bound observation delivery pipeline.
 ///
-/// `ObservationDelivery` is returned from ``ObservationScope/observe(_:options:_:isolation:_fileID:_line:_column:)``.
+/// `ObservationDelivery` is returned from `ObservationScope.observe(...)`.
 /// Tests can attach value samplers with ``values(_:)`` to wait for
 /// state rendered by the production callback after each delivery completes.
 public final class ObservationDelivery: Sendable {
