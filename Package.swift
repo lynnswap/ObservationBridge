@@ -70,7 +70,10 @@ let package = Package(
             name: "ObservationBridgeBenchmarks",
             dependencies: [
                 "ObservationBridge",
-                "_ObservationBridgeBenchmarkSupport",
+                .target(
+                    name: "_ObservationBridgeBenchmarkSupport",
+                    condition: .when(traits: ["BenchmarkSupport"])
+                ),
             ],
             path: "Benchmarks/ObservationBridgeBenchmarks",
             swiftSettings: [

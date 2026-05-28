@@ -205,6 +205,9 @@ final class ObservationScopeObserveTests {
         #expect(await waitUntilCondition {
             rendered.value == ScopePass(kind: .didSet, value: 1, isEnabled: false)
         })
+        #expect(await waitUntilCondition {
+            delivery._isIdleAfterCompletedDeliveryForTesting
+        })
 
         let values = await delivery.values {
             rendered.value

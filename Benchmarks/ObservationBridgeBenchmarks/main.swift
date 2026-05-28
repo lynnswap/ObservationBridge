@@ -4,7 +4,10 @@ import Foundation
 import Observation
 import ObservationBridge
 import Synchronization
+
+#if canImport(_ObservationBridgeBenchmarkSupport)
 import _ObservationBridgeBenchmarkSupport
+#endif
 
 @Observable
 final class BenchmarkCounterModel: @unchecked Sendable {
@@ -77,6 +80,7 @@ final class ChangeDeliveryRecorder: @unchecked Sendable {
     }
 }
 
+#if canImport(_ObservationBridgeBenchmarkSupport)
 private enum RuntimeEnqueueHooks {
     static func activate() {
         ObservationBridgeRuntimeEnqueueHooksInstall()
@@ -127,11 +131,14 @@ private enum WaiterRegistrationHooks {
         }
     }
 }
+#endif
 
 enum BenchmarkCase: String, CaseIterable {
     case scopeSetupTeardown
     case scopeReplaceSameCallsite
+    #if canImport(_ObservationBridgeBenchmarkSupport)
     case scopeChangeRuntimeActivity
+    #endif
     case streamConstructAndFirstValue
     case nonSendableStreamConstructAndFirstValue
 }
@@ -287,8 +294,10 @@ enum ObservationBridgeBenchmarks {
             return BenchmarkExecutionResult(checksum: runScopeSetupTeardown(iterations: iterations))
         case .scopeReplaceSameCallsite:
             return BenchmarkExecutionResult(checksum: runScopeReplaceSameCallsite(iterations: iterations))
+        #if canImport(_ObservationBridgeBenchmarkSupport)
         case .scopeChangeRuntimeActivity:
             return try await runScopeChangeRuntimeActivity(iterations: iterations)
+        #endif
         case .streamConstructAndFirstValue:
             return BenchmarkExecutionResult(checksum: try await runStreamConstructAndFirstValue(iterations: iterations))
         case .nonSendableStreamConstructAndFirstValue:
@@ -347,6 +356,7 @@ enum ObservationBridgeBenchmarks {
         }
     }
 
+    #if canImport(_ObservationBridgeBenchmarkSupport)
     @inline(never)
     private static func runScopeChangeRuntimeActivity(
         iterations: Int
@@ -411,6 +421,7 @@ enum ObservationBridgeBenchmarks {
             runtimeActivity: activity
         )
     }
+    #endif
 
     @inline(never)
     private static func runStreamConstructAndFirstValue(iterations: Int) async throws -> Int {

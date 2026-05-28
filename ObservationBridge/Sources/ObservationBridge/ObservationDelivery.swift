@@ -39,6 +39,14 @@ public final class ObservationDelivery: Sendable {
         }
     }
 
+    var _isIdleAfterCompletedDeliveryForTesting: Bool {
+        state.withLock { state in
+            state.hasDelivered
+                && state.activeDeliveries == 0
+                && state.completedDeliveriesAwaitingSampling == 0
+        }
+    }
+
     init() {}
 
     /// Cancels the backing observation.
