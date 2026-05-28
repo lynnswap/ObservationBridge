@@ -53,14 +53,14 @@ public struct ObservationEvent: Sendable {
     /// The reason the observation callback is running.
     public let kind: Kind
 
-    private let cancelOperation: @Sendable () -> Void
+    private weak var slot: ObservationScopeSlot?
 
     init(
         kind: Kind,
-        cancelOperation: @escaping @Sendable () -> Void
+        slot: ObservationScopeSlot
     ) {
         self.kind = kind
-        self.cancelOperation = cancelOperation
+        self.slot = slot
     }
 
     #if compiler(>=6.4)
@@ -73,6 +73,6 @@ public struct ObservationEvent: Sendable {
 
     /// Cancels the current observation.
     public func cancel() {
-        cancelOperation()
+        slot?.cancel()
     }
 }

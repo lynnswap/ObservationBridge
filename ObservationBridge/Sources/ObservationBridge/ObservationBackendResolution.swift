@@ -66,37 +66,22 @@ func makeObservationStream<Value>(
         )
     }
 
+    guard let rateLimit else {
+        return makeUnboxedLegacyObservationStream(
+            boxedObserve,
+            isolation: observe.isolation ?? isolation
+        )
+    }
+
     let boxedStream = makeLegacyObservationStream(
         boxedObserve,
         isolation: observe.isolation ?? isolation
     )
-    let sourceStream: AsyncStream<_UncheckedSendableValueBox<Value>>
-    if let rateLimit {
-        sourceStream = makeRateLimitedValueStream(
-            boxedStream,
-            rateLimit: rateLimit,
-            rateLimitClock: rateLimitClock
-        )
-    } else {
-        sourceStream = boxedStream
-    }
-
-    let stream = AsyncStream<Value> { continuation in
-        let task = Task {
-            for await boxedValue in sourceStream {
-                if Task.isCancelled {
-                    break
-                }
-                continuation.yield(boxedValue.value)
-            }
-            continuation.finish()
-        }
-
-        continuation.onTermination = { _ in
-            task.cancel()
-        }
-    }
-    return stream
+    return makeUnboxedRateLimitedObservationStream(
+        boxedStream,
+        rateLimit: rateLimit,
+        rateLimitClock: rateLimitClock
+    )
 }
 
 func makeObservationStreamFromCapturedIsolation<Value>(
@@ -127,22 +112,60 @@ func makeObservationStreamFromCapturedIsolation<Value>(
         )
     }
 
+    guard let rateLimit else {
+        return makeUnboxedLegacyObservationStream(
+            boxedObserve,
+            isolation: observe.isolation ?? capturedIsolation
+        )
+    }
+
     let boxedStream = makeLegacyObservationStream(
         boxedObserve,
         isolation: observe.isolation ?? capturedIsolation
     )
-    let sourceStream: AsyncStream<_UncheckedSendableValueBox<Value>>
-    if let rateLimit {
-        sourceStream = makeRateLimitedValueStream(
-            boxedStream,
-            rateLimit: rateLimit,
-            rateLimitClock: rateLimitClock
-        )
-    } else {
-        sourceStream = boxedStream
-    }
+    return makeUnboxedRateLimitedObservationStream(
+        boxedStream,
+        rateLimit: rateLimit,
+        rateLimitClock: rateLimitClock
+    )
+}
 
-    let stream = AsyncStream<Value> { continuation in
+private func makeUnboxedLegacyObservationStream<Value>(
+    _ boxedObserve: @escaping @isolated(any) @Sendable () -> _UncheckedSendableValueBox<Value>,
+    isolation: (any Actor)?
+) -> AsyncStream<Value> {
+    AsyncStream<Value> { continuation in
+        let task = Task {
+            await _ObservationBridgeLegacy.forEachLegacyObservationEmission(
+                boxedObserve,
+                isolation: isolation
+            ) { boxedValue in
+                if Task.isCancelled {
+                    return false
+                }
+                continuation.yield(boxedValue.value)
+                return true
+            }
+            continuation.finish()
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
+}
+
+private func makeUnboxedRateLimitedObservationStream<Value>(
+    _ boxedStream: AsyncStream<_UncheckedSendableValueBox<Value>>,
+    rateLimit: ObservationRateLimit,
+    rateLimitClock: any Clock<Duration>
+) -> AsyncStream<Value> {
+    let sourceStream = makeRateLimitedValueStream(
+        boxedStream,
+        rateLimit: rateLimit,
+        rateLimitClock: rateLimitClock
+    )
+    return AsyncStream<Value> { continuation in
         let task = Task {
             for await boxedValue in sourceStream {
                 if Task.isCancelled {
@@ -157,7 +180,6 @@ func makeObservationStreamFromCapturedIsolation<Value>(
             task.cancel()
         }
     }
-    return stream
 }
 
 private func makeRawObservationStream<Value: Sendable>(

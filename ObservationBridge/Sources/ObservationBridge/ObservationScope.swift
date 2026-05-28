@@ -42,31 +42,23 @@ public final class ObservationScope: @unchecked Sendable {
             options: options,
             startIsolation: isolation,
             observationIsolation: apply.isolation ?? isolation,
-            callbackIsolation: apply.isolation,
             delivery: delivery,
             apply: apply,
             _fileID: _fileID,
             _line: _line,
             _column: _column
         )
-        delivery.setCancelOperation { [weak slot] in
-            slot?.cancel()
-        }
+        delivery.bind(to: slot)
         return delivery
     }
 
     /// Cancels every observation currently owned by the scope.
     public func cancelAll() {
         let currentSlots = storage.withLock { storage in
-            storage.cancellationGeneration &+= 1
-            let currentSlots = Array(storage.slots.values)
-            storage.slots.removeAll(keepingCapacity: true)
-            return currentSlots
+            storage.takeAllSlots()
         }
 
-        for slot in currentSlots {
-            slot.cancel()
-        }
+        currentSlots.cancel()
     }
 
     deinit {
@@ -79,7 +71,6 @@ public final class ObservationScope: @unchecked Sendable {
         options: ObservationOptions,
         startIsolation: isolated (any Actor)?,
         observationIsolation: (any Actor)?,
-        callbackIsolation: (any Actor)?,
         delivery: ObservationDelivery,
         apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
         _fileID: StaticString,
@@ -90,33 +81,25 @@ public final class ObservationScope: @unchecked Sendable {
             storage.cancellationGeneration
         }
         let id = ObservationScopeID(
-            fileID: String(describing: _fileID),
+            fileID: _fileID,
             line: _line,
             column: _column
         )
-        let descriptor = ObservationScopeDescriptor(
-            owner: owner,
-            options: options,
-            observationIsolation: observationIsolation,
-            callbackIsolation: callbackIsolation
-        )
         let slot = makeObservationSlot(
             owner: owner,
-            descriptor: descriptor,
             options: options,
             isolation: observationIsolation,
             delivery: delivery,
             apply: apply
         )
-        let insertion = storage.withLock { storage -> (slotToStart: ObservationScopeSlot?, shouldCancelNewSlot: Bool) in
-            guard storage.cancellationGeneration == cancellationGeneration else {
-                return (nil, true)
-            }
-
-            let replacedSlot = storage.slots.updateValue(slot, forKey: id)
-            replacedSlot?.cancel()
-            return (slot, false)
+        let insertion = storage.withLock { storage in
+            storage.install(
+                slot,
+                for: id,
+                expectedCancellationGeneration: cancellationGeneration
+            )
         }
+        insertion.replacedSlot?.cancel()
         if insertion.shouldCancelNewSlot {
             slot.cancel()
         }
@@ -126,84 +109,125 @@ public final class ObservationScope: @unchecked Sendable {
 
     private func makeObservationSlot<Owner: AnyObject & Observable>(
         owner: Owner,
-        descriptor: ObservationScopeDescriptor,
         options: ObservationOptions,
         isolation: (any Actor)?,
         delivery: ObservationDelivery,
         apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
     ) -> ObservationScopeSlot {
-        let ownerToken = WeakOwnerRegistry.createToken(owner: owner)
-        let slot = ObservationScopeSlot(
-            descriptor: descriptor,
-            ownerToken: ownerToken,
+        ObservationScopeSlot(
+            owner: owner,
+            options: options,
+            observationIsolation: isolation,
             delivery: delivery,
             callback: TypedObservationScopeCallback(apply)
         )
-        slot.setStartOperation { [weak slot] currentIsolation in
-            guard let slot else {
-                return nil
-            }
-
-            let startsInCurrentIsolation =
-                observationScopeActorID(isolation) == observationScopeActorID(currentIsolation)
-
-            if startsInCurrentIsolation {
-                switch runInitialLegacyScopedObservationPass(
-                    ownerToken: ownerToken,
-                    options: options,
-                    isolation: currentIsolation,
-                    slot: slot
-                ) {
-                case .waitingForChange(let kind):
-                    return makeObservationTask { [weak slot] in
-                        guard let slot else {
-                            return
-                        }
-                        defer {
-                            slot.cancel()
-                        }
-
-                        await runLegacyScopedObservationLoopAfterInitialPass(
-                            ownerToken: ownerToken,
-                            options: options,
-                            isolation: isolation,
-                            slot: slot,
-                            nextKind: kind
-                        )
-                    }
-                case .finished:
-                    slot.cancel()
-                    return nil
-                }
-            }
-
-            return makeObservationTask { [weak slot] in
-                guard let slot else {
-                    return
-                }
-                defer {
-                    slot.cancel()
-                }
-
-                await runScopedObservationLoop(
-                    ownerToken: ownerToken,
-                    options: options,
-                    isolation: isolation,
-                    slot: slot
-                )
-            }
-        }
-        return slot
     }
 }
 
 private struct ObservationScopeStorage {
     var cancellationGeneration: UInt64 = 0
-    var slots: [ObservationScopeID: ObservationScopeSlot] = [:]
+    var singleID: ObservationScopeID?
+    var singleSlot: ObservationScopeSlot?
+    var slots: [ObservationScopeID: ObservationScopeSlot]?
+
+    mutating func install(
+        _ slot: ObservationScopeSlot,
+        for id: ObservationScopeID,
+        expectedCancellationGeneration: UInt64
+    ) -> ObservationScopeInsertion {
+        guard cancellationGeneration == expectedCancellationGeneration else {
+            return ObservationScopeInsertion(
+                slotToStart: nil,
+                replacedSlot: nil,
+                shouldCancelNewSlot: true
+            )
+        }
+
+        if slots != nil {
+            let replacedSlot = slots!.updateValue(slot, forKey: id)
+            return ObservationScopeInsertion(
+                slotToStart: slot,
+                replacedSlot: replacedSlot,
+                shouldCancelNewSlot: false
+            )
+        }
+
+        if let currentID = singleID, let currentSlot = singleSlot {
+            if currentID == id {
+                singleSlot = slot
+                return ObservationScopeInsertion(
+                    slotToStart: slot,
+                    replacedSlot: currentSlot,
+                    shouldCancelNewSlot: false
+                )
+            }
+
+            slots = [
+                currentID: currentSlot,
+                id: slot,
+            ]
+            singleID = nil
+            singleSlot = nil
+            return ObservationScopeInsertion(
+                slotToStart: slot,
+                replacedSlot: nil,
+                shouldCancelNewSlot: false
+            )
+        }
+
+        singleID = id
+        singleSlot = slot
+        return ObservationScopeInsertion(
+            slotToStart: slot,
+            replacedSlot: nil,
+            shouldCancelNewSlot: false
+        )
+    }
+
+    mutating func takeAllSlots() -> ObservationScopeSlotBatch {
+        cancellationGeneration &+= 1
+
+        if let slot = singleSlot {
+            singleID = nil
+            singleSlot = nil
+            return .single(slot)
+        }
+
+        guard let currentSlots = slots else {
+            return .empty
+        }
+
+        slots = nil
+        return .many(Array(currentSlots.values))
+    }
+}
+
+private struct ObservationScopeInsertion {
+    let slotToStart: ObservationScopeSlot?
+    let replacedSlot: ObservationScopeSlot?
+    let shouldCancelNewSlot: Bool
+}
+
+private enum ObservationScopeSlotBatch {
+    case empty
+    case single(ObservationScopeSlot)
+    case many([ObservationScopeSlot])
+
+    func cancel() {
+        switch self {
+        case .empty:
+            return
+        case .single(let slot):
+            slot.cancel()
+        case .many(let slots):
+            for slot in slots {
+                slot.cancel()
+            }
+        }
+    }
 }
 
 func runScopedObservationLoop(
-    ownerToken: UInt64,
     options: ObservationOptions,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
@@ -213,7 +237,6 @@ func runScopedObservationLoop(
     // and ObservationTracking.Event forwarding once the Swift 6.4 API is available.
     #endif
     await runLegacyScopedObservationLoop(
-        ownerToken: ownerToken,
         options: options,
         isolation: isolation,
         slot: slot
@@ -221,7 +244,6 @@ func runScopedObservationLoop(
 }
 
 private func runLegacyScopedObservationLoop(
-    ownerToken: UInt64,
     options: ObservationOptions,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
@@ -232,7 +254,6 @@ private func runLegacyScopedObservationLoop(
         let changeKind = legacyChangeKind(for: options)
 
         guard await trackLegacyScopedObservation(
-            ownerToken: ownerToken,
             kind: kind,
             changeKind: changeKind,
             isolation: isolation,
@@ -256,7 +277,6 @@ private func runLegacyScopedObservationLoop(
 }
 
 func runInitialLegacyScopedObservationPass(
-    ownerToken: UInt64,
     options: ObservationOptions,
     isolation _: isolated (any Actor)?,
     slot: ObservationScopeSlot
@@ -264,7 +284,6 @@ func runInitialLegacyScopedObservationPass(
     let changeKind = legacyChangeKind(for: options)
 
     let result = trackLegacyScopedObservationInCurrentContext(
-        ownerToken: ownerToken,
         kind: .initial,
         changeKind: changeKind,
         slot: slot
@@ -285,7 +304,6 @@ func runInitialLegacyScopedObservationPass(
 }
 
 func runLegacyScopedObservationLoopAfterInitialPass(
-    ownerToken: UInt64,
     options: ObservationOptions,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot,
@@ -301,7 +319,6 @@ func runLegacyScopedObservationLoopAfterInitialPass(
         let changeKind = legacyChangeKind(for: options)
 
         guard await trackLegacyScopedObservation(
-            ownerToken: ownerToken,
             kind: kind,
             changeKind: changeKind,
             isolation: isolation,
@@ -321,7 +338,6 @@ func runLegacyScopedObservationLoopAfterInitialPass(
 }
 
 private func trackLegacyScopedObservation(
-    ownerToken: UInt64,
     kind: ObservationEvent.Kind,
     changeKind: ObservationEvent.Kind?,
     isolation: (any Actor)?,
@@ -329,7 +345,6 @@ private func trackLegacyScopedObservation(
 ) async -> Bool {
     let result = await withObservationIsolation(isolation: isolation) {
         trackLegacyScopedObservationInCurrentContext(
-            ownerToken: ownerToken,
             kind: kind,
             changeKind: changeKind,
             slot: slot
@@ -353,7 +368,6 @@ private struct ScopedObservationTrackResult: Sendable {
 }
 
 private func trackLegacyScopedObservationInCurrentContext(
-    ownerToken: UInt64,
     kind: ObservationEvent.Kind,
     changeKind: ObservationEvent.Kind?,
     slot: ObservationScopeSlot
@@ -362,13 +376,11 @@ private func trackLegacyScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    guard let owner = WeakOwnerRegistry.owner(token: ownerToken) else {
+    guard let owner = slot.owner() else {
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    let event = ObservationEvent(kind: kind) {
-        slot.cancel()
-    }
+    let event = ObservationEvent(kind: kind, slot: slot)
 
     let delivery = slot.delivery
     guard delivery.beginDelivery() else {

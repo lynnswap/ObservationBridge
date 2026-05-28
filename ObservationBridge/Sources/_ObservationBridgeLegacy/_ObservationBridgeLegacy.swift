@@ -146,13 +146,8 @@ private func callIsolatedWithFastPath<Value>(
 
     // Swift cannot synchronously call an arbitrary @isolated(any) closure here;
     // this conversion is expected to preserve the legacy same-isolation path.
-    let result = Result(catching: closure)
-    switch result {
-    case .success(let value):
-        return value
-    case .failure(let error):
-        preconditionFailure("legacy observation produced unexpected error: \(error)")
-    }
+    let sameIsolation = unsafe unsafeBitCast(closure, to: (@Sendable () -> Value).self)
+    return sameIsolation()
 }
 
 @inline(__always)
@@ -167,13 +162,8 @@ private func callIsolatedWithFastPath<Input, Value>(
 
     // Swift cannot synchronously call an arbitrary @isolated(any) closure here;
     // this conversion is expected to preserve the legacy same-isolation path.
-    let result = Optional(input).map(closure)
-    switch result {
-    case .some(let value):
-        return value
-    case .none:
-        preconditionFailure("legacy observation produced unexpected nil mapping")
-    }
+    let sameIsolation = unsafe unsafeBitCast(closure, to: ((Input) -> Value).self)
+    return sameIsolation(input)
 }
 
 private func withObservationIsolation<T>(
@@ -240,11 +230,69 @@ private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMuta
     unsafe dlsym(unsafe UnsafeMutableRawPointer(bitPattern: -2), name)
 }
 
+private struct LegacyObservationWaiters: @unchecked Sendable {
+    private var first: CheckedContinuation<Void, Never>?
+    private var additional: [CheckedContinuation<Void, Never>]?
+
+    var isEmpty: Bool {
+        first == nil
+    }
+
+    mutating func append(_ continuation: CheckedContinuation<Void, Never>) {
+        guard first != nil else {
+            first = continuation
+            return
+        }
+
+        if additional == nil {
+            additional = []
+        }
+        additional!.append(continuation)
+    }
+
+    mutating func takeAll() -> LegacyObservationWaiterBatch {
+        guard let first else {
+            return .empty
+        }
+
+        self.first = nil
+        guard let additional else {
+            return .single(first)
+        }
+        self.additional = nil
+
+        if additional.isEmpty {
+            return .single(first)
+        }
+        return .many(first, additional)
+    }
+}
+
+private enum LegacyObservationWaiterBatch: @unchecked Sendable {
+    case empty
+    case single(CheckedContinuation<Void, Never>)
+    case many(CheckedContinuation<Void, Never>, [CheckedContinuation<Void, Never>])
+
+    func resumeAll() {
+        switch self {
+        case .empty:
+            return
+        case .single(let continuation):
+            continuation.resume(returning: ())
+        case .many(let first, let additional):
+            first.resume(returning: ())
+            for continuation in additional {
+                continuation.resume(returning: ())
+            }
+        }
+    }
+}
+
 private final class LegacyObservationState: @unchecked Sendable {
-    private struct State {
+    private struct State: @unchecked Sendable {
         var dirty = false
         var terminated = false
-        var waiters: [CheckedContinuation<Void, Never>] = []
+        var waiters = LegacyObservationWaiters()
     }
 
     private enum WaitSetup {
@@ -260,42 +308,34 @@ private final class LegacyObservationState: @unchecked Sendable {
     }
 
     func emitWillChange() {
-        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+        let waiters = state.withLock { state -> LegacyObservationWaiterBatch in
             guard !state.terminated else {
-                return []
+                return .empty
             }
 
             if state.waiters.isEmpty {
                 state.dirty = true
-                return []
+                return .empty
             }
 
-            let continuations = state.waiters
-            state.waiters.removeAll(keepingCapacity: true)
-            return continuations
+            return state.waiters.takeAll()
         }
 
-        for continuation in continuations {
-            continuation.resume(returning: ())
-        }
+        waiters.resumeAll()
     }
 
     func terminate() {
-        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+        let waiters = state.withLock { state -> LegacyObservationWaiterBatch in
             guard !state.terminated else {
-                return []
+                return .empty
             }
 
             state.terminated = true
             state.dirty = false
-            let continuations = state.waiters
-            state.waiters.removeAll(keepingCapacity: true)
-            return continuations
+            return state.waiters.takeAll()
         }
 
-        for continuation in continuations {
-            continuation.resume(returning: ())
-        }
+        waiters.resumeAll()
     }
 
     func waitForChange() async -> Bool {

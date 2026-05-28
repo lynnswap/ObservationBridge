@@ -477,6 +477,47 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func observationsFromDifferentCallSitesCoexistAfterStoragePromotion() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+
+        let renderedValue = RenderedValue("")
+        let valueDelivery = observations.observe(model) { event, model in
+            renderedValue.set("value:\(event.kind):\(model.value)")
+        }
+        let valuePasses = await valueDelivery.values {
+            renderedValue.value
+        }
+        var valueCursor = ObservedValuesCursor(valuePasses)
+
+        let renderedEnabled = RenderedValue("")
+        let enabledDelivery = observations.observe(model) { event, model in
+            renderedEnabled.set("enabled:\(event.kind):\(model.isEnabled)")
+        }
+        let enabledPasses = await enabledDelivery.values {
+            renderedEnabled.value
+        }
+        var enabledCursor = ObservedValuesCursor(enabledPasses)
+
+        #expect(await valueCursor.next() == "value:initial:0")
+        #expect(await enabledCursor.next() == "enabled:initial:false")
+
+        model.value = 1
+        #expect(await valueCursor.next() == "value:didSet:1")
+        #expect(await enabledCursor.next(timeout: .milliseconds(100)) == nil)
+
+        model.isEnabled = true
+        #expect(await enabledCursor.next() == "enabled:didSet:true")
+        #expect(await valueCursor.next(timeout: .milliseconds(100)) == nil)
+
+        observations.cancelAll()
+        #expect(valueDelivery.isActive == false)
+        #expect(enabledDelivery.isActive == false)
+        #expect(valuePasses.isActive == false)
+        #expect(enabledPasses.isActive == false)
+    }
+
+    @Test
     func cancelAllStopsLaterEventsAndFinishesSamplers() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -696,34 +737,25 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func reservedStartDoesNotRunAfterSlotCancellation() async {
+    func cancelledSlotDoesNotStartObservation() async {
         let model = CounterModel()
         let delivery = ObservationDelivery()
-        let ownerToken = WeakOwnerRegistry.createToken(owner: model)
         let started = RenderedValue(false)
         let slot = ObservationScopeSlot(
-            descriptor: ObservationScopeDescriptor(
-                owner: model,
-                options: .didSet,
-                observationIsolation: nil,
-                callbackIsolation: nil
-            ),
-            ownerToken: ownerToken,
+            owner: model,
+            options: .didSet,
+            observationIsolation: nil,
             delivery: delivery,
-            callback: TypedObservationScopeCallback<CounterModel> { _, _ in }
+            callback: TypedObservationScopeCallback<CounterModel> { _, _ in
+                started.set(true)
+            }
         )
-        slot.setStartOperation { _ in
-            started.set(true)
-            return Task {}
-        }
-
-        let start = slot.reserveStart()
-        #expect(start != nil)
 
         slot.cancel()
-        start?()
+        slot.start()
 
         #expect(started.value == false)
+        #expect(delivery.isActive == false)
     }
 
     @Test

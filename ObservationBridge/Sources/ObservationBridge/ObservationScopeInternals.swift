@@ -2,35 +2,59 @@ import Observation
 import Synchronization
 
 struct ObservationScopeID: Hashable, Sendable {
-    let fileID: String
+    let fileID: ObservationScopeFileID
     let line: UInt
     let column: UInt
+
+    init(fileID: StaticString, line: UInt, column: UInt) {
+        self.fileID = ObservationScopeFileID(fileID)
+        self.line = line
+        self.column = column
+    }
 }
 
-struct ObservationScopeDescriptor: Equatable, Sendable {
-    let ownerID: ObjectIdentifier
-    let options: ObservationOptions
-    let observationIsolationID: ObjectIdentifier?
-    let callbackIsolationID: ObjectIdentifier?
+// The pointer comes from a `StaticString` literal and refers to process-lifetime
+// read-only storage. Equality still falls back to byte comparison for correctness.
+@safe struct ObservationScopeFileID: @unchecked Sendable {
+    private let bytes: UnsafePointer<UInt8>
+    private let count: Int
 
-    init(
-        owner: AnyObject,
-        options: ObservationOptions,
-        observationIsolation: (any Actor)?,
-        callbackIsolation: (any Actor)?
-    ) {
-        self.ownerID = ObjectIdentifier(owner)
-        self.options = options
-        self.observationIsolationID = observationScopeActorID(observationIsolation)
-        self.callbackIsolationID = observationScopeActorID(callbackIsolation)
+    init(_ value: StaticString) {
+        unsafe bytes = value.utf8Start
+        count = value.utf8CodeUnitCount
+    }
+}
+
+extension ObservationScopeFileID: Equatable {
+    static func == (lhs: ObservationScopeFileID, rhs: ObservationScopeFileID) -> Bool {
+        guard lhs.count == rhs.count else {
+            return false
+        }
+        if unsafe lhs.bytes == rhs.bytes {
+            return true
+        }
+
+        for index in 0..<lhs.count {
+            if unsafe lhs.bytes[index] != rhs.bytes[index] {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+extension ObservationScopeFileID: Hashable {
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(count)
+        for index in 0..<count {
+            hasher.combine(unsafe bytes[index])
+        }
     }
 }
 
 func observationScopeActorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
     actor.map { ObjectIdentifier($0 as AnyObject) }
 }
-
-typealias ObservationScopeStartOperation = @Sendable (isolated (any Actor)?) -> Task<Void, Never>?
 
 enum InitialLegacyScopedObservationResult: Sendable {
     case waitingForChange(ObservationEvent.Kind)
@@ -39,6 +63,64 @@ enum InitialLegacyScopedObservationResult: Sendable {
 
 protocol ObservationScopeCallback: Sendable {
     func call(event: ObservationEvent, owner: AnyObject) -> Bool
+}
+
+private struct ObservationScopeWaiters: @unchecked Sendable {
+    private var first: CheckedContinuation<Void, Never>?
+    private var additional: [CheckedContinuation<Void, Never>]?
+
+    var isEmpty: Bool {
+        first == nil
+    }
+
+    mutating func append(_ continuation: CheckedContinuation<Void, Never>) {
+        guard first != nil else {
+            first = continuation
+            return
+        }
+
+        if additional == nil {
+            additional = []
+        }
+        additional!.append(continuation)
+    }
+
+    mutating func takeAll() -> ObservationScopeWaiterBatch {
+        guard let first else {
+            return .empty
+        }
+
+        self.first = nil
+        guard let additional else {
+            return .single(first)
+        }
+        self.additional = nil
+
+        if additional.isEmpty {
+            return .single(first)
+        }
+        return .many(first, additional)
+    }
+}
+
+private enum ObservationScopeWaiterBatch: @unchecked Sendable {
+    case empty
+    case single(CheckedContinuation<Void, Never>)
+    case many(CheckedContinuation<Void, Never>, [CheckedContinuation<Void, Never>])
+
+    func resumeAll() {
+        switch self {
+        case .empty:
+            return
+        case .single(let continuation):
+            continuation.resume()
+        case .many(let first, let additional):
+            first.resume()
+            for continuation in additional {
+                continuation.resume()
+            }
+        }
+    }
 }
 
 // Keep the `Owner` metatype out of slot/task/onChange captures. Swift does not treat
@@ -63,18 +145,18 @@ struct TypedObservationScopeCallback<Owner: AnyObject>: ObservationScopeCallback
 // Shared by registrar callbacks, observation tasks, and explicit scope cancellation.
 // Mutable lifecycle state is protected by `state`; the typed owner callback is erased above.
 final class ObservationScopeSlot: @unchecked Sendable {
-    private struct State {
+    private struct State: @unchecked Sendable {
+        weak var owner: AnyObject?
         var isCancelled = false
         var dirty = false
-        var waiters: [CheckedContinuation<Void, Never>] = []
+        var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
-        var startOperation: ObservationScopeStartOperation?
         var callback: (any ObservationScopeCallback)?
     }
 
     private struct Cancellation {
         var shouldCancel: Bool
-        var waiters: [CheckedContinuation<Void, Never>]
+        var waiters: ObservationScopeWaiterBatch
         var task: Task<Void, Never>?
     }
 
@@ -84,8 +166,8 @@ final class ObservationScopeSlot: @unchecked Sendable {
         case wait
     }
 
-    let descriptor: ObservationScopeDescriptor
-    let ownerToken: UInt64
+    let options: ObservationOptions
+    let observationIsolation: (any Actor)?
     let delivery: ObservationDelivery
     private let state: Mutex<State>
 
@@ -96,29 +178,20 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     init(
-        descriptor: ObservationScopeDescriptor,
-        ownerToken: UInt64,
+        owner: AnyObject,
+        options: ObservationOptions,
+        observationIsolation: (any Actor)?,
         delivery: ObservationDelivery,
         callback: any ObservationScopeCallback
     ) {
-        self.descriptor = descriptor
-        self.ownerToken = ownerToken
+        self.options = options
+        self.observationIsolation = observationIsolation
         self.delivery = delivery
-        state = Mutex(State(callback: callback))
+        state = Mutex(State(owner: owner, callback: callback))
     }
 
     deinit {
         cancel()
-    }
-
-    func setStartOperation(_ operation: @escaping ObservationScopeStartOperation) {
-        state.withLock { state in
-            guard !state.isCancelled else {
-                return
-            }
-
-            state.startOperation = operation
-        }
     }
 
     func call(event: ObservationEvent, owner: AnyObject) -> Bool {
@@ -129,50 +202,73 @@ final class ObservationScopeSlot: @unchecked Sendable {
         return callback.call(event: event, owner: owner)
     }
 
-    func reserveStart() -> (@Sendable () -> Void)? {
-        guard let operation = takeStartOperation() else {
-            return nil
-        }
-
-        guard isActive else {
-            return nil
-        }
-
-        return makeReservedStartOperation(slot: self, operation: operation)
-    }
-
     func start(isolation: isolated (any Actor)?) {
-        guard let operation = takeStartOperation() else {
-            return
-        }
-
         guard isActive else {
             return
         }
 
-        runStartOperation(operation, isolation: isolation)
+        let startsInCurrentIsolation =
+            observationScopeActorID(observationIsolation) == observationScopeActorID(isolation)
+
+        if startsInCurrentIsolation {
+            switch runInitialLegacyScopedObservationPass(
+                options: options,
+                isolation: isolation,
+                slot: self
+            ) {
+            case .waitingForChange(let kind):
+                replaceTask(with: makeObservationTask { [weak self, options, observationIsolation] in
+                    guard let self else {
+                        return
+                    }
+                    defer {
+                        self.cancel()
+                    }
+
+                    await runLegacyScopedObservationLoopAfterInitialPass(
+                        options: options,
+                        isolation: observationIsolation,
+                        slot: self,
+                        nextKind: kind
+                    )
+                })
+            case .finished:
+                cancel()
+            }
+            return
+        }
+
+        replaceTask(with: makeObservationTask { [weak self, options, observationIsolation] in
+            guard let self else {
+                return
+            }
+            defer {
+                self.cancel()
+            }
+
+            await runScopedObservationLoop(
+                options: options,
+                isolation: observationIsolation,
+                slot: self
+            )
+        })
     }
 
     func start() {
         start(isolation: nil)
     }
 
-    func runReservedStart(_ operation: @escaping ObservationScopeStartOperation) {
-        runStartOperation(operation, isolation: nil)
-    }
-
     func cancel() {
         let cancellation = state.withLock { state -> Cancellation in
             guard !state.isCancelled else {
-                return Cancellation(shouldCancel: false, waiters: [], task: nil)
+                return Cancellation(shouldCancel: false, waiters: .empty, task: nil)
             }
 
             state.isCancelled = true
             state.dirty = false
-            state.startOperation = nil
+            state.owner = nil
             state.callback = nil
-            let waiters = state.waiters
-            state.waiters.removeAll(keepingCapacity: true)
+            let waiters = state.waiters.takeAll()
             let task = state.task
             state.task = nil
             return Cancellation(shouldCancel: true, waiters: waiters, task: task)
@@ -182,33 +278,26 @@ final class ObservationScopeSlot: @unchecked Sendable {
             return
         }
 
-        WeakOwnerRegistry.removeToken(ownerToken)
-        for waiter in cancellation.waiters {
-            waiter.resume()
-        }
+        cancellation.waiters.resumeAll()
         delivery.finish()
         cancellation.task?.cancel()
     }
 
     func emitChange() {
-        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+        let waiters = state.withLock { state -> ObservationScopeWaiterBatch in
             guard !state.isCancelled else {
-                return []
+                return .empty
             }
 
             if state.waiters.isEmpty {
                 state.dirty = true
-                return []
+                return .empty
             }
 
-            let continuations = state.waiters
-            state.waiters.removeAll(keepingCapacity: true)
-            return continuations
+            return state.waiters.takeAll()
         }
 
-        for continuation in continuations {
-            continuation.resume()
-        }
+        waiters.resumeAll()
     }
 
     func waitForChange() async -> Bool {
@@ -250,24 +339,9 @@ final class ObservationScopeSlot: @unchecked Sendable {
         return isActive
     }
 
-    private func takeStartOperation() -> ObservationScopeStartOperation? {
+    func owner() -> AnyObject? {
         state.withLock { state in
-            let operation = state.startOperation
-            state.startOperation = nil
-            return operation
-        }
-    }
-
-    private func runStartOperation(
-        _ operation: ObservationScopeStartOperation,
-        isolation: isolated (any Actor)?
-    ) {
-        guard isActive else {
-            return
-        }
-
-        if let task = operation(isolation) {
-            replaceTask(with: task)
+            state.owner
         }
     }
 
@@ -282,15 +356,6 @@ final class ObservationScopeSlot: @unchecked Sendable {
             return oldTask
         }
         taskToCancel?.cancel()
-    }
-}
-
-private func makeReservedStartOperation(
-    slot: ObservationScopeSlot,
-    operation: @escaping ObservationScopeStartOperation
-) -> @Sendable () -> Void {
-    { [weak slot] in
-        slot?.runReservedStart(operation)
     }
 }
 
