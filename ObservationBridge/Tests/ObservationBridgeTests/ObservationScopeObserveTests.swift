@@ -674,6 +674,29 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func samplerlessLateValuesSampleSurvivesFinishBeforeImmediateSample() async {
+        let delivery = ObservationDelivery()
+        let rendered = RenderedValue(0)
+
+        #expect(delivery.beginDelivery())
+        rendered.set(1)
+        let completion = delivery.endDelivery()
+        await completion.sampleAndFinish()
+
+        let values = await delivery._registerValuesForTesting(
+            beforeImmediateSample: {
+                delivery.finish()
+            }
+        ) {
+            rendered.value
+        }
+
+        #expect(values.snapshot() == [1])
+        #expect(values.isActive == false)
+        #expect(delivery.isActive == false)
+    }
+
+    @Test
     func observedValuesCancelRejectsInFlightRecord() {
         let values = ObservedValues<Int>()
 
