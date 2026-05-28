@@ -1,12 +1,5 @@
 import Synchronization
 
-enum OwnerValueEmission<Value> {
-    case value(Value)
-    case ownerGone
-}
-
-extension OwnerValueEmission: Sendable where Value: Sendable {}
-
 @discardableResult
 func makeObservationTask<Success: Sendable>(
     @_inheritActorContext operation: @escaping @isolated(any) @Sendable () async -> Success
@@ -120,7 +113,7 @@ final class ObservationTaskBox: Sendable {
     }
 }
 
-final class _UncheckedSendableValueBox<Value>: @unchecked Sendable {
+struct _UncheckedSendableValueBox<Value>: @unchecked Sendable {
     let value: Value
 
     init(_ value: Value) {

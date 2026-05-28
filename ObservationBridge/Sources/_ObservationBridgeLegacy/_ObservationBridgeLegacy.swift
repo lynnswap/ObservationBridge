@@ -340,34 +340,6 @@ private final class LegacyObservationState: @unchecked Sendable {
     }
 }
 
-package func legacyEvaluateObservedOwnerValue<Owner: AnyObject, Value>(
-    owner: Owner?,
-    value: @escaping @isolated(any) (Owner) -> Value,
-    isolation: isolated (any Actor)? = #isolation
-) -> LegacyOwnerObservationResult<Value> {
-    guard let owner else {
-        return .ownerGone
-    }
-
-    return withObservationIsolation(isolation: isolation) {
-        .value(callIsolatedWithFastPath(value, owner))
-    }
-}
-
-package func legacyEvaluateObservedOwnerValue<Owner: AnyObject, Value, Mapped>(
-    owner: Owner?,
-    value: @escaping @isolated(any) (Owner) -> Value,
-    isolation: isolated (any Actor)? = #isolation,
-    map: (Value) -> Mapped
-) -> LegacyOwnerObservationResult<Mapped> {
-    switch legacyEvaluateObservedOwnerValue(owner: owner, value: value, isolation: isolation) {
-    case .ownerGone:
-        return .ownerGone
-    case .value(let observedValue):
-        return .value(map(observedValue))
-    }
-}
-
 package func legacyEvaluateObservedValue<Value>(
     isolation: isolated (any Actor)? = #isolation,
     observe: @escaping @isolated(any) @Sendable () -> Value
@@ -376,10 +348,3 @@ package func legacyEvaluateObservedValue<Value>(
         callIsolatedWithFastPath(observe)
     }
 }
-
-package enum LegacyOwnerObservationResult<Value> {
-    case ownerGone
-    case value(Value)
-}
-
-extension LegacyOwnerObservationResult: Sendable where Value: Sendable {}

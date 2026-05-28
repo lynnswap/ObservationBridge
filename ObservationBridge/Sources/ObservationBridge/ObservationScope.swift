@@ -159,7 +159,6 @@ public final class ObservationScope: @unchecked Sendable {
             lifetime.cancel()
             taskBox.finish()
         }
-        OwnerCancellationRegistry.register(handle, owner: owner)
 
         return ObservationScopeSlot(
             descriptor: descriptor,

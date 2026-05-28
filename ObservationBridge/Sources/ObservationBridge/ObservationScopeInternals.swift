@@ -196,7 +196,7 @@ protocol ScopedObservationRunner: Sendable {
     ) async
 }
 
-final class TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
+struct TypedScopedObservationRunner<Owner: AnyObject & Observable>: ScopedObservationRunner, @unchecked Sendable {
     private let callbackBox: ObservationScopeCallbackBox<Owner>
     private let delivery: ObservationDelivery
 

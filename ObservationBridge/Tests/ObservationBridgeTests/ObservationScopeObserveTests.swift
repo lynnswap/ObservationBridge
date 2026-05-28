@@ -785,6 +785,29 @@ final class ObservationScopeObserveTests {
         observations.cancelAll()
     }
 
+    @Test
+    func ownerDeinitDoesNotCancelScopeOwnedDelivery() async {
+        let observations = ObservationScope()
+        let weakModel = WeakDeinitProbeModelBox()
+        var delivery: ObservationDelivery?
+
+        do {
+            let model = DeinitProbeCounterModel {}
+            weakModel.model = model
+            delivery = observations.observe(model) { _, model in
+                _ = model.value
+            }
+            #expect(delivery?.isActive == true)
+            #expect(await waitUntilCondition { weakModel.model != nil })
+        }
+
+        #expect(await waitUntilCondition { weakModel.model == nil })
+        #expect(delivery?.isActive == true)
+
+        observations.cancelAll()
+        #expect(delivery?.isActive == false)
+    }
+
     @MainActor
     @Test
     func deliveryValuesSupportMainActorRenderedValues() async {
