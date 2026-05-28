@@ -655,6 +655,21 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func nativeScopeSurvivesConcurrentWriteAndReadStress() async {
+        let result = await runRandomizedObservationStress(
+            iterations: stressIterationCount(local: 20_000, ci: 200),
+            seed: stressSeed(default: 0x26_00_00_00_00_00_00_01)
+        ) { model, observations, onObserved in
+            observations.observe(model) { _, model in
+                onObserved(model.value)
+            }
+        }
+
+        #expect(result.completed == true)
+        #expect(result.firstFailure == nil)
+    }
+
+    @Test
     func cancelAllDuringInitialCallbackStillSamplesInitialRender() async {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
@@ -683,12 +698,8 @@ final class ObservationScopeObserveTests {
     @Test
     func reservedStartDoesNotRunAfterSlotCancellation() async {
         let model = CounterModel()
-        let state = ScopedObservationState()
-        let taskBox = ObservationTaskBox()
-        let handle = ObservationHandle {
-            state.terminate()
-            taskBox.finish()
-        }
+        let delivery = ObservationDelivery()
+        let ownerToken = WeakOwnerRegistry.createToken(owner: model)
         let started = RenderedValue(false)
         let slot = ObservationScopeSlot(
             descriptor: ObservationScopeDescriptor(
@@ -697,11 +708,11 @@ final class ObservationScopeObserveTests {
                 observationIsolation: nil,
                 callbackIsolation: nil
             ),
-            state: state,
-            handle: handle,
-            taskBox: taskBox,
-            callbackBox: ObservationScopeCallbackBox<CounterModel> { _, _ in }
-        ) { _ in
+            ownerToken: ownerToken,
+            delivery: delivery,
+            callback: TypedObservationScopeCallback<CounterModel> { _, _ in }
+        )
+        slot.setStartOperation { _ in
             started.set(true)
             return Task {}
         }
