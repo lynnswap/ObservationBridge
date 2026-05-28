@@ -12,6 +12,10 @@ let package = Package(
         .library(
             name: "ObservationBridge",
             targets: ["ObservationBridge"]
+        ),
+        .executable(
+            name: "ObservationBridgeBenchmarks",
+            targets: ["ObservationBridgeBenchmarks"]
         )
     ],
     dependencies: [
@@ -41,6 +45,16 @@ let package = Package(
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
             ],
             path: "ObservationBridge/Sources/ObservationBridge",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .defaultIsolation(nil),
+                .strictMemorySafety(),
+            ]
+        ),
+        .executableTarget(
+            name: "ObservationBridgeBenchmarks",
+            dependencies: ["ObservationBridge"],
+            path: "Benchmarks/ObservationBridgeBenchmarks",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(nil),

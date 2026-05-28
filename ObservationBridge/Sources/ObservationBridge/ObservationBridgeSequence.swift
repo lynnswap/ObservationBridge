@@ -1,11 +1,3 @@
-private final class ObservationBridgeStreamFactory<Value>: Sendable {
-    let makeStream: @Sendable () -> AsyncStream<Value>
-
-    init(makeStream: @escaping @Sendable () -> AsyncStream<Value>) {
-        self.makeStream = makeStream
-    }
-}
-
 private struct SendableObservationBridgeStreamBuilder<Value: Sendable>: Sendable {
     let options: ObservationStreamOptions
     let observe: @isolated(any) @Sendable () -> Value
@@ -73,10 +65,10 @@ public struct ObservationBridge<Value>: AsyncSequence {
         }
     }
 
-    private let streamFactory: ObservationBridgeStreamFactory<Value>
+    private let makeStream: @Sendable () -> AsyncStream<Value>
 
     fileprivate init(streamFactory: @escaping @Sendable () -> AsyncStream<Value>) {
-        self.streamFactory = ObservationBridgeStreamFactory(makeStream: streamFactory)
+        makeStream = streamFactory
     }
 
     /// Creates a sequence with explicit observation options.
@@ -104,7 +96,7 @@ public struct ObservationBridge<Value>: AsyncSequence {
 
     /// Creates an iterator and starts a fresh observation pipeline for it.
     public func makeAsyncIterator() -> Iterator {
-        Iterator(base: streamFactory.makeStream().makeAsyncIterator())
+        Iterator(base: makeStream().makeAsyncIterator())
     }
 
     /// Creates a sequence with default observation options.
