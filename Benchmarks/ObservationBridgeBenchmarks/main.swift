@@ -38,24 +38,41 @@ final class BenchmarkSink: @unchecked Sendable {
 }
 
 final class ChangeDeliveryRecorder: @unchecked Sendable {
-    private struct State: Sendable {
-        var callbackDeliveryCount = 0
-        var checksum = 0
-    }
-
-    private let state = Mutex(State())
+    private let condition = NSCondition()
+    private var callbackDeliveryCount = 0
+    private var checksum = 0
 
     var snapshot: (callbackDeliveryCount: Int, checksum: Int) {
-        state.withLock { state in
-            (state.callbackDeliveryCount, state.checksum)
+        condition.lock()
+        defer {
+            condition.unlock()
         }
+
+        return (callbackDeliveryCount, checksum)
     }
 
     @inline(never)
     func recordCallback(_ value: Int) {
-        state.withLock { state in
-            state.callbackDeliveryCount &+= 1
-            state.checksum &+= value
+        condition.lock()
+        callbackDeliveryCount &+= 1
+        checksum &+= value
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitForCallbackDeliveryCount(_ expectedCount: Int) throws {
+        condition.lock()
+        defer {
+            condition.unlock()
+        }
+
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while callbackDeliveryCount < expectedCount {
+            guard condition.wait(until: deadline) else {
+                throw BenchmarkError.timeout(
+                    "timed out waiting for \(expectedCount) callback deliveries"
+                )
+            }
         }
     }
 }
@@ -335,6 +352,7 @@ enum ObservationBridgeBenchmarks {
         iterations: Int
     ) async throws -> BenchmarkExecutionResult {
         let model = BenchmarkCounterModel()
+        model.value = -1
         let observations = ObservationScope()
         let recorder = ChangeDeliveryRecorder()
         defer {
@@ -349,12 +367,8 @@ enum ObservationBridgeBenchmarks {
         observations.observe(model) { _, model in
             recorder.recordCallback(model.value)
         }
+        try recorder.waitForCallbackDeliveryCount(1)
         try WaiterRegistrationHooks.waitForCount(1)
-
-        // Prime one change before measurement. The waiter-registration hook is
-        // emitted only after the next tracking pass is ready to receive a change.
-        model.value = -1
-        try WaiterRegistrationHooks.waitForCount(2)
 
         let baseline = recorder.snapshot
         let baselineWaiterRegistrationCount = WaiterRegistrationHooks.count
@@ -365,7 +379,12 @@ enum ObservationBridgeBenchmarks {
 
         for index in 0..<iterations {
             model.value = index
-            try WaiterRegistrationHooks.waitForCount(baselineWaiterRegistrationCount + index + 1)
+            try recorder.waitForCallbackDeliveryCount(
+                baseline.callbackDeliveryCount + index + 1
+            )
+            try WaiterRegistrationHooks.waitForCount(
+                baselineWaiterRegistrationCount + index + 1
+            )
         }
 
         let final = recorder.snapshot

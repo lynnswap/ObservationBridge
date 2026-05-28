@@ -148,21 +148,33 @@ public final class ObservationDelivery: Sendable {
     }
 
     func endDelivery() -> ObservationDeliveryCompletion {
-        let delivery = state.withLock { state -> (isActive: Bool, generation: UInt64) in
+        let delivery = state.withLock { state -> (isActive: Bool, generation: UInt64, needsSampling: Bool) in
             guard state.activeDeliveries > 0 else {
-                return (false, state.deliveryGeneration)
+                return (false, state.deliveryGeneration, false)
             }
 
             state.hasDelivered = true
             state.deliveryGeneration &+= 1
+            let generation = state.deliveryGeneration
+
+            guard !state.samplers.isEmpty || state.completedDeliveriesAwaitingSampling > 0 else {
+                state.activeDeliveries -= 1
+                return (true, generation, false)
+            }
+
             state.completedDeliveriesAwaitingSampling += 1
-            return (true, state.deliveryGeneration)
+            return (true, generation, true)
+        }
+
+        if delivery.isActive, !delivery.needsSampling {
+            finishSamplersIfInactiveAndIdle()
         }
 
         return ObservationDeliveryCompletion(
             delivery: self,
             isActive: delivery.isActive,
-            generation: delivery.generation
+            generation: delivery.generation,
+            needsSampling: delivery.needsSampling
         )
     }
 
@@ -279,19 +291,22 @@ struct ObservationDeliveryCompletion: Sendable {
     private weak var delivery: ObservationDelivery?
     private let isActive: Bool
     private let generation: UInt64
+    private let needsSampling: Bool
 
     fileprivate init(
         delivery: ObservationDelivery,
         isActive: Bool,
-        generation: UInt64
+        generation: UInt64,
+        needsSampling: Bool
     ) {
         self.delivery = delivery
         self.isActive = isActive
         self.generation = generation
+        self.needsSampling = needsSampling
     }
 
     func sampleAndFinish() async {
-        guard isActive else {
+        guard isActive, needsSampling else {
             return
         }
 
@@ -299,7 +314,7 @@ struct ObservationDeliveryCompletion: Sendable {
     }
 
     func finishWithoutSampling() {
-        guard isActive else {
+        guard isActive, needsSampling else {
             return
         }
 

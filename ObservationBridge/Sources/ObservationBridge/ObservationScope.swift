@@ -128,7 +128,7 @@ private struct ObservationScopeStorage {
     var cancellationGeneration: UInt64 = 0
     var singleID: ObservationScopeID?
     var singleSlot: ObservationScopeSlot?
-    var slots: [ObservationScopeID: ObservationScopeSlot]?
+    var slots: [ObservationScopeDictionaryID: ObservationScopeSlot]?
 
     mutating func install(
         _ slot: ObservationScopeSlot,
@@ -144,7 +144,7 @@ private struct ObservationScopeStorage {
         }
 
         if slots != nil {
-            let replacedSlot = slots!.updateValue(slot, forKey: id)
+            let replacedSlot = slots!.updateValue(slot, forKey: ObservationScopeDictionaryID(id))
             return ObservationScopeInsertion(
                 slotToStart: slot,
                 replacedSlot: replacedSlot,
@@ -163,8 +163,8 @@ private struct ObservationScopeStorage {
             }
 
             slots = [
-                currentID: currentSlot,
-                id: slot,
+                ObservationScopeDictionaryID(currentID): currentSlot,
+                ObservationScopeDictionaryID(id): slot,
             ]
             singleID = nil
             singleSlot = nil
@@ -372,11 +372,7 @@ private func trackLegacyScopedObservationInCurrentContext(
     changeKind: ObservationEvent.Kind?,
     slot: ObservationScopeSlot
 ) -> ScopedObservationTrackResult {
-    guard slot.isActive else {
-        return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
-    }
-
-    guard let owner = slot.owner() else {
+    guard let callback = slot.callbackSnapshot() else {
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
@@ -403,23 +399,23 @@ private func trackLegacyScopedObservationInCurrentContext(
     }
 
     guard let changeKind else {
-        let didCallCallback = slot.call(event: event, owner: owner)
+        let didCallCallback = callback.call(event: event)
         return complete(shouldContinue: slot.isActive, didCallCallback: didCallCallback)
     }
 
     var didCallCallback = false
     if changeKind == .didSet {
         guard withObservationTrackingDidSetIfAvailable({
-            didCallCallback = slot.call(event: event, owner: owner)
+            didCallCallback = callback.call(event: event)
         }, didSet: { tracking in
-            slot.emitChange()
             cancelObservationTrackingIfAvailable(tracking)
+            slot.emitChange()
         }) else {
             return complete(shouldContinue: false, didCallCallback: didCallCallback)
         }
     } else {
         withObservationTracking {
-            didCallCallback = slot.call(event: event, owner: owner)
+            didCallCallback = callback.call(event: event)
         } onChange: {
             slot.emitChange()
         }
