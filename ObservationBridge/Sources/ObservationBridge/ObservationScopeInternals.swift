@@ -1,7 +1,11 @@
 import Observation
 import Synchronization
 
-struct ObservationScopeID: Hashable, Sendable {
+#if canImport(_ObservationBridgeBenchmarkSupport)
+internal import _ObservationBridgeBenchmarkSupport
+#endif
+
+struct ObservationScopeID: Equatable, Sendable {
     let fileID: ObservationScopeFileID
     let line: UInt
     let column: UInt
@@ -13,20 +17,45 @@ struct ObservationScopeID: Hashable, Sendable {
     }
 }
 
+struct ObservationScopeDictionaryID: Hashable, Sendable {
+    private let fileID: ObservationScopeFileID
+    private let line: UInt
+    private let column: UInt
+    private let fileFingerprint: UInt64
+
+    init(_ id: ObservationScopeID) {
+        fileID = id.fileID
+        line = id.line
+        column = id.column
+        fileFingerprint = id.fileID.fingerprint
+    }
+
+    static func == (lhs: ObservationScopeDictionaryID, rhs: ObservationScopeDictionaryID) -> Bool {
+        lhs.line == rhs.line
+            && lhs.column == rhs.column
+            && lhs.fileID == rhs.fileID
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(fileID.count)
+        hasher.combine(fileFingerprint)
+        hasher.combine(line)
+        hasher.combine(column)
+    }
+}
+
 // The pointer comes from a `StaticString` literal and refers to process-lifetime
 // read-only storage. Equality still falls back to byte comparison for correctness.
-@safe struct ObservationScopeFileID: @unchecked Sendable {
-    private let bytes: UnsafePointer<UInt8>
-    private let count: Int
+@safe struct ObservationScopeFileID: Equatable, @unchecked Sendable {
+    fileprivate let bytes: UnsafePointer<UInt8>
+    fileprivate let count: Int
 
     init(_ value: StaticString) {
         unsafe bytes = value.utf8Start
         count = value.utf8CodeUnitCount
     }
-}
 
-extension ObservationScopeFileID: Equatable {
-    static func == (lhs: ObservationScopeFileID, rhs: ObservationScopeFileID) -> Bool {
+    static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.count == rhs.count else {
             return false
         }
@@ -41,14 +70,14 @@ extension ObservationScopeFileID: Equatable {
         }
         return true
     }
-}
 
-extension ObservationScopeFileID: Hashable {
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(count)
+    fileprivate var fingerprint: UInt64 {
+        var fingerprint: UInt64 = 14_695_981_039_346_656_037
         for index in 0..<count {
-            hasher.combine(unsafe bytes[index])
+            fingerprint ^= UInt64(unsafe bytes[index])
+            fingerprint &*= 1_099_511_628_211
         }
+        return fingerprint
     }
 }
 
@@ -154,6 +183,15 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var callback: (any ObservationScopeCallback)?
     }
 
+    struct CallbackSnapshot: @unchecked Sendable {
+        let owner: AnyObject
+        let callback: any ObservationScopeCallback
+
+        func call(event: ObservationEvent) -> Bool {
+            callback.call(event: event, owner: owner)
+        }
+    }
+
     private struct Cancellation {
         var shouldCancel: Bool
         var waiters: ObservationScopeWaiterBatch
@@ -194,12 +232,14 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancel()
     }
 
-    func call(event: ObservationEvent, owner: AnyObject) -> Bool {
-        guard let callback = state.withLock({ state in state.callback }) else {
-            return false
-        }
+    func callbackSnapshot() -> CallbackSnapshot? {
+        state.withLock { state in
+            guard !state.isCancelled, let owner = state.owner, let callback = state.callback else {
+                return nil
+            }
 
-        return callback.call(event: event, owner: owner)
+            return CallbackSnapshot(owner: owner, callback: callback)
+        }
     }
 
     func start(isolation: isolated (any Actor)?) {
@@ -331,18 +371,17 @@ final class ObservationScopeSlot: @unchecked Sendable {
                     return continuation
                 }
                 state.waiters.append(continuation)
+
+                #if canImport(_ObservationBridgeBenchmarkSupport)
+                ObservationBridgeBenchmarkObservationScopeWaiterRegistered()
+                #endif
+
                 return nil
             }
             immediate?.resume()
         }
 
         return isActive
-    }
-
-    func owner() -> AnyObject? {
-        state.withLock { state in
-            state.owner
-        }
     }
 
     private func replaceTask(with newTask: Task<Void, Never>) {

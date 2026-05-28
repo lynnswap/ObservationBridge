@@ -185,6 +185,38 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func samplerlessDeliveryRegisteredAfterDidSetSamplesLatestRender() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+        }
+
+        model.value = 1
+        #expect(await waitUntilCondition {
+            rendered.value == ScopePass(kind: .didSet, value: 1, isEnabled: false)
+        })
+        #expect(await waitUntilCondition {
+            delivery._isIdleAfterCompletedDeliveryForTesting
+        })
+
+        let values = await delivery.values {
+            rendered.value
+        }
+
+        #expect(values.snapshot() == [ScopePass(kind: .didSet, value: 1, isEnabled: false)])
+    }
+
+    @Test
     func didSetUnavailableFallbackDoesNotEmitStaleDidSet() async {
         _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
         defer {
@@ -645,6 +677,29 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func samplerlessLateValuesSampleSurvivesFinishBeforeImmediateSample() async {
+        let delivery = ObservationDelivery()
+        let rendered = RenderedValue(0)
+
+        #expect(delivery.beginDelivery())
+        rendered.set(1)
+        let completion = delivery.endDelivery()
+        await completion.sampleAndFinish()
+
+        let values = await delivery._registerValuesForTesting(
+            beforeImmediateSample: {
+                delivery.finish()
+            }
+        ) {
+            rendered.value
+        }
+
+        #expect(values.snapshot() == [1])
+        #expect(values.isActive == false)
+        #expect(delivery.isActive == false)
+    }
+
+    @Test
     func observedValuesCancelRejectsInFlightRecord() {
         let values = ObservedValues<Int>()
 
@@ -693,6 +748,119 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
         #expect(kinds.snapshot() == [.initial])
+    }
+
+    @Test
+    func eventCancelStopsDidSetObservation() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+            if event.kind == .didSet {
+                event.cancel()
+            }
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+
+        model.value = 1
+
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
+        #expect(delivery.isActive == false)
+
+        model.value = 2
+        #expect(passes.snapshot() == [
+            ScopePass(kind: .initial, value: 0, isEnabled: false),
+            ScopePass(kind: .didSet, value: 1, isEnabled: false),
+        ])
+    }
+
+    @Test
+    func deliveryCancelStopsDidSetObservation() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        let cancellation = DeliveryCancellationProbe()
+        defer { observations.cancelAll() }
+
+        let returnedDelivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+            if event.kind == .didSet {
+                cancellation.cancel()
+            }
+        }
+        cancellation.set(returnedDelivery)
+        let passes = await returnedDelivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+
+        model.value = 1
+
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
+        #expect(returnedDelivery.isActive == false)
+
+        model.value = 2
+        #expect(passes.snapshot() == [
+            ScopePass(kind: .initial, value: 0, isEnabled: false),
+            ScopePass(kind: .didSet, value: 1, isEnabled: false),
+        ])
+    }
+
+    @Test
+    func cancelAllDuringSamplerlessDidSetStillAllowsLateSample() async {
+        let model = CounterModel()
+        let probe = ObservationScopeCancellationProbe()
+        let observations = probe.observations
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: false
+                )
+            )
+            if event.kind == .didSet {
+                probe.cancelAll()
+            }
+        }
+
+        model.value = 1
+
+        #expect(await waitUntilCondition {
+            rendered.value == ScopePass(kind: .didSet, value: 1, isEnabled: false)
+        })
+        #expect(delivery.isActive == false)
+
+        let values = await delivery.values {
+            rendered.value
+        }
+        #expect(values.snapshot() == [ScopePass(kind: .didSet, value: 1, isEnabled: false)])
+        #expect(values.isActive == false)
     }
 
     @Test
@@ -967,6 +1135,23 @@ private final class RenderedValue<Value: Sendable>: @unchecked Sendable {
         storage.withLock { storedValue in
             storedValue = value
         }
+    }
+}
+
+private final class DeliveryCancellationProbe: @unchecked Sendable {
+    private let storage = Mutex<ObservationDelivery?>(nil)
+
+    func set(_ delivery: ObservationDelivery) {
+        storage.withLock { storedDelivery in
+            storedDelivery = delivery
+        }
+    }
+
+    func cancel() {
+        let delivery = storage.withLock { storedDelivery in
+            storedDelivery
+        }
+        delivery?.cancel()
     }
 }
 

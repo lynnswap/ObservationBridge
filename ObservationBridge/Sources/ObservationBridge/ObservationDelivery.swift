@@ -23,12 +23,27 @@ public final class ObservationDelivery: Sendable {
         var lastSampledGeneration: UInt64
     }
 
+    private struct Registration: Sendable {
+        let id: UInt64?
+        let sampleImmediately: Bool
+        let finishAfterSample: Bool
+        let finishDeliveryAfterSample: Bool
+    }
+
     private let state = Mutex(State())
 
     /// Whether the backing observation is still active.
     public var isActive: Bool {
         state.withLock { state in
             state.isActive
+        }
+    }
+
+    var _isIdleAfterCompletedDeliveryForTesting: Bool {
+        state.withLock { state in
+            state.hasDelivered
+                && state.activeDeliveries == 0
+                && state.completedDeliveriesAwaitingSampling == 0
         }
     }
 
@@ -80,15 +95,21 @@ public final class ObservationDelivery: Sendable {
 
     private func register<Value: Sendable>(
         values: ObservedValues<Value>,
-        sampler: any ObservationDeliverySampler
+        sampler: any ObservationDeliverySampler,
+        beforeImmediateSample: (@Sendable () -> Void)? = nil
     ) async -> ObservedValues<Value> {
-        let registration = state.withLock { state -> (id: UInt64?, sampleImmediately: Bool, finishAfterSample: Bool) in
+        let registration = state.withLock { state -> Registration in
             let shouldSampleCurrentDelivery =
                 state.hasDelivered
                     && (state.activeDeliveries == 0 || state.completedDeliveriesAwaitingSampling > 0)
 
             guard state.isActive else {
-                return (nil, shouldSampleCurrentDelivery, true)
+                return Registration(
+                    id: nil,
+                    sampleImmediately: shouldSampleCurrentDelivery,
+                    finishAfterSample: true,
+                    finishDeliveryAfterSample: false
+                )
             }
 
             let id = state.nextSamplerID
@@ -99,8 +120,15 @@ public final class ObservationDelivery: Sendable {
             )
             if shouldSampleCurrentDelivery {
                 state.samplers[id]?.lastSampledGeneration = state.deliveryGeneration
+                state.activeDeliveries += 1
+                state.completedDeliveriesAwaitingSampling += 1
             }
-            return (id, shouldSampleCurrentDelivery, false)
+            return Registration(
+                id: id,
+                sampleImmediately: shouldSampleCurrentDelivery,
+                finishAfterSample: false,
+                finishDeliveryAfterSample: shouldSampleCurrentDelivery
+            )
         }
 
         if let id = registration.id {
@@ -110,7 +138,11 @@ public final class ObservationDelivery: Sendable {
         }
 
         if registration.sampleImmediately {
+            beforeImmediateSample?()
             await sampler.sample()
+            if registration.finishDeliveryAfterSample {
+                finishActiveDelivery()
+            }
             if registration.finishAfterSample {
                 values.finish()
             }
@@ -119,6 +151,19 @@ public final class ObservationDelivery: Sendable {
         }
 
         return values
+    }
+
+    func _registerValuesForTesting<Value: Sendable>(
+        beforeImmediateSample: @escaping @Sendable () -> Void,
+        _ sample: @escaping @isolated(any) @Sendable () -> Value
+    ) async -> ObservedValues<Value> {
+        let values = ObservedValues<Value>()
+        let sampler = ObservationDeliverySamplerBox(sample: sample, values: values)
+        return await register(
+            values: values,
+            sampler: sampler,
+            beforeImmediateSample: beforeImmediateSample
+        )
     }
 
     func bind(to slot: ObservationScopeSlot) {
@@ -148,21 +193,33 @@ public final class ObservationDelivery: Sendable {
     }
 
     func endDelivery() -> ObservationDeliveryCompletion {
-        let delivery = state.withLock { state -> (isActive: Bool, generation: UInt64) in
+        let delivery = state.withLock { state -> (isActive: Bool, generation: UInt64, needsSampling: Bool) in
             guard state.activeDeliveries > 0 else {
-                return (false, state.deliveryGeneration)
+                return (false, state.deliveryGeneration, false)
             }
 
             state.hasDelivered = true
             state.deliveryGeneration &+= 1
+            let generation = state.deliveryGeneration
+
+            guard !state.samplers.isEmpty || state.completedDeliveriesAwaitingSampling > 0 else {
+                state.activeDeliveries -= 1
+                return (true, generation, false)
+            }
+
             state.completedDeliveriesAwaitingSampling += 1
-            return (true, state.deliveryGeneration)
+            return (true, generation, true)
+        }
+
+        if delivery.isActive, !delivery.needsSampling {
+            finishSamplersIfInactiveAndIdle()
         }
 
         return ObservationDeliveryCompletion(
             delivery: self,
             isActive: delivery.isActive,
-            generation: delivery.generation
+            generation: delivery.generation,
+            needsSampling: delivery.needsSampling
         )
     }
 
@@ -279,19 +336,22 @@ struct ObservationDeliveryCompletion: Sendable {
     private weak var delivery: ObservationDelivery?
     private let isActive: Bool
     private let generation: UInt64
+    private let needsSampling: Bool
 
     fileprivate init(
         delivery: ObservationDelivery,
         isActive: Bool,
-        generation: UInt64
+        generation: UInt64,
+        needsSampling: Bool
     ) {
         self.delivery = delivery
         self.isActive = isActive
         self.generation = generation
+        self.needsSampling = needsSampling
     }
 
     func sampleAndFinish() async {
-        guard isActive else {
+        guard isActive, needsSampling else {
             return
         }
 
@@ -299,7 +359,7 @@ struct ObservationDeliveryCompletion: Sendable {
     }
 
     func finishWithoutSampling() {
-        guard isActive else {
+        guard isActive, needsSampling else {
             return
         }
 
