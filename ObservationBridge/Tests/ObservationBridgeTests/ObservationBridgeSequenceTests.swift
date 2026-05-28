@@ -211,6 +211,38 @@ final class ObservationBridgeSequenceTests {
 
     @MainActor
     @Test
+    func automaticBackendNonSendableStreamWithoutRateLimitReturnsInitialAndUpdatedPayload() async {
+        let model = MainActorNonSendablePayloadModel()
+        let stream = makeObservationBridgeStream {
+            model.payload
+        }
+        var iterator = stream.makeAsyncIterator()
+
+        #expect(await iterator.next()?.value == 0)
+
+        model.payload = NonSendablePayload(value: 5)
+        #expect(await iterator.next()?.value == 5)
+    }
+
+    @MainActor
+    @Test
+    func automaticBackendNonSendableRateLimitedStreamReturnsInitialPayload() async {
+        let model = MainActorNonSendablePayloadModel()
+        let clock = TestDebounceClock()
+        let debounce = ObservationDebounce(interval: .milliseconds(200), mode: .immediateFirst)
+        let stream = makeObservationBridgeStream(
+            options: legacyOptionsForCurrentRuntime(.rateLimit(.debounce(debounce))),
+            clock: clock
+        ) {
+            model.payload
+        }
+        var iterator = stream.makeAsyncIterator()
+
+        #expect(await iterator.next()?.value == 0)
+    }
+
+    @MainActor
+    @Test
     func legacyBackendPreservesObserveIsolationAcrossDetachedCreation() async {
         let model = MainActorCounterModel()
         let observeOnMainActor: @MainActor @Sendable () -> Int = {

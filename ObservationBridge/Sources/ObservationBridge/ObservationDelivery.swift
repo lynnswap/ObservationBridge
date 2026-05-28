@@ -15,7 +15,7 @@ public final class ObservationDelivery: Sendable {
         var shouldFinishAfterDeliveries = false
         var samplers: [UInt64: SamplerRegistration] = [:]
         var nextSamplerID: UInt64 = 0
-        var cancelOperation: (@Sendable () -> Void)?
+        weak var slot: ObservationScopeSlot?
     }
 
     private struct SamplerRegistration: Sendable {
@@ -36,16 +36,16 @@ public final class ObservationDelivery: Sendable {
 
     /// Cancels the backing observation.
     public func cancel() {
-        let operation = state.withLock { state in
+        let slot = state.withLock { state in
             guard state.isActive else {
-                return nil as (@Sendable () -> Void)?
+                return nil as ObservationScopeSlot?
             }
 
-            return state.cancelOperation
+            return state.slot
         }
 
-        if let operation {
-            operation()
+        if let slot {
+            slot.cancel()
         } else {
             finish()
         }
@@ -121,18 +121,18 @@ public final class ObservationDelivery: Sendable {
         return values
     }
 
-    func setCancelOperation(_ operation: @escaping @Sendable () -> Void) {
+    func bind(to slot: ObservationScopeSlot) {
         let shouldCancelImmediately = state.withLock { state in
             guard state.isActive else {
                 return true
             }
 
-            state.cancelOperation = operation
+            state.slot = slot
             return false
         }
 
         if shouldCancelImmediately {
-            operation()
+            slot.cancel()
         }
     }
 
@@ -160,20 +160,9 @@ public final class ObservationDelivery: Sendable {
         }
 
         return ObservationDeliveryCompletion(
-            sampleAndFinishOperation: { [weak self] in
-                guard delivery.isActive else {
-                    return
-                }
-
-                await self?.sampleActiveDeliveryAndFinish(generation: delivery.generation)
-            },
-            finishWithoutSamplingOperation: { [weak self] in
-                guard delivery.isActive else {
-                    return
-                }
-
-                self?.finishActiveDelivery()
-            }
+            delivery: self,
+            isActive: delivery.isActive,
+            generation: delivery.generation
         )
     }
 
@@ -196,7 +185,7 @@ public final class ObservationDelivery: Sendable {
             }
 
             state.isActive = false
-            state.cancelOperation = nil
+            state.slot = nil
 
             guard state.activeDeliveries == 0 else {
                 state.shouldFinishAfterDeliveries = true
@@ -218,7 +207,7 @@ public final class ObservationDelivery: Sendable {
         }
     }
 
-    private func sampleActiveDeliveryAndFinish(generation: UInt64) async {
+    fileprivate func sampleActiveDeliveryAndFinish(generation: UInt64) async {
         let samplers = state.withLock { state -> [any ObservationDeliverySampler] in
             guard state.activeDeliveries > 0, state.completedDeliveriesAwaitingSampling > 0 else {
                 return []
@@ -243,7 +232,7 @@ public final class ObservationDelivery: Sendable {
         finishActiveDelivery()
     }
 
-    private func finishActiveDelivery() {
+    fileprivate func finishActiveDelivery() {
         state.withLock { state in
             guard state.activeDeliveries > 0 else {
                 return
@@ -287,23 +276,34 @@ public final class ObservationDelivery: Sendable {
 }
 
 struct ObservationDeliveryCompletion: Sendable {
-    private let sampleAndFinishOperation: @Sendable () async -> Void
-    private let finishWithoutSamplingOperation: @Sendable () -> Void
+    private weak var delivery: ObservationDelivery?
+    private let isActive: Bool
+    private let generation: UInt64
 
     fileprivate init(
-        sampleAndFinishOperation: @escaping @Sendable () async -> Void,
-        finishWithoutSamplingOperation: @escaping @Sendable () -> Void
+        delivery: ObservationDelivery,
+        isActive: Bool,
+        generation: UInt64
     ) {
-        self.sampleAndFinishOperation = sampleAndFinishOperation
-        self.finishWithoutSamplingOperation = finishWithoutSamplingOperation
+        self.delivery = delivery
+        self.isActive = isActive
+        self.generation = generation
     }
 
     func sampleAndFinish() async {
-        await sampleAndFinishOperation()
+        guard isActive else {
+            return
+        }
+
+        await delivery?.sampleActiveDeliveryAndFinish(generation: generation)
     }
 
     func finishWithoutSampling() {
-        finishWithoutSamplingOperation()
+        guard isActive else {
+            return
+        }
+
+        delivery?.finishActiveDelivery()
     }
 }
 
