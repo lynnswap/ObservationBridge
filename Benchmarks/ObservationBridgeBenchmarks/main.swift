@@ -3,8 +3,8 @@ import Dispatch
 import Foundation
 import Observation
 import ObservationBridge
-import ObservationBridgeBenchmarkRuntimeHooks
 import Synchronization
+import _ObservationBridgeBenchmarkSupport
 
 @Observable
 final class BenchmarkCounterModel: @unchecked Sendable {
@@ -39,36 +39,23 @@ final class BenchmarkSink: @unchecked Sendable {
 
 final class ChangeDeliveryRecorder: @unchecked Sendable {
     private struct State: Sendable {
-        var deliveryCount = 0
+        var callbackDeliveryCount = 0
         var checksum = 0
     }
 
     private let state = Mutex(State())
-    private let semaphore = DispatchSemaphore(value: 0)
 
-    var snapshot: (deliveryCount: Int, checksum: Int) {
+    var snapshot: (callbackDeliveryCount: Int, checksum: Int) {
         state.withLock { state in
-            (state.deliveryCount, state.checksum)
+            (state.callbackDeliveryCount, state.checksum)
         }
     }
 
     @inline(never)
-    func record(_ value: Int) {
+    func recordCallback(_ value: Int) {
         state.withLock { state in
-            state.deliveryCount &+= 1
+            state.callbackDeliveryCount &+= 1
             state.checksum &+= value
-        }
-        semaphore.signal()
-    }
-
-    func waitForDeliveryCount(
-        _ expectedCount: Int,
-        timeout: DispatchTimeInterval = .seconds(10)
-    ) throws {
-        while snapshot.deliveryCount < expectedCount {
-            if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-                throw BenchmarkError.timeout("timed out waiting for \(expectedCount) deliveries")
-            }
         }
     }
 }
@@ -89,6 +76,38 @@ private enum RuntimeEnqueueHooks {
             Int(ObservationBridgeRuntimeEnqueueHooksGlobalCount()),
             Int(ObservationBridgeRuntimeEnqueueHooksMainExecutorCount())
         )
+    }
+}
+
+private enum WaiterRegistrationHooks {
+    private static let timeoutNanoseconds: UInt64 = 10_000_000_000
+
+    static func activate() {
+        ObservationBridgeBenchmarkWaiterRegistrationHooksReset()
+        ObservationBridgeBenchmarkWaiterRegistrationHooksSetActive(1)
+    }
+
+    static func deactivate() {
+        ObservationBridgeBenchmarkWaiterRegistrationHooksSetActive(0)
+    }
+
+    static var count: Int {
+        Int(ObservationBridgeBenchmarkWaiterRegistrationHooksCount())
+    }
+
+    static func waitForCount(_ expectedCount: Int) throws {
+        let didReachCount = ObservationBridgeBenchmarkWaiterRegistrationHooksWaitForCount(
+            UInt64(expectedCount),
+            timeoutNanoseconds
+        )
+        guard didReachCount != 0 else {
+            throw BenchmarkError.timeout(
+                """
+                timed out waiting for \(expectedCount) waiter registrations; \
+                rebuild with --traits BenchmarkSupport
+                """
+            )
+        }
     }
 }
 
@@ -147,6 +166,7 @@ struct BenchmarkExecutionResult {
 struct RuntimeActivitySnapshot: Encodable {
     let changes: Int
     let callbackDeliveries: Int
+    let waiterRegistrations: Int
     let runtimeGlobalEnqueues: Int
     let runtimeMainExecutorEnqueues: Int
     let runtimeTotalEnqueues: Int
@@ -174,8 +194,6 @@ enum BenchmarkError: Error, CustomStringConvertible {
 }
 
 enum ObservationBridgeBenchmarks {
-    private static let observationRearmDelayMicroseconds: useconds_t = 50
-
     static func main() async throws {
         let configuration = try parseArguments(CommandLine.arguments.dropFirst())
         var outputHandle: FileHandle?
@@ -201,10 +219,6 @@ enum ObservationBridgeBenchmarks {
                 outputHandle: outputHandle
             )
         }
-    }
-
-    private static func waitForObservationRearm() {
-        usleep(observationRearmDelayMicroseconds)
     }
 
     private static func runCase(
@@ -327,18 +341,23 @@ enum ObservationBridgeBenchmarks {
             observations.cancelAll()
         }
 
-        observations.observe(model) { _, model in
-            recorder.record(model.value)
+        WaiterRegistrationHooks.activate()
+        defer {
+            WaiterRegistrationHooks.deactivate()
         }
-        try recorder.waitForDeliveryCount(1)
 
-        // Prime one delivered change before measurement so the observation task is in
-        // its normal change-waiting loop rather than still starting up.
+        observations.observe(model) { _, model in
+            recorder.recordCallback(model.value)
+        }
+        try WaiterRegistrationHooks.waitForCount(1)
+
+        // Prime one change before measurement. The waiter-registration hook is
+        // emitted only after the next tracking pass is ready to receive a change.
         model.value = -1
-        try recorder.waitForDeliveryCount(2)
-        waitForObservationRearm()
+        try WaiterRegistrationHooks.waitForCount(2)
 
         let baseline = recorder.snapshot
+        let baselineWaiterRegistrationCount = WaiterRegistrationHooks.count
         RuntimeEnqueueHooks.activate()
         defer {
             RuntimeEnqueueHooks.deactivate()
@@ -346,18 +365,20 @@ enum ObservationBridgeBenchmarks {
 
         for index in 0..<iterations {
             model.value = index
-            try recorder.waitForDeliveryCount(baseline.deliveryCount + index + 1)
-            waitForObservationRearm()
+            try WaiterRegistrationHooks.waitForCount(baselineWaiterRegistrationCount + index + 1)
         }
 
         let final = recorder.snapshot
+        let finalWaiterRegistrationCount = WaiterRegistrationHooks.count
         let runtime = RuntimeEnqueueHooks.snapshot
-        let callbackDeliveries = final.deliveryCount - baseline.deliveryCount
+        let callbackDeliveries = final.callbackDeliveryCount - baseline.callbackDeliveryCount
+        let waiterRegistrations = finalWaiterRegistrationCount - baselineWaiterRegistrationCount
         let totalEnqueues = runtime.globalEnqueues + runtime.mainExecutorEnqueues
         let changeCount = max(iterations, 1)
         let activity = RuntimeActivitySnapshot(
             changes: iterations,
             callbackDeliveries: callbackDeliveries,
+            waiterRegistrations: waiterRegistrations,
             runtimeGlobalEnqueues: runtime.globalEnqueues,
             runtimeMainExecutorEnqueues: runtime.mainExecutorEnqueues,
             runtimeTotalEnqueues: totalEnqueues,
@@ -436,6 +457,7 @@ enum ObservationBridgeBenchmarks {
         if let runtimeActivity = result.runtimeActivity {
             summaryParts.append("changes=\(runtimeActivity.changes)")
             summaryParts.append("callbacks=\(runtimeActivity.callbackDeliveries)")
+            summaryParts.append("waiterRegistrations=\(runtimeActivity.waiterRegistrations)")
             summaryParts.append("callbackPerChange=\(runtimeActivity.callbackDeliveriesPerChange)")
             summaryParts.append("runtimeEnqueues=\(runtimeActivity.runtimeTotalEnqueues)")
             summaryParts.append("runtimeEnqueuesPerChange=\(runtimeActivity.runtimeEnqueuesPerChange)")

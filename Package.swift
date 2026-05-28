@@ -18,6 +18,12 @@ let package = Package(
             targets: ["ObservationBridgeBenchmarks"]
         )
     ],
+    traits: [
+        .trait(
+            name: "BenchmarkSupport",
+            description: "Compile benchmark-only instrumentation hooks into ObservationBridge."
+        )
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0")
@@ -40,6 +46,10 @@ let package = Package(
         .target(
             name: "ObservationBridge",
             dependencies: [
+                .target(
+                    name: "_ObservationBridgeBenchmarkSupport",
+                    condition: .when(traits: ["BenchmarkSupport"])
+                ),
                 "_ObservationBridgePrivateABI",
                 "_ObservationBridgeLegacy",
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
@@ -52,15 +62,15 @@ let package = Package(
             ]
         ),
         .target(
-            name: "ObservationBridgeBenchmarkRuntimeHooks",
-            path: "Benchmarks/ObservationBridgeBenchmarkRuntimeHooks",
+            name: "_ObservationBridgeBenchmarkSupport",
+            path: "ObservationBridge/Sources/_ObservationBridgeBenchmarkSupport",
             publicHeadersPath: "include"
         ),
         .executableTarget(
             name: "ObservationBridgeBenchmarks",
             dependencies: [
                 "ObservationBridge",
-                "ObservationBridgeBenchmarkRuntimeHooks",
+                "_ObservationBridgeBenchmarkSupport",
             ],
             path: "Benchmarks/ObservationBridgeBenchmarks",
             swiftSettings: [

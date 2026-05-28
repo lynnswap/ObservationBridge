@@ -1,6 +1,10 @@
 import Observation
 import Synchronization
 
+#if canImport(_ObservationBridgeBenchmarkSupport)
+internal import _ObservationBridgeBenchmarkSupport
+#endif
+
 struct ObservationScopeID: Hashable, Sendable {
     let fileID: ObservationScopeFileID
     let line: UInt
@@ -331,6 +335,11 @@ final class ObservationScopeSlot: @unchecked Sendable {
                     return continuation
                 }
                 state.waiters.append(continuation)
+
+                #if canImport(_ObservationBridgeBenchmarkSupport)
+                ObservationBridgeBenchmarkObservationScopeWaiterRegistered()
+                #endif
+
                 return nil
             }
             immediate?.resume()

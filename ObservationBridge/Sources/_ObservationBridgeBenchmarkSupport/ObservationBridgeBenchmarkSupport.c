@@ -1,7 +1,10 @@
-#include "ObservationBridgeBenchmarkRuntimeHooks.h"
+#include "ObservationBridgeBenchmarkSupport.h"
 
 #include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>
 
 typedef void *ObservationBridgeRuntimeJob;
 typedef void __attribute__((swiftcall)) (*ObservationBridgeRuntimeEnqueueOriginal)(
@@ -122,4 +125,85 @@ uint64_t ObservationBridgeRuntimeEnqueueHooksMainExecutorCount(void)
     return atomic_load_explicit(
         &observationBridgeRuntimeMainExecutorEnqueueCount,
         memory_order_relaxed);
+}
+
+static _Atomic int observationBridgeBenchmarkWaiterRegistrationHooksActive = 0;
+static pthread_mutex_t observationBridgeBenchmarkWaiterRegistrationMutex =
+    PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t observationBridgeBenchmarkWaiterRegistrationCondition =
+    PTHREAD_COND_INITIALIZER;
+static uint64_t observationBridgeBenchmarkWaiterRegistrationCount = 0;
+
+void ObservationBridgeBenchmarkObservationScopeWaiterRegistered(void)
+{
+    if (!atomic_load_explicit(
+            &observationBridgeBenchmarkWaiterRegistrationHooksActive,
+            memory_order_acquire)) {
+        return;
+    }
+
+    pthread_mutex_lock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    observationBridgeBenchmarkWaiterRegistrationCount += 1;
+    pthread_cond_broadcast(&observationBridgeBenchmarkWaiterRegistrationCondition);
+    pthread_mutex_unlock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+}
+
+void ObservationBridgeBenchmarkWaiterRegistrationHooksSetActive(int active)
+{
+    atomic_store_explicit(
+        &observationBridgeBenchmarkWaiterRegistrationHooksActive,
+        active ? 1 : 0,
+        memory_order_release);
+}
+
+void ObservationBridgeBenchmarkWaiterRegistrationHooksReset(void)
+{
+    pthread_mutex_lock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    observationBridgeBenchmarkWaiterRegistrationCount = 0;
+    pthread_mutex_unlock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+}
+
+uint64_t ObservationBridgeBenchmarkWaiterRegistrationHooksCount(void)
+{
+    pthread_mutex_lock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    uint64_t count = observationBridgeBenchmarkWaiterRegistrationCount;
+    pthread_mutex_unlock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    return count;
+}
+
+static struct timespec observationBridgeBenchmarkDeadline(uint64_t timeoutNanoseconds)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+
+    deadline.tv_sec += (time_t)(timeoutNanoseconds / 1000000000ULL);
+    deadline.tv_nsec += (long)(timeoutNanoseconds % 1000000000ULL);
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    return deadline;
+}
+
+int ObservationBridgeBenchmarkWaiterRegistrationHooksWaitForCount(
+    uint64_t expectedCount,
+    uint64_t timeoutNanoseconds)
+{
+    struct timespec deadline = observationBridgeBenchmarkDeadline(timeoutNanoseconds);
+
+    pthread_mutex_lock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    while (observationBridgeBenchmarkWaiterRegistrationCount < expectedCount) {
+        int result = pthread_cond_timedwait(
+            &observationBridgeBenchmarkWaiterRegistrationCondition,
+            &observationBridgeBenchmarkWaiterRegistrationMutex,
+            &deadline);
+        if (result == ETIMEDOUT) {
+            pthread_mutex_unlock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+            return 0;
+        }
+    }
+
+    pthread_mutex_unlock(&observationBridgeBenchmarkWaiterRegistrationMutex);
+    return 1;
 }
