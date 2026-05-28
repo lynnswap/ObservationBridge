@@ -51,9 +51,17 @@ let package = Package(
                 .strictMemorySafety(),
             ]
         ),
+        .target(
+            name: "ObservationBridgeBenchmarkRuntimeHooks",
+            path: "Benchmarks/ObservationBridgeBenchmarkRuntimeHooks",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "ObservationBridgeBenchmarks",
-            dependencies: ["ObservationBridge"],
+            dependencies: [
+                "ObservationBridge",
+                "ObservationBridgeBenchmarkRuntimeHooks",
+            ],
             path: "Benchmarks/ObservationBridgeBenchmarks",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

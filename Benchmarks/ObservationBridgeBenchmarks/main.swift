@@ -1,7 +1,10 @@
 import Darwin
+import Dispatch
 import Foundation
 import Observation
 import ObservationBridge
+import ObservationBridgeBenchmarkRuntimeHooks
+import Synchronization
 
 @Observable
 final class BenchmarkCounterModel: @unchecked Sendable {
@@ -34,9 +37,65 @@ final class BenchmarkSink: @unchecked Sendable {
     }
 }
 
+final class ChangeDeliveryRecorder: @unchecked Sendable {
+    private struct State: Sendable {
+        var deliveryCount = 0
+        var checksum = 0
+    }
+
+    private let state = Mutex(State())
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    var snapshot: (deliveryCount: Int, checksum: Int) {
+        state.withLock { state in
+            (state.deliveryCount, state.checksum)
+        }
+    }
+
+    @inline(never)
+    func record(_ value: Int) {
+        state.withLock { state in
+            state.deliveryCount &+= 1
+            state.checksum &+= value
+        }
+        semaphore.signal()
+    }
+
+    func waitForDeliveryCount(
+        _ expectedCount: Int,
+        timeout: DispatchTimeInterval = .seconds(10)
+    ) throws {
+        while snapshot.deliveryCount < expectedCount {
+            if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+                throw BenchmarkError.timeout("timed out waiting for \(expectedCount) deliveries")
+            }
+        }
+    }
+}
+
+private enum RuntimeEnqueueHooks {
+    static func activate() {
+        ObservationBridgeRuntimeEnqueueHooksInstall()
+        ObservationBridgeRuntimeEnqueueHooksReset()
+        ObservationBridgeRuntimeEnqueueHooksSetActive(1)
+    }
+
+    static func deactivate() {
+        ObservationBridgeRuntimeEnqueueHooksSetActive(0)
+    }
+
+    static var snapshot: (globalEnqueues: Int, mainExecutorEnqueues: Int) {
+        (
+            Int(ObservationBridgeRuntimeEnqueueHooksGlobalCount()),
+            Int(ObservationBridgeRuntimeEnqueueHooksMainExecutorCount())
+        )
+    }
+}
+
 enum BenchmarkCase: String, CaseIterable {
     case scopeSetupTeardown
     case scopeReplaceSameCallsite
+    case scopeChangeRuntimeActivity
     case streamConstructAndFirstValue
     case nonSendableStreamConstructAndFirstValue
 }
@@ -76,12 +135,31 @@ struct BenchmarkResult: Encodable {
     let heapBefore: HeapSnapshot
     let heapAfter: HeapSnapshot
     let heapSizeInUseDelta: Int
+    let runtimeActivity: RuntimeActivitySnapshot?
     let date: String
+}
+
+struct BenchmarkExecutionResult {
+    let checksum: Int
+    var runtimeActivity: RuntimeActivitySnapshot? = nil
+}
+
+struct RuntimeActivitySnapshot: Encodable {
+    let changes: Int
+    let callbackDeliveries: Int
+    let runtimeGlobalEnqueues: Int
+    let runtimeMainExecutorEnqueues: Int
+    let runtimeTotalEnqueues: Int
+    let callbackDeliveriesPerChange: Double
+    let runtimeEnqueuesPerChange: Double
+    let runtimeGlobalEnqueuesPerChange: Double
+    let runtimeMainExecutorEnqueuesPerChange: Double
 }
 
 enum BenchmarkError: Error, CustomStringConvertible {
     case invalidArgument(String)
     case streamEnded(String)
+    case timeout(String)
 
     var description: String {
         switch self {
@@ -89,12 +167,15 @@ enum BenchmarkError: Error, CustomStringConvertible {
             message
         case .streamEnded(let message):
             message
+        case .timeout(let message):
+            message
         }
     }
 }
 
-@main
 enum ObservationBridgeBenchmarks {
+    private static let observationRearmDelayMicroseconds: useconds_t = 50
+
     static func main() async throws {
         let configuration = try parseArguments(CommandLine.arguments.dropFirst())
         var outputHandle: FileHandle?
@@ -122,6 +203,10 @@ enum ObservationBridgeBenchmarks {
         }
     }
 
+    private static func waitForObservationRearm() {
+        usleep(observationRearmDelayMicroseconds)
+    }
+
     private static func runCase(
         _ benchmarkCase: BenchmarkCase,
         configuration: BenchmarkConfiguration,
@@ -137,7 +222,7 @@ enum ObservationBridgeBenchmarks {
         for runIndex in 0..<configuration.runs {
             let heapBefore = HeapSnapshot.capture()
             let start = DispatchTime.now().uptimeNanoseconds
-            let checksum = try await execute(
+            let execution = try await execute(
                 benchmarkCase,
                 iterations: configuration.iterations
             )
@@ -151,10 +236,11 @@ enum ObservationBridgeBenchmarks {
                 warmupIterations: configuration.warmupIterations,
                 elapsedSeconds: elapsedSeconds,
                 nanosecondsPerIteration: Double(end - start) / Double(configuration.iterations),
-                checksum: checksum,
+                checksum: execution.checksum,
                 heapBefore: heapBefore,
                 heapAfter: heapAfter,
                 heapSizeInUseDelta: heapAfter.sizeInUse - heapBefore.sizeInUse,
+                runtimeActivity: execution.runtimeActivity,
                 date: ISO8601DateFormatter().string(from: Date())
             )
             try emit(result, outputHandle: outputHandle)
@@ -164,16 +250,20 @@ enum ObservationBridgeBenchmarks {
     private static func execute(
         _ benchmarkCase: BenchmarkCase,
         iterations: Int
-    ) async throws -> Int {
+    ) async throws -> BenchmarkExecutionResult {
         switch benchmarkCase {
         case .scopeSetupTeardown:
-            return runScopeSetupTeardown(iterations: iterations)
+            return BenchmarkExecutionResult(checksum: runScopeSetupTeardown(iterations: iterations))
         case .scopeReplaceSameCallsite:
-            return runScopeReplaceSameCallsite(iterations: iterations)
+            return BenchmarkExecutionResult(checksum: runScopeReplaceSameCallsite(iterations: iterations))
+        case .scopeChangeRuntimeActivity:
+            return try await runScopeChangeRuntimeActivity(iterations: iterations)
         case .streamConstructAndFirstValue:
-            return try await runStreamConstructAndFirstValue(iterations: iterations)
+            return BenchmarkExecutionResult(checksum: try await runStreamConstructAndFirstValue(iterations: iterations))
         case .nonSendableStreamConstructAndFirstValue:
-            return try await runNonSendableStreamConstructAndFirstValue(iterations: iterations)
+            return BenchmarkExecutionResult(
+                checksum: try await runNonSendableStreamConstructAndFirstValue(iterations: iterations)
+            )
         }
     }
 
@@ -224,6 +314,62 @@ enum ObservationBridgeBenchmarks {
         observations.observe(model) { _, model in
             sink.record(model.value)
         }
+    }
+
+    @inline(never)
+    private static func runScopeChangeRuntimeActivity(
+        iterations: Int
+    ) async throws -> BenchmarkExecutionResult {
+        let model = BenchmarkCounterModel()
+        let observations = ObservationScope()
+        let recorder = ChangeDeliveryRecorder()
+        defer {
+            observations.cancelAll()
+        }
+
+        observations.observe(model) { _, model in
+            recorder.record(model.value)
+        }
+        try recorder.waitForDeliveryCount(1)
+
+        // Prime one delivered change before measurement so the observation task is in
+        // its normal change-waiting loop rather than still starting up.
+        model.value = -1
+        try recorder.waitForDeliveryCount(2)
+        waitForObservationRearm()
+
+        let baseline = recorder.snapshot
+        RuntimeEnqueueHooks.activate()
+        defer {
+            RuntimeEnqueueHooks.deactivate()
+        }
+
+        for index in 0..<iterations {
+            model.value = index
+            try recorder.waitForDeliveryCount(baseline.deliveryCount + index + 1)
+            waitForObservationRearm()
+        }
+
+        let final = recorder.snapshot
+        let runtime = RuntimeEnqueueHooks.snapshot
+        let callbackDeliveries = final.deliveryCount - baseline.deliveryCount
+        let totalEnqueues = runtime.globalEnqueues + runtime.mainExecutorEnqueues
+        let changeCount = max(iterations, 1)
+        let activity = RuntimeActivitySnapshot(
+            changes: iterations,
+            callbackDeliveries: callbackDeliveries,
+            runtimeGlobalEnqueues: runtime.globalEnqueues,
+            runtimeMainExecutorEnqueues: runtime.mainExecutorEnqueues,
+            runtimeTotalEnqueues: totalEnqueues,
+            callbackDeliveriesPerChange: Double(callbackDeliveries) / Double(changeCount),
+            runtimeEnqueuesPerChange: Double(totalEnqueues) / Double(changeCount),
+            runtimeGlobalEnqueuesPerChange: Double(runtime.globalEnqueues) / Double(changeCount),
+            runtimeMainExecutorEnqueuesPerChange: Double(runtime.mainExecutorEnqueues) / Double(changeCount)
+        )
+        return BenchmarkExecutionResult(
+            checksum: final.checksum - baseline.checksum,
+            runtimeActivity: activity
+        )
     }
 
     @inline(never)
@@ -278,7 +424,7 @@ enum ObservationBridgeBenchmarks {
             try outputHandle.write(contentsOf: Data([0x0A]))
         }
 
-        let summary = [
+        var summaryParts = [
             result.caseName,
             "run=\(result.runIndex)",
             "iterations=\(result.iterations)",
@@ -286,7 +432,17 @@ enum ObservationBridgeBenchmarks {
             "nsPerIteration=\(result.nanosecondsPerIteration)",
             "heapDelta=\(result.heapSizeInUseDelta)",
             "checksum=\(result.checksum)"
-        ].joined(separator: " ")
+        ]
+        if let runtimeActivity = result.runtimeActivity {
+            summaryParts.append("changes=\(runtimeActivity.changes)")
+            summaryParts.append("callbacks=\(runtimeActivity.callbackDeliveries)")
+            summaryParts.append("callbackPerChange=\(runtimeActivity.callbackDeliveriesPerChange)")
+            summaryParts.append("runtimeEnqueues=\(runtimeActivity.runtimeTotalEnqueues)")
+            summaryParts.append("runtimeEnqueuesPerChange=\(runtimeActivity.runtimeEnqueuesPerChange)")
+            summaryParts.append("globalEnqueues=\(runtimeActivity.runtimeGlobalEnqueues)")
+            summaryParts.append("mainExecutorEnqueues=\(runtimeActivity.runtimeMainExecutorEnqueues)")
+        }
+        let summary = summaryParts.joined(separator: " ")
         print(summary)
     }
 
@@ -389,3 +545,5 @@ enum ObservationBridgeBenchmarks {
         Foundation.exit(0)
     }
 }
+
+try await ObservationBridgeBenchmarks.main()
