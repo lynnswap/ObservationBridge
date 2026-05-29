@@ -43,7 +43,57 @@ public final class ObservationScope: @unchecked Sendable {
             startIsolation: isolation,
             observationIsolation: apply.isolation ?? isolation,
             delivery: delivery,
-            apply: apply,
+            pipeline: TypedObservationScopeImplicitTrackingPipeline(apply),
+            _fileID: _fileID,
+            _line: _line,
+            _column: _column
+        )
+        delivery.bind(to: slot)
+        return delivery
+    }
+
+    /// Starts or replaces an owner-bound observation with explicit tracking dependencies.
+    ///
+    /// Only observable properties read from `owner` inside `tracking` become part of the
+    /// observation. Observable properties read by `apply` are not tracked by this observation.
+    /// Calling the same observation again from the same call site replaces the existing pipeline
+    /// so the new tracking body is tracked immediately.
+    ///
+    /// - Parameters:
+    ///   - owner: The observable object whose properties are read by `tracking` and `apply`.
+    ///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
+    ///   - tracking: The closure that reads the observable properties to track.
+    ///   - apply: The callback to run for the initial pass and selected subsequent events.
+    ///   - isolation: The actor isolation used to start the observation.
+    @discardableResult
+    public func observe<Owner: AnyObject & Observable>(
+        _ owner: Owner,
+        options: ObservationOptions = .didSet,
+        @_inheritActorContext tracking: @escaping @isolated(any) @Sendable (Owner) -> Void,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> ObservationDelivery {
+        let trackingIsolation = tracking.isolation ?? isolation
+        let applyIsolation = apply.isolation ?? isolation
+        let observationIsolation = resolveObservationIsolation(
+            trackingIsolation: trackingIsolation,
+            applyIsolation: applyIsolation
+        )
+
+        let delivery = ObservationDelivery()
+        let slot = installObservation(
+            owner: owner,
+            options: options,
+            startIsolation: isolation,
+            observationIsolation: observationIsolation,
+            delivery: delivery,
+            pipeline: TypedObservationScopeExplicitTrackingPipeline(
+                tracking: tracking,
+                apply: apply
+            ),
             _fileID: _fileID,
             _line: _line,
             _column: _column
@@ -72,7 +122,7 @@ public final class ObservationScope: @unchecked Sendable {
         startIsolation: isolated (any Actor)?,
         observationIsolation: (any Actor)?,
         delivery: ObservationDelivery,
-        apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        pipeline: any ObservationScopePipeline,
         _fileID: StaticString,
         _line: UInt,
         _column: UInt
@@ -90,7 +140,7 @@ public final class ObservationScope: @unchecked Sendable {
             options: options,
             isolation: observationIsolation,
             delivery: delivery,
-            apply: apply
+            pipeline: pipeline
         )
         let insertion = storage.withLock { storage in
             storage.install(
@@ -112,15 +162,29 @@ public final class ObservationScope: @unchecked Sendable {
         options: ObservationOptions,
         isolation: (any Actor)?,
         delivery: ObservationDelivery,
-        apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
+        pipeline: any ObservationScopePipeline
     ) -> ObservationScopeSlot {
         ObservationScopeSlot(
             owner: owner,
             options: options,
             observationIsolation: isolation,
             delivery: delivery,
-            callback: TypedObservationScopeCallback(apply)
+            pipeline: pipeline
         )
+    }
+
+    private func resolveObservationIsolation(
+        trackingIsolation: (any Actor)?,
+        applyIsolation: (any Actor)?
+    ) -> (any Actor)? {
+        let trackingActorID = observationScopeActorID(trackingIsolation)
+        let applyActorID = observationScopeActorID(applyIsolation)
+
+        if let trackingActorID, let applyActorID, trackingActorID != applyActorID {
+            preconditionFailure("Observation tracking and apply closures must use the same actor isolation.")
+        }
+
+        return applyIsolation ?? trackingIsolation
     }
 }
 
@@ -372,7 +436,7 @@ private func trackLegacyScopedObservationInCurrentContext(
     changeKind: ObservationEvent.Kind?,
     slot: ObservationScopeSlot
 ) -> ScopedObservationTrackResult {
-    guard let callback = slot.callbackSnapshot() else {
+    guard let pipeline = slot.pipelineSnapshot() else {
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
@@ -385,9 +449,9 @@ private func trackLegacyScopedObservationInCurrentContext(
 
     func complete(
         shouldContinue: Bool,
-        didCallCallback: Bool
+        didApply: Bool
     ) -> ScopedObservationTrackResult {
-        if didCallCallback {
+        if didApply {
             return ScopedObservationTrackResult(
                 shouldContinue: shouldContinue,
                 completion: delivery.endDelivery()
@@ -399,29 +463,57 @@ private func trackLegacyScopedObservationInCurrentContext(
     }
 
     guard let changeKind else {
-        let didCallCallback = callback.call(event: event)
-        return complete(shouldContinue: slot.isActive, didCallCallback: didCallCallback)
+        let didApply = pipeline.apply(event: event)
+        return complete(shouldContinue: slot.isActive, didApply: didApply)
     }
 
-    var didCallCallback = false
+    var didApply = false
+    if pipeline.appliesInsideTracking {
+        if changeKind == .didSet {
+            guard withObservationTrackingDidSetIfAvailable({
+                didApply = pipeline.apply(event: event)
+            }, didSet: { tracking in
+                cancelObservationTrackingIfAvailable(tracking)
+                slot.emitChange()
+            }) else {
+                return complete(shouldContinue: false, didApply: didApply)
+            }
+        } else {
+            withObservationTracking {
+                didApply = pipeline.apply(event: event)
+            } onChange: {
+                slot.emitChange()
+            }
+        }
+
+        return complete(shouldContinue: slot.isActive, didApply: didApply)
+    }
+
+    var didTrack = false
     if changeKind == .didSet {
         guard withObservationTrackingDidSetIfAvailable({
-            didCallCallback = callback.call(event: event)
+            didTrack = pipeline.track()
         }, didSet: { tracking in
             cancelObservationTrackingIfAvailable(tracking)
             slot.emitChange()
         }) else {
-            return complete(shouldContinue: false, didCallCallback: didCallCallback)
+            return complete(shouldContinue: false, didApply: didApply)
         }
     } else {
         withObservationTracking {
-            didCallCallback = callback.call(event: event)
+            didTrack = pipeline.track()
         } onChange: {
             slot.emitChange()
         }
     }
 
-    return complete(shouldContinue: slot.isActive, didCallCallback: didCallCallback)
+    guard didTrack else {
+        return complete(shouldContinue: false, didApply: false)
+    }
+
+    didApply = pipeline.apply(event: event)
+
+    return complete(shouldContinue: slot.isActive && didTrack, didApply: didApply)
 }
 
 private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {
