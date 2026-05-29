@@ -37,6 +37,26 @@ observations.observe(model) { event, model in
 The callback body is the tracking body. Every observable property read from
 `model` inside the callback becomes part of the observation.
 
+When the callback needs to read additional state that should not trigger later
+deliveries, pass an explicit `tracking` closure. In that form, only observable
+properties read by `tracking` are tracked; `apply` still receives the event and
+owner for the initial and selected later deliveries.
+
+```swift
+observations.observe(model, tracking: { model in
+    _ = model.title
+    _ = model.count
+}) { event, model in
+    if event.kind == .initial {
+        installViewsIfNeeded()
+    }
+
+    titleLabel.text = model.title
+    countLabel.text = "\(model.count)"
+    cache.update(using: model.expensiveValue)
+}
+```
+
 ### Events
 
 `ObservationEvent.kind` describes why the callback is running:
