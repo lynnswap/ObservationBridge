@@ -85,7 +85,7 @@ func observationScopeActorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
     actor.map { ObjectIdentifier($0 as AnyObject) }
 }
 
-enum InitialLegacyScopedObservationResult: Sendable {
+enum InitialScopedObservationResult: Sendable {
     case waitingForChange(ObservationEvent.Kind)
     case finished
 }
@@ -301,7 +301,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             observationScopeActorID(observationIsolation) == observationScopeActorID(isolation)
 
         if startsInCurrentIsolation {
-            switch runInitialLegacyScopedObservationPass(
+            switch runInitialScopedObservationPass(
                 options: options,
                 isolation: isolation,
                 slot: self
@@ -315,7 +315,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
                         self.cancel()
                     }
 
-                    await runLegacyScopedObservationLoopAfterInitialPass(
+                    await runScopedObservationLoopAfterInitialPass(
                         options: options,
                         isolation: observationIsolation,
                         slot: self,
