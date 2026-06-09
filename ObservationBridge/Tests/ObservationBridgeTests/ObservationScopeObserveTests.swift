@@ -1034,6 +1034,7 @@ final class ObservationScopeObserveTests {
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        let cancelled = RenderedValue(false)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model) { event, model in
@@ -1046,6 +1047,7 @@ final class ObservationScopeObserveTests {
             )
             if event.kind == .didSet {
                 probe.cancelAll()
+                cancelled.set(true)
             }
         }
 
@@ -1053,6 +1055,7 @@ final class ObservationScopeObserveTests {
 
         #expect(await waitUntilCondition {
             rendered.value == ScopePass(kind: .didSet, value: 1, isEnabled: false)
+                && cancelled.value
         })
         #expect(delivery.isActive == false)
 
