@@ -117,14 +117,14 @@ private func trackLegacyValueWithDidSetIfAvailable<Value: Sendable>(
     observe: @escaping @isolated(any) @Sendable () -> Value,
     observationState: LegacyObservationState
 ) -> Value? {
-    guard canUseObservationTrackingDidSetSPI, let observationTrackingDidSetFunction else {
+    guard canUseObservationTrackingDidSetSPI else {
         return nil
     }
 
     var observedValue: Value?
-    observationTrackingDidSetFunction({
+    _withObservationTrackingDidSet({
         observedValue = callIsolatedWithFastPath(observe)
-    }, { tracking in
+    }, didSet: { tracking in
         observationState.emitChange()
         cancelObservationTrackingIfAvailable(tracking)
     })
@@ -178,16 +178,16 @@ private func withObservationIsolation<T>(
 // ABI carrier so Swift forwards the hidden value with the same indirect convention.
 private typealias OpaqueObservationTracking = URL
 
-private typealias ObservationTrackingDidSetFunction = @convention(thin) (
-    () -> Void,
-    @Sendable (OpaqueObservationTracking) -> Void
-) -> Void
+@_weakLinked
+@_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
+private func _withObservationTrackingDidSet<T>(
+    _ apply: () -> T,
+    didSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
+) -> T
 
-private let observationTrackingDidSetFunction: ObservationTrackingDidSetFunction? =
-    unsafe lookupObservationSymbol(
-        "$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF",
-        as: ObservationTrackingDidSetFunction.self
-    )
+private let observationTrackingDidSetAddress: UInt? =
+    unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
+        .map { UInt(bitPattern: $0) }
 
 private let observationTrackingCancelAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
@@ -195,7 +195,7 @@ private let observationTrackingCancelAddress: UInt? =
 
 private var canUseObservationTrackingDidSetSPI: Bool {
     #if arch(arm64) || arch(x86_64)
-    return observationTrackingDidSetFunction != nil && observationTrackingCancelAddress != nil
+    return observationTrackingDidSetAddress != nil && observationTrackingCancelAddress != nil
     #else
     return false
     #endif
@@ -214,16 +214,6 @@ private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationT
     unsafe withUnsafePointer(to: tracking) { trackingPointer in
         unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
     }
-}
-
-private func lookupObservationSymbol<T>(
-    _ name: UnsafePointer<CChar>,
-    as type: T.Type
-) -> T? {
-    guard let symbol = unsafe lookupObservationSymbol(name) else {
-        return nil
-    }
-    return unsafe unsafeBitCast(symbol, to: type)
 }
 
 private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
