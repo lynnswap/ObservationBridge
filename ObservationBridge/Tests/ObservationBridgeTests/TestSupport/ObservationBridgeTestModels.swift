@@ -104,6 +104,27 @@ final class ObservationScopeCancellationProbe: @unchecked Sendable {
     }
 }
 
+@Observable
+final class ChildContainerModel: @unchecked Sendable {
+    var value: Int = 0
+    var child: ChildProbeModel?
+}
+
+@Observable
+final class ChildProbeModel: @unchecked Sendable {
+    var value: Int
+
+    init(value: Int) {
+        self.value = value
+    }
+}
+
+final class WeakBox<Value: AnyObject>: @unchecked Sendable {
+    weak var value: Value?
+}
+
+typealias WeakChildProbeModelBox = WeakBox<ChildProbeModel>
+
 final class NonSendablePayload {
     let value: Int
 

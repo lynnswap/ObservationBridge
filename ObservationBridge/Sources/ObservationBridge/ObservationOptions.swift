@@ -97,6 +97,12 @@ public struct ObservationOptions: OptionSet, Sendable, Hashable {
     /// Re-runs the observation callback after observed state changes.
     public static let didSet = ObservationOptions(rawValue: 1 << 1)
 
+    #if compiler(>=6.4)
+    /// Re-runs the observation callback after a tracked observable dependency is deinitialized.
+    @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+    public static let `deinit` = ObservationOptions(rawValue: 1 << 2)
+    #endif
+
     /// Creates observation options from a raw value.
     ///
     /// An empty option set delivers only the initial observation callback.

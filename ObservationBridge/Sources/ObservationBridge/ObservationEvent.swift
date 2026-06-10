@@ -10,6 +10,9 @@ public struct ObservationEvent: ~Copyable {
             case willSet
             #endif
             case didSet
+            #if compiler(>=6.4)
+            case `deinit`
+            #endif
         }
 
         private let rawValue: RawValue
@@ -32,6 +35,14 @@ public struct ObservationEvent: ~Copyable {
             Kind(rawValue: .didSet)
         }
 
+        #if compiler(>=6.4)
+        /// A pass triggered after a tracked observable dependency is deinitialized.
+        @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+        public static var `deinit`: Kind {
+            Kind(rawValue: .deinit)
+        }
+        #endif
+
         public var description: String {
             switch rawValue {
             case .initial:
@@ -42,6 +53,10 @@ public struct ObservationEvent: ~Copyable {
             #endif
             case .didSet:
                 "didSet"
+            #if compiler(>=6.4)
+            case .deinit:
+                "deinit"
+            #endif
             }
         }
 

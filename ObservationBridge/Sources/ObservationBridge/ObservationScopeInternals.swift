@@ -86,7 +86,7 @@ func observationScopeActorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
 }
 
 enum InitialScopedObservationResult: Sendable {
-    case waitingForChange(ObservationEvent.Kind)
+    case waitingForChange
     case finished
 }
 
@@ -98,14 +98,14 @@ protocol ObservationScopePipeline: Sendable {
 }
 
 private struct ObservationScopeWaiters: @unchecked Sendable {
-    private var first: CheckedContinuation<Void, Never>?
-    private var additional: [CheckedContinuation<Void, Never>]?
+    private var first: CheckedContinuation<ObservationEvent.Kind?, Never>?
+    private var additional: [CheckedContinuation<ObservationEvent.Kind?, Never>]?
 
     var isEmpty: Bool {
         first == nil
     }
 
-    mutating func append(_ continuation: CheckedContinuation<Void, Never>) {
+    mutating func append(_ continuation: CheckedContinuation<ObservationEvent.Kind?, Never>) {
         guard first != nil else {
             first = continuation
             return
@@ -137,19 +137,22 @@ private struct ObservationScopeWaiters: @unchecked Sendable {
 
 private enum ObservationScopeWaiterBatch: @unchecked Sendable {
     case empty
-    case single(CheckedContinuation<Void, Never>)
-    case many(CheckedContinuation<Void, Never>, [CheckedContinuation<Void, Never>])
+    case single(CheckedContinuation<ObservationEvent.Kind?, Never>)
+    case many(
+        CheckedContinuation<ObservationEvent.Kind?, Never>,
+        [CheckedContinuation<ObservationEvent.Kind?, Never>]
+    )
 
-    func resumeAll() {
+    func resumeAll(returning kind: ObservationEvent.Kind?) {
         switch self {
         case .empty:
             return
         case .single(let continuation):
-            continuation.resume()
+            continuation.resume(returning: kind)
         case .many(let first, let additional):
-            first.resume()
+            first.resume(returning: kind)
             for continuation in additional {
-                continuation.resume()
+                continuation.resume(returning: kind)
             }
         }
     }
@@ -219,10 +222,26 @@ final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         weak var owner: AnyObject?
         var isCancelled = false
-        var dirty = false
+        var pendingKinds: [ObservationEvent.Kind] = []
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
+
+        mutating func appendPendingKind(_ kind: ObservationEvent.Kind) {
+            guard pendingKinds.last != kind else {
+                return
+            }
+
+            pendingKinds.append(kind)
+        }
+
+        mutating func popPendingKind() -> ObservationEvent.Kind? {
+            guard !pendingKinds.isEmpty else {
+                return nil
+            }
+
+            return pendingKinds.removeFirst()
+        }
     }
 
     struct PipelineSnapshot: @unchecked Sendable {
@@ -249,7 +268,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     private enum WaitSetup {
-        case changed
+        case changed(ObservationEvent.Kind)
         case terminated
         case wait
     }
@@ -306,7 +325,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
                 isolation: isolation,
                 slot: self
             ) {
-            case .waitingForChange(let kind):
+            case .waitingForChange:
                 replaceTask(with: makeObservationTask { [weak self, options, observationIsolation] in
                     guard let self else {
                         return
@@ -318,8 +337,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
                     await runScopedObservationLoopAfterInitialPass(
                         options: options,
                         isolation: observationIsolation,
-                        slot: self,
-                        nextKind: kind
+                        slot: self
                     )
                 })
             case .finished:
@@ -355,7 +373,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             state.isCancelled = true
-            state.dirty = false
+            state.pendingKinds.removeAll(keepingCapacity: false)
             state.owner = nil
             state.pipeline = nil
             let waiters = state.waiters.takeAll()
@@ -368,57 +386,55 @@ final class ObservationScopeSlot: @unchecked Sendable {
             return
         }
 
-        cancellation.waiters.resumeAll()
+        cancellation.waiters.resumeAll(returning: nil)
         delivery.finish()
         cancellation.task?.cancel()
     }
 
-    func emitChange() {
+    func emitChange(kind: ObservationEvent.Kind) {
         let waiters = state.withLock { state -> ObservationScopeWaiterBatch in
             guard !state.isCancelled else {
                 return .empty
             }
 
             if state.waiters.isEmpty {
-                state.dirty = true
+                state.appendPendingKind(kind)
                 return .empty
             }
 
             return state.waiters.takeAll()
         }
 
-        waiters.resumeAll()
+        waiters.resumeAll(returning: kind)
     }
 
-    func waitForChange() async -> Bool {
+    func waitForChange() async -> ObservationEvent.Kind? {
         let setup = state.withLock { state -> WaitSetup in
             if state.isCancelled {
                 return .terminated
             }
-            if state.dirty {
-                state.dirty = false
-                return .changed
+            if let kind = state.popPendingKind() {
+                return .changed(kind)
             }
             return .wait
         }
 
         switch setup {
-        case .changed:
-            return true
+        case .changed(let kind):
+            return kind
         case .terminated:
-            return false
+            return nil
         case .wait:
             break
         }
 
-        await withCheckedContinuation { continuation in
-            let immediate = state.withLock { state -> CheckedContinuation<Void, Never>? in
+        return await withCheckedContinuation { continuation in
+            let immediate = state.withLock { state -> WaitSetup? in
                 if state.isCancelled {
-                    return continuation
+                    return .terminated
                 }
-                if state.dirty {
-                    state.dirty = false
-                    return continuation
+                if let kind = state.popPendingKind() {
+                    return .changed(kind)
                 }
                 state.waiters.append(continuation)
 
@@ -428,10 +444,18 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
                 return nil
             }
-            immediate?.resume()
-        }
 
-        return isActive
+            switch immediate {
+            case .changed(let kind):
+                continuation.resume(returning: kind)
+            case .terminated:
+                continuation.resume(returning: nil)
+            case .wait:
+                preconditionFailure("Observation wait registration cannot resume with a suspended state.")
+            case nil:
+                break
+            }
+        }
     }
 
     private func replaceTask(with newTask: Task<Void, Never>) {

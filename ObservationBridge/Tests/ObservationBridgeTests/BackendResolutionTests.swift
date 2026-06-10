@@ -76,5 +76,13 @@ final class BackendResolutionTests {
 
         #expect(options.contains(.didSet))
         #expect(!ObservationOptions().contains(.didSet))
+
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
+            let deinitOptions: ObservationOptions = [.didSet, .deinit]
+            #expect(deinitOptions.contains(.didSet))
+            #expect(deinitOptions.contains(.deinit))
+        }
+        #endif
     }
 }

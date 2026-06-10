@@ -21,6 +21,14 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.didSet == .didSet)
         #expect(ObservationEvent.Kind.initial != .didSet)
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
+
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
+            #expect(ObservationEvent.Kind.deinit == .deinit)
+            #expect(ObservationEvent.Kind.didSet != .deinit)
+            #expect(String(describing: ObservationEvent.Kind.deinit) == "deinit")
+        }
+        #endif
     }
 
     @Test
@@ -320,6 +328,110 @@ final class ObservationScopeObserveTests {
         model.value = 1
         #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
+
+    @Test
+    func rawDeinitOptionDoesNotSynthesizeLegacyEvent() async {
+        #if compiler(>=6.4)
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+        #endif
+
+        let model = ChildContainerModel()
+        let weakChild = WeakChildProbeModelBox()
+        do {
+            let child = ChildProbeModel(value: 7)
+            weakChild.value = child
+            model.child = child
+        }
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let rawDeinitOptions = ObservationOptions(rawValue: 1 << 2)
+        let delivery = observations.observe(model, options: rawDeinitOptions) { event, model in
+            if let child = model.child {
+                _ = child.value
+            }
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+        #expect(delivery.isActive == false)
+
+        model.child = nil
+        #expect(await waitUntilCondition { weakChild.value == nil })
+        #expect(kinds.snapshot() == [.initial])
+    }
+
+    #if compiler(>=6.4)
+    @Test
+    func nativeDeinitOptionDeliversDependencyDeinitEvent() async {
+        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let model = ChildContainerModel()
+        let weakChild = WeakChildProbeModelBox()
+        do {
+            let child = ChildProbeModel(value: 7)
+            weakChild.value = child
+            model.child = child
+        }
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: .deinit) { event, model in
+            if let child = model.child {
+                _ = child.value
+            }
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+        #expect(weakChild.value != nil)
+
+        model.child = nil
+
+        #expect(await waitUntilCondition { weakChild.value == nil })
+        #expect(await cursor.next() == .deinit)
+        #expect(kinds.snapshot() == [.initial, .deinit])
+    }
+
+    @Test
+    func pendingEventKindsCoalesceConsecutiveDuplicatesInOrder() async {
+        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let slot = ObservationScopeSlot(
+            owner: model,
+            options: [.didSet, .deinit],
+            observationIsolation: nil,
+            delivery: ObservationDelivery(),
+            pipeline: TypedObservationScopeImplicitTrackingPipeline<CounterModel> { _, _ in }
+        )
+        defer { slot.cancel() }
+
+        slot.emitChange(kind: .didSet)
+        slot.emitChange(kind: .didSet)
+        slot.emitChange(kind: .deinit)
+
+        #expect(await slot.waitForChange() == .didSet)
+        #expect(await slot.waitForChange() == .deinit)
+    }
+    #endif
 
     @Test
     func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {

@@ -65,6 +65,8 @@ observations.observe(model, tracking: { model in
   is delivered synchronously when observation starts in the owner's current
   actor context.
 - `.didSet`: a later pass after observed state changed
+- `.deinit`: a later pass after a tracked observable dependency is deinitialized
+  on the Swift 6.4 native backend for OS 27+
 
 `ObservationOptions` controls which later events are delivered:
 
@@ -79,8 +81,9 @@ observations.observe(model, options: []) { event, model in
 ```
 
 `[]` delivers only `.initial`. `.didSet` delivers `.initial` plus subsequent
-change-triggered passes. `.willSet` is intentionally unavailable until the
-native Swift 6.4 backend can provide accurate about-to-change timing.
+change-triggered passes. `.deinit` is available on Swift 6.4 with OS 27+ and
+is not synthesized by the legacy backend. `.willSet` remains unavailable until
+ObservationBridge can preserve native about-to-change timing.
 
 `ObservationEvent` is borrowed for the callback lifetime. Save `event.kind` if
 later code needs the reason for the pass. `event.cancel()` cancels backing
@@ -98,9 +101,8 @@ delivery.cancel()
 observations.cancelAll()
 ```
 
-`ObservationEvent.matches(_:)` is intentionally unavailable before the Swift 6.4
-native backend because the changed key path is not exposed by the older public
-Observation API.
+`ObservationEvent.matches(_:)` remains unavailable and is reserved for a later
+native matching phase.
 
 ## AsyncSequence Style
 
@@ -287,10 +289,10 @@ observations.observe(model) { _, model in
   been removed. Use one `ObservationScope` per lifecycle owner and call
   `cancelAll()` before rebinding a dynamic set of observations.
 - `ObservationOptions` is now an owner-bound event option set. Use `.didSet` for
-  initial + subsequent callbacks, or `[]` for initial-only callbacks.
+  initial + subsequent callbacks, `.deinit` on Swift 6.4 with OS 27+ for tracked
+  dependency teardown, or `[]` for initial-only callbacks.
 - `ObservationEvent` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
-- `ObservationEvent.matches(_:)` is not exposed on Swift 6.3 and earlier. It is
-  reserved for the Swift 6.4 native backend where stdlib exposes matching.
+- `ObservationEvent.matches(_:)` is reserved for a later native matching phase.
 - Stream rate-limit and backend settings moved from `ObservationOptions` to
   `ObservationStreamOptions`.

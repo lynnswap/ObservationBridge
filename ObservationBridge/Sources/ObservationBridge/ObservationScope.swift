@@ -341,8 +341,7 @@ func runInitialScopedObservationPass(
 func runScopedObservationLoopAfterInitialPass(
     options: ObservationOptions,
     isolation: (any Actor)?,
-    slot: ObservationScopeSlot,
-    nextKind: ObservationEvent.Kind
+    slot: ObservationScopeSlot
 ) async {
     #if compiler(>=6.4)
     if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *),
@@ -350,8 +349,7 @@ func runScopedObservationLoopAfterInitialPass(
         await runNativeScopedObservationLoopAfterInitialPass(
             options: options,
             isolation: isolation,
-            slot: slot,
-            nextKind: nextKind
+            slot: slot
         )
         return
     }
@@ -360,8 +358,7 @@ func runScopedObservationLoopAfterInitialPass(
     await runLegacyScopedObservationLoopAfterInitialPass(
         options: options,
         isolation: isolation,
-        slot: slot,
-        nextKind: nextKind
+        slot: slot
     )
 }
 
@@ -388,11 +385,11 @@ private func runNativeScopedObservationLoop(
             break
         }
 
-        guard await slot.waitForChange() else {
+        guard let nextKind = await slot.waitForChange() else {
             break
         }
 
-        kind = .didSet
+        kind = nextKind
     }
 
     slot.cancel()
@@ -421,20 +418,17 @@ private func runInitialNativeScopedObservationPass(
         return .finished
     }
 
-    return .waitingForChange(.didSet)
+    return .waitingForChange
 }
 
 @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
 private func runNativeScopedObservationLoopAfterInitialPass(
     options: ObservationOptions,
     isolation: (any Actor)?,
-    slot: ObservationScopeSlot,
-    nextKind: ObservationEvent.Kind
+    slot: ObservationScopeSlot
 ) async {
-    var kind = nextKind
-
     while !Task.isCancelled {
-        guard await slot.waitForChange() else {
+        guard let kind = await slot.waitForChange() else {
             break
         }
 
@@ -451,7 +445,6 @@ private func runNativeScopedObservationLoopAfterInitialPass(
             break
         }
 
-        kind = .didSet
     }
 
     slot.cancel()
@@ -517,8 +510,7 @@ private func trackNativeScopedObservationInCurrentContext(
         withObservationTracking(options: trackingOptions) {
             didApply = pipeline.apply(event: event)
         } onChange: { nativeEvent in
-            nativeEvent.cancel()
-            slot.emitChange()
+            emitNativeScopedObservationChange(nativeEvent, slot: slot)
         }
 
         return complete(shouldContinue: slot.isActive, didApply: didApply)
@@ -528,8 +520,7 @@ private func trackNativeScopedObservationInCurrentContext(
     withObservationTracking(options: trackingOptions) {
         didTrack = pipeline.track()
     } onChange: { nativeEvent in
-        nativeEvent.cancel()
-        slot.emitChange()
+        emitNativeScopedObservationChange(nativeEvent, slot: slot)
     }
 
     guard didTrack else {
@@ -543,11 +534,52 @@ private func trackNativeScopedObservationInCurrentContext(
 
 @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
 private func nativeTrackingOptions(for options: ObservationOptions) -> ObservationTracking.Options? {
-    guard options.contains(.didSet) else {
+    var trackingOptions = ObservationTracking.Options()
+    var hasOptions = false
+
+    if options.contains(.didSet) {
+        trackingOptions.insert(.didSet)
+        hasOptions = true
+    }
+    if options.contains(.deinit) {
+        trackingOptions.insert(.deinit)
+        hasOptions = true
+    }
+
+    guard hasOptions else {
         return nil
     }
 
-    return .didSet
+    return trackingOptions
+}
+
+@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+private func emitNativeScopedObservationChange(
+    _ nativeEvent: borrowing ObservationTracking.Event,
+    slot: ObservationScopeSlot
+) {
+    let kind = nativeScopedObservationEventKind(for: nativeEvent.kind)
+    nativeEvent.cancel()
+
+    guard let kind else {
+        return
+    }
+
+    slot.emitChange(kind: kind)
+}
+
+@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+private func nativeScopedObservationEventKind(
+    for nativeKind: ObservationTracking.Event.Kind
+) -> ObservationEvent.Kind? {
+    if nativeKind == .didSet {
+        return .didSet
+    }
+    if nativeKind == .deinit {
+        return .deinit
+    }
+
+    return nil
 }
 
 private var shouldForceLegacyScopedObservation: Bool {
@@ -574,15 +606,15 @@ private func runLegacyScopedObservationLoop(
             break
         }
 
-        guard let changeKind else {
+        guard changeKind != nil else {
             break
         }
 
-        guard await slot.waitForChange() else {
+        guard let nextKind = await slot.waitForChange() else {
             break
         }
 
-        kind = changeKind
+        kind = nextKind
     }
 
     slot.cancel()
@@ -607,24 +639,21 @@ func runInitialLegacyScopedObservationPass(
         return .finished
     }
 
-    guard let changeKind else {
+    guard changeKind != nil else {
         slot.cancel()
         return .finished
     }
 
-    return .waitingForChange(changeKind)
+    return .waitingForChange
 }
 
 func runLegacyScopedObservationLoopAfterInitialPass(
     options: ObservationOptions,
     isolation: (any Actor)?,
-    slot: ObservationScopeSlot,
-    nextKind: ObservationEvent.Kind
+    slot: ObservationScopeSlot
 ) async {
-    var kind = nextKind
-
     while !Task.isCancelled {
-        guard await slot.waitForChange() else {
+        guard let kind = await slot.waitForChange() else {
             break
         }
 
@@ -639,11 +668,9 @@ func runLegacyScopedObservationLoopAfterInitialPass(
             break
         }
 
-        guard let changeKind else {
+        guard changeKind != nil else {
             break
         }
-
-        kind = changeKind
     }
 
     slot.cancel()
@@ -722,7 +749,7 @@ private func trackLegacyScopedObservationInCurrentContext(
                 didApply = pipeline.apply(event: event)
             }, didSet: { tracking in
                 cancelObservationTrackingIfAvailable(tracking)
-                slot.emitChange()
+                slot.emitChange(kind: .didSet)
             }) else {
                 return complete(shouldContinue: false, didApply: didApply)
             }
@@ -730,7 +757,7 @@ private func trackLegacyScopedObservationInCurrentContext(
             withObservationTracking {
                 didApply = pipeline.apply(event: event)
             } onChange: {
-                slot.emitChange()
+                slot.emitChange(kind: changeKind)
             }
         }
 
@@ -743,7 +770,7 @@ private func trackLegacyScopedObservationInCurrentContext(
             didTrack = pipeline.track()
         }, didSet: { tracking in
             cancelObservationTrackingIfAvailable(tracking)
-            slot.emitChange()
+            slot.emitChange(kind: .didSet)
         }) else {
             return complete(shouldContinue: false, didApply: didApply)
         }
@@ -751,7 +778,7 @@ private func trackLegacyScopedObservationInCurrentContext(
         withObservationTracking {
             didTrack = pipeline.track()
         } onChange: {
-            slot.emitChange()
+            slot.emitChange(kind: changeKind)
         }
     }
 
