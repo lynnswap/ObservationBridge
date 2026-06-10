@@ -15,6 +15,10 @@
 typedef void (*OBObservationTrackingCancelFunction)(
     const void *tracking __attribute__((swift_context))
 ) __attribute__((swiftcall));
+
+typedef void *(*OBObservationTrackingChangedFunction)(
+    const void *tracking __attribute__((swift_context))
+) __attribute__((swiftcall));
 #endif
 
 void OBObservationTrackingCancel(void *function, const void *tracking) {
@@ -23,5 +27,17 @@ void OBObservationTrackingCancel(void *function, const void *tracking) {
 #else
     (void)function;
     (void)tracking;
+#endif
+}
+
+// Returns the Optional<AnyKeyPath> payload of `ObservationTracking.changed`
+// as a single owned (+1) class pointer; NULL means nil.
+void *OBObservationTrackingChanged(void *function, const void *tracking) {
+#if OB_HAS_SWIFT_CONTEXT_CALL
+    return ((OBObservationTrackingChangedFunction)function)(tracking);
+#else
+    (void)function;
+    (void)tracking;
+    return 0;
 #endif
 }

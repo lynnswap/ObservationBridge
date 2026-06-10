@@ -37,23 +37,22 @@ observations.observe(model) { event, model in
 The callback body is the tracking body. Every observable property read from
 `model` inside the callback becomes part of the observation.
 
-When the callback needs to read additional state that should not trigger later
-deliveries, pass an explicit `tracking` closure. In that form, only observable
-properties read by `tracking` are tracked; `apply` still receives the event and
-owner for the initial and selected later deliveries.
+When the callback should react differently depending on which property changed,
+ask the event with `matches(_:)`. A coalesced pass can stand for multiple
+mutations; `matches` returns `true` for every key path that triggered the pass.
 
 ```swift
-observations.observe(model, tracking: { model in
-    _ = model.title
-    _ = model.count
-}) { event, model in
+observations.observe(model) { event, model in
     if event.kind == .initial {
         installViewsIfNeeded()
     }
 
     titleLabel.text = model.title
     countLabel.text = "\(model.count)"
-    cache.update(using: model.expensiveValue)
+
+    if event.kind == .initial || event.matches(\Model.count) {
+        cache.update(using: model.expensiveValue(for: model.count))
+    }
 }
 ```
 
@@ -103,8 +102,14 @@ delivery.cancel()
 observations.cancelAll()
 ```
 
-`ObservationEvent.matches(_:)` remains unavailable and is reserved for a later
-native matching phase.
+`ObservationEvent.matches(_:)` reports whether a pass was triggered by a
+mutation of the supplied key path, on every supported toolchain and OS.
+`.initial` and `.deinit` passes match nothing. When trigger key paths cannot be
+captured — backends that run without the tracking SPI, including `.deinit`-enabled
+observations on the native backend — `matches` conservatively returns `true` for
+every key path so callers never skip work for a mutation that did happen. Key
+paths carry no instance identity, so two tracked objects of the same type are
+indistinguishable.
 
 ## AsyncSequence Style
 
@@ -295,6 +300,8 @@ observations.observe(model) { _, model in
   callbacks.
 - `ObservationEvent` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
-- `ObservationEvent.matches(_:)` is reserved for a later native matching phase.
+- `ObservationEvent.matches(_:)` reports the key paths that triggered a pass.
+  The explicit `tracking:` observe overload has been removed: read the needed
+  properties in the callback and filter passes with `matches(_:)` instead.
 - Stream rate-limit and backend settings moved from `ObservationOptions` to
   `ObservationStreamOptions`.

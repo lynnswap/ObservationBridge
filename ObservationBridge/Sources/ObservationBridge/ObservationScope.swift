@@ -20,6 +20,8 @@ public final class ObservationScope: @unchecked Sendable {
     /// The callback body is the tracking body: every observable property read from `owner` inside
     /// `apply` becomes part of the observation. Calling the same observation again from the same
     /// call site replaces the existing pipeline so the new callback body is tracked immediately.
+    /// Use ``ObservationEvent/matches(_:)`` inside the callback to react selectively to the
+    /// key paths that triggered a pass.
     ///
     /// - Parameters:
     ///   - owner: The observable object whose properties are read by `apply`.
@@ -44,56 +46,6 @@ public final class ObservationScope: @unchecked Sendable {
             observationIsolation: apply.isolation ?? isolation,
             delivery: delivery,
             pipeline: TypedObservationScopeImplicitTrackingPipeline(apply),
-            _fileID: _fileID,
-            _line: _line,
-            _column: _column
-        )
-        delivery.bind(to: slot)
-        return delivery
-    }
-
-    /// Starts or replaces an owner-bound observation with explicit tracking dependencies.
-    ///
-    /// Only observable properties read from `owner` inside `tracking` become part of the
-    /// observation. Observable properties read by `apply` are not tracked by this observation.
-    /// Calling the same observation again from the same call site replaces the existing pipeline
-    /// so the new tracking body is tracked immediately.
-    ///
-    /// - Parameters:
-    ///   - owner: The observable object whose properties are read by `tracking` and `apply`.
-    ///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
-    ///   - tracking: The closure that reads the observable properties to track.
-    ///   - apply: The callback to run for the initial pass and selected subsequent events.
-    ///   - isolation: The actor isolation used to start the observation.
-    @discardableResult
-    public func observe<Owner: AnyObject & Observable>(
-        _ owner: Owner,
-        options: ObservationOptions = .didSet,
-        @_inheritActorContext tracking: @escaping @isolated(any) @Sendable (Owner) -> Void,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
-        isolation: isolated (any Actor)? = #isolation,
-        _fileID: StaticString = #fileID,
-        _line: UInt = #line,
-        _column: UInt = #column
-    ) -> ObservationDelivery {
-        let trackingIsolation = tracking.isolation ?? isolation
-        let applyIsolation = apply.isolation ?? isolation
-        let observationIsolation = resolveObservationIsolation(
-            trackingIsolation: trackingIsolation,
-            applyIsolation: applyIsolation
-        )
-
-        let delivery = ObservationDelivery()
-        let slot = installObservation(
-            owner: owner,
-            options: options,
-            startIsolation: isolation,
-            observationIsolation: observationIsolation,
-            delivery: delivery,
-            pipeline: TypedObservationScopeExplicitTrackingPipeline(
-                tracking: tracking,
-                apply: apply
-            ),
             _fileID: _fileID,
             _line: _line,
             _column: _column
@@ -173,19 +125,6 @@ public final class ObservationScope: @unchecked Sendable {
         )
     }
 
-    private func resolveObservationIsolation(
-        trackingIsolation: (any Actor)?,
-        applyIsolation: (any Actor)?
-    ) -> (any Actor)? {
-        let trackingActorID = observationScopeActorID(trackingIsolation)
-        let applyActorID = observationScopeActorID(applyIsolation)
-
-        if let trackingActorID, let applyActorID, trackingActorID != applyActorID {
-            preconditionFailure("Observation tracking and apply closures must use the same actor isolation.")
-        }
-
-        return applyIsolation ?? trackingIsolation
-    }
 }
 
 private struct ObservationScopeStorage {
@@ -291,6 +230,12 @@ private enum ObservationScopeSlotBatch {
     }
 }
 
+// Will/did-set events go through the continuous SPI backend on every OS so trigger key
+// paths can be captured for `ObservationEvent.matches(_:)` without an untracked window
+// between passes. The native `withObservationTracking(options:)` backend is used when
+// `.deinit` events are requested (dependency deinit cannot be observed any other way),
+// or as the did-set fallback when the SPI symbols are unavailable: the public native API
+// still observes did-set changes that the public legacy API cannot deliver.
 func runScopedObservationLoop(
     options: ObservationOptions,
     isolation: (any Actor)?,
@@ -298,7 +243,7 @@ func runScopedObservationLoop(
 ) async {
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
-       !shouldForceLegacyScopedObservation {
+       shouldUseNativeScopedObservation(for: options) {
         await runNativeScopedObservationLoop(
             options: options,
             isolation: isolation,
@@ -322,7 +267,7 @@ func runInitialScopedObservationPass(
 ) -> InitialScopedObservationResult {
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
-       !shouldForceLegacyScopedObservation {
+       shouldUseNativeScopedObservation(for: options) {
         return runInitialNativeScopedObservationPass(
             options: options,
             isolation: isolation,
@@ -345,7 +290,7 @@ func runScopedObservationLoopAfterInitialPass(
 ) async {
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
-       !shouldForceLegacyScopedObservation {
+       shouldUseNativeScopedObservation(for: options) {
         await runNativeScopedObservationLoopAfterInitialPass(
             options: options,
             isolation: isolation,
@@ -369,11 +314,11 @@ private func runNativeScopedObservationLoop(
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
-    var kind = ObservationEvent.Kind.initial
+    var pendingEvent = ObservationScopePendingEvent.initial
 
     while !Task.isCancelled {
         guard await trackNativeScopedObservation(
-            kind: kind,
+            event: pendingEvent,
             options: options,
             isolation: isolation,
             slot: slot
@@ -385,11 +330,11 @@ private func runNativeScopedObservationLoop(
             break
         }
 
-        guard let nextKind = await slot.waitForChange() else {
+        guard let nextEvent = await slot.waitForChange() else {
             break
         }
 
-        kind = nextKind
+        pendingEvent = nextEvent
     }
 
     slot.cancel()
@@ -402,7 +347,7 @@ private func runInitialNativeScopedObservationPass(
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
     let result = trackNativeScopedObservationInCurrentContext(
-        kind: .initial,
+        event: .initial,
         options: options,
         slot: slot
     )
@@ -428,12 +373,12 @@ private func runNativeScopedObservationLoopAfterInitialPass(
     slot: ObservationScopeSlot
 ) async {
     while !Task.isCancelled {
-        guard let kind = await slot.waitForChange() else {
+        guard let pendingEvent = await slot.waitForChange() else {
             break
         }
 
         guard await trackNativeScopedObservation(
-            kind: kind,
+            event: pendingEvent,
             options: options,
             isolation: isolation,
             slot: slot
@@ -452,14 +397,14 @@ private func runNativeScopedObservationLoopAfterInitialPass(
 
 @available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservation(
-    kind: ObservationEvent.Kind,
+    event pendingEvent: ObservationScopePendingEvent,
     options: ObservationOptions,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async -> Bool {
     let result = await withObservationIsolation(isolation: isolation) {
         trackNativeScopedObservationInCurrentContext(
-            kind: kind,
+            event: pendingEvent,
             options: options,
             slot: slot
         )
@@ -470,7 +415,7 @@ private func trackNativeScopedObservation(
 
 @available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservationInCurrentContext(
-    kind: ObservationEvent.Kind,
+    event pendingEvent: ObservationScopePendingEvent,
     options: ObservationOptions,
     slot: ObservationScopeSlot
 ) -> ScopedObservationTrackResult {
@@ -478,7 +423,7 @@ private func trackNativeScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    let event = makeScopedObservationEvent(kind: kind, slot: slot)
+    let event = makeScopedObservationEvent(pendingEvent, slot: slot)
 
     let delivery = slot.delivery
     guard delivery.beginDelivery() else {
@@ -506,30 +451,13 @@ private func trackNativeScopedObservationInCurrentContext(
     }
 
     var didApply = false
-    if pipeline.appliesInsideTracking {
-        withObservationTracking(options: trackingOptions) {
-            didApply = pipeline.apply(event: event)
-        } onChange: { nativeEvent in
-            emitNativeScopedObservationChange(nativeEvent, slot: slot)
-        }
-
-        return complete(shouldContinue: slot.isActive, didApply: didApply)
-    }
-
-    var didTrack = false
     withObservationTracking(options: trackingOptions) {
-        didTrack = pipeline.track()
+        didApply = pipeline.apply(event: event)
     } onChange: { nativeEvent in
         emitNativeScopedObservationChange(nativeEvent, slot: slot)
     }
 
-    guard didTrack else {
-        return complete(shouldContinue: false, didApply: false)
-    }
-
-    didApply = pipeline.apply(event: event)
-
-    return complete(shouldContinue: slot.isActive && didTrack, didApply: didApply)
+    return complete(shouldContinue: slot.isActive, didApply: didApply)
 }
 
 @available(anyAppleOS 27.0, *)
@@ -568,7 +496,11 @@ private func emitNativeScopedObservationChange(
         return
     }
 
-    slot.emitChange(kind: kind)
+    // The public native Event only answers per-candidate `matches` probes, so the trigger
+    // key path cannot be extracted here. Deinit passes are never key-path-triggered;
+    // will/did-set passes degrade to conservative `matches` results.
+    let triggers: ObservationEventTriggers = kind == .deinit ? .none : .unknown
+    slot.emitChange(kind: kind, triggers: triggers)
 }
 
 @available(anyAppleOS 27.0, *)
@@ -588,6 +520,19 @@ private func nativeScopedObservationEventKind(
     return nil
 }
 
+@available(anyAppleOS 27.0, *)
+private func shouldUseNativeScopedObservation(for options: ObservationOptions) -> Bool {
+    if shouldForceLegacyScopedObservation {
+        return false
+    }
+
+    if options.contains(.deinit) {
+        return true
+    }
+
+    return options.contains(.didSet) && !canUseObservationTrackingSPI
+}
+
 private var shouldForceLegacyScopedObservation: Bool {
     _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 }
 }
@@ -598,29 +543,29 @@ private func runLegacyScopedObservationLoop(
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
-    var kind = ObservationEvent.Kind.initial
+    var pendingEvent = ObservationScopePendingEvent.initial
 
     while !Task.isCancelled {
-        let changeKind = legacyChangeKind(for: options)
+        let mode = legacyTrackingMode(for: options)
 
         guard await trackLegacyScopedObservation(
-            kind: kind,
-            changeKind: changeKind,
+            event: pendingEvent,
+            mode: mode,
             isolation: isolation,
             slot: slot
         ) else {
             break
         }
 
-        guard changeKind != nil else {
+        guard mode != nil else {
             break
         }
 
-        guard let nextKind = await slot.waitForChange() else {
+        guard let nextEvent = await slot.waitForChange() else {
             break
         }
 
-        kind = nextKind
+        pendingEvent = nextEvent
     }
 
     slot.cancel()
@@ -631,11 +576,11 @@ func runInitialLegacyScopedObservationPass(
     isolation _: isolated (any Actor)?,
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
-    let changeKind = legacyChangeKind(for: options)
+    let mode = legacyTrackingMode(for: options)
 
     let result = trackLegacyScopedObservationInCurrentContext(
-        kind: .initial,
-        changeKind: changeKind,
+        event: .initial,
+        mode: mode,
         slot: slot
     )
     result.finishWithoutSampling()
@@ -645,7 +590,7 @@ func runInitialLegacyScopedObservationPass(
         return .finished
     }
 
-    guard changeKind != nil else {
+    guard mode != nil else {
         slot.cancel()
         return .finished
     }
@@ -659,22 +604,22 @@ func runLegacyScopedObservationLoopAfterInitialPass(
     slot: ObservationScopeSlot
 ) async {
     while !Task.isCancelled {
-        guard let kind = await slot.waitForChange() else {
+        guard let pendingEvent = await slot.waitForChange() else {
             break
         }
 
-        let changeKind = legacyChangeKind(for: options)
+        let mode = legacyTrackingMode(for: options)
 
         guard await trackLegacyScopedObservation(
-            kind: kind,
-            changeKind: changeKind,
+            event: pendingEvent,
+            mode: mode,
             isolation: isolation,
             slot: slot
         ) else {
             break
         }
 
-        guard changeKind != nil else {
+        guard mode != nil else {
             break
         }
     }
@@ -683,15 +628,15 @@ func runLegacyScopedObservationLoopAfterInitialPass(
 }
 
 private func trackLegacyScopedObservation(
-    kind: ObservationEvent.Kind,
-    changeKind: ObservationEvent.Kind?,
+    event pendingEvent: ObservationScopePendingEvent,
+    mode: LegacyScopedTrackingMode?,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async -> Bool {
     let result = await withObservationIsolation(isolation: isolation) {
         trackLegacyScopedObservationInCurrentContext(
-            kind: kind,
-            changeKind: changeKind,
+            event: pendingEvent,
+            mode: mode,
             slot: slot
         )
     }
@@ -713,15 +658,15 @@ private struct ScopedObservationTrackResult: Sendable {
 }
 
 private func trackLegacyScopedObservationInCurrentContext(
-    kind: ObservationEvent.Kind,
-    changeKind: ObservationEvent.Kind?,
+    event pendingEvent: ObservationScopePendingEvent,
+    mode: LegacyScopedTrackingMode?,
     slot: ObservationScopeSlot
 ) -> ScopedObservationTrackResult {
     guard let pipeline = slot.pipelineSnapshot() else {
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    let event = makeScopedObservationEvent(kind: kind, slot: slot)
+    let event = makeScopedObservationEvent(pendingEvent, slot: slot)
 
     let delivery = slot.delivery
     guard delivery.beginDelivery() else {
@@ -743,91 +688,95 @@ private func trackLegacyScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: shouldContinue, completion: nil)
     }
 
-    guard let changeKind else {
+    guard let mode else {
         let didApply = pipeline.apply(event: event)
         return complete(shouldContinue: slot.isActive, didApply: didApply)
     }
 
     var didApply = false
-    if pipeline.appliesInsideTracking {
-        if changeKind == .didSet {
-            guard withObservationTrackingDidSetIfAvailable({
-                didApply = pipeline.apply(event: event)
-            }, didSet: { tracking in
+    switch mode {
+    case .continuous(let kind):
+        let generation = slot.beginTrackingPass()
+        let handleFire: @Sendable (OpaqueObservationTracking) -> Void = { [weak slot] tracking in
+            guard let slot else {
                 cancelObservationTrackingIfAvailable(tracking)
-                slot.emitChange(kind: .didSet)
-            }) else {
-                return complete(shouldContinue: false, didApply: didApply)
+                return
             }
+
+            let directive = slot.acceptTrackingEvent(
+                generation: generation,
+                kind: kind,
+                triggers: .keyPath(observationTrackingChangedKeyPath(tracking))
+            )
+            if directive == .cancelTracking {
+                cancelObservationTrackingIfAvailable(tracking)
+            }
+        }
+
+        if kind == .didSet {
+            didApply = _withObservationTrackingDidSet({
+                pipeline.apply(event: event)
+            }, didSet: handleFire)
         } else {
-            withObservationTracking {
-                didApply = pipeline.apply(event: event)
-            } onChange: {
-                slot.emitChange(kind: changeKind)
-            }
+            didApply = _withObservationTrackingWillSet({
+                pipeline.apply(event: event)
+            }, willSet: handleFire)
         }
-
-        return complete(shouldContinue: slot.isActive, didApply: didApply)
-    }
-
-    var didTrack = false
-    if changeKind == .didSet {
-        guard withObservationTrackingDidSetIfAvailable({
-            didTrack = pipeline.track()
-        }, didSet: { tracking in
-            cancelObservationTrackingIfAvailable(tracking)
-            slot.emitChange(kind: .didSet)
-        }) else {
-            return complete(shouldContinue: false, didApply: didApply)
-        }
-    } else {
+        slot.markTrackingArmed(generation)
+    case .publicOneShot(let kind):
         withObservationTracking {
-            didTrack = pipeline.track()
+            didApply = pipeline.apply(event: event)
         } onChange: {
-            slot.emitChange(kind: changeKind)
+            slot.emitChange(kind: kind, triggers: .unknown)
         }
     }
 
-    guard didTrack else {
-        return complete(shouldContinue: false, didApply: false)
-    }
-
-    didApply = pipeline.apply(event: event)
-
-    return complete(shouldContinue: slot.isActive && didTrack, didApply: didApply)
+    return complete(shouldContinue: slot.isActive, didApply: didApply)
 }
 
-private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {
-    // Public `withObservationTracking` only exposes will-set timing. Without the hidden did-set
-    // SPI, avoid synthesizing an event that can re-read stale values while claiming `.didSet`.
+private enum LegacyScopedTrackingMode: Equatable {
+    /// SPI-based tracking that stays armed across passes and captures trigger key paths.
+    case continuous(ObservationEvent.Kind)
+
+    /// Public `withObservationTracking` fallback: one-shot, will-set timing, no key paths.
+    case publicOneShot(ObservationEvent.Kind)
+}
+
+private func legacyTrackingMode(for options: ObservationOptions) -> LegacyScopedTrackingMode? {
+    // Public `withObservationTracking` only exposes will-set timing. Without the hidden SPI,
+    // avoid synthesizing an event that can re-read stale values while claiming `.didSet`.
     if options.contains(.didSet) {
-        if canUseObservationTrackingDidSetSPI {
-            return .didSet
+        if canUseObservationTrackingSPI {
+            return .continuous(.didSet)
         }
 
         if options.contains(.willSet) {
-            return .willSet
+            return .publicOneShot(.willSet)
         }
 
         return nil
     }
 
     if options.contains(.willSet) {
-        return .willSet
+        if canUseObservationTrackingSPI {
+            return .continuous(.willSet)
+        }
+
+        return .publicOneShot(.willSet)
     }
 
     return nil
 }
 
 private func makeScopedObservationEvent(
-    kind: ObservationEvent.Kind,
+    _ pendingEvent: ObservationScopePendingEvent,
     slot: ObservationScopeSlot
 ) -> ObservationEvent {
-    guard kind == .initial else {
-        return ObservationEvent(kind: kind)
+    guard pendingEvent.kind == .initial else {
+        return ObservationEvent(kind: pendingEvent.kind, triggers: pendingEvent.triggers)
     }
 
-    return ObservationEvent(kind: kind) { [weak slot] in
+    return ObservationEvent(kind: pendingEvent.kind) { [weak slot] in
         slot?.cancel()
     }
 }
@@ -841,8 +790,8 @@ private func withObservationIsolation<T: Sendable>(
 }
 
 // `ObservationTracking` is hidden from the Swift 6.2 public interface even though the
-// didSet SPI passes it to this closure. Use a resilient imported value as the opaque
-// ABI carrier so Swift forwards the hidden value with the same indirect convention.
+// willSet/didSet SPIs pass it to these closures. Use a resilient imported value as the
+// opaque ABI carrier so Swift forwards the hidden value with the same indirect convention.
 private typealias OpaqueObservationTracking = URL
 
 @_weakLinked
@@ -852,40 +801,91 @@ private func _withObservationTrackingDidSet<T>(
     didSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
 ) -> T
 
+@_weakLinked
+@_silgen_name("$s11Observation04withA8Tracking_7willSetxxyXE_yAA0aC0VYbctlF")
+private func _withObservationTrackingWillSet<T>(
+    _ apply: () -> T,
+    willSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
+) -> T
+
 private let observationTrackingDidSetAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
+        .map { UInt(bitPattern: $0) }
+
+private let observationTrackingWillSetAddress: UInt? =
+    unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_7willSetxxyXE_yAA0aC0VYbctlF")
         .map { UInt(bitPattern: $0) }
 
 private let observationTrackingCancelAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
         .map { UInt(bitPattern: $0) }
 
-private var canUseObservationTrackingDidSetSPI: Bool {
+private let observationTrackingChangedAddress: UInt? =
+    unsafe lookupObservationSymbol("$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg")
+        .map { UInt(bitPattern: $0) }
+
+// `changed` is not required: when its getter is missing, continuous tracking still works
+// and events degrade to unknown triggers (conservative `matches`). `cancel` is required
+// because superseded trackings must be able to cancel themselves.
+private var canUseObservationTrackingSPI: Bool {
     if _ObservationScopeTesting.forcePublicDidSetFallback.withLock({ $0 }) {
+        return false
+    }
+    if _ObservationScopeTesting.forceContinuousTrackingSPIUnavailable.withLock({ $0 }) {
         return false
     }
 
     #if arch(arm64) || arch(x86_64)
-    return observationTrackingDidSetAddress != nil && observationTrackingCancelAddress != nil
+    return observationTrackingDidSetAddress != nil
+        && observationTrackingWillSetAddress != nil
+        && observationTrackingCancelAddress != nil
     #else
     return false
     #endif
 }
 
 enum _ObservationScopeTesting {
+    /// Forces the public-API fallback on every backend, including the native one.
     static let forcePublicDidSetFallback = Mutex(false)
+
+    /// Simulates missing SPI symbols while leaving the native backend available.
+    static let forceContinuousTrackingSPIUnavailable = Mutex(false)
 }
 
-private func withObservationTrackingDidSetIfAvailable(
-    _ apply: () -> Void,
-    didSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
-) -> Bool {
-    guard canUseObservationTrackingDidSetSPI else {
-        return false
+private func observationTrackingChangedKeyPath(
+    _ tracking: OpaqueObservationTracking
+) -> AnyKeyPath? {
+    guard
+        let observationTrackingChangedAddress,
+        let observationTrackingChangedFunction = unsafe UnsafeMutableRawPointer(
+            bitPattern: observationTrackingChangedAddress
+        )
+    else {
+        return nil
     }
 
-    _withObservationTrackingDidSet(apply, didSet: didSet)
-    return true
+    // The getter returns the Optional<AnyKeyPath> payload as a single owned (+1) pointer.
+    #if compiler(>=6.4)
+    return withUnsafePointer(to: tracking) { trackingPointer in
+        guard let rawKeyPath = unsafe OBObservationTrackingChanged(
+            observationTrackingChangedFunction,
+            trackingPointer
+        ) else {
+            return nil
+        }
+        return unsafe Unmanaged<AnyKeyPath>.fromOpaque(rawKeyPath).takeRetainedValue()
+    }
+    #else
+    return unsafe withUnsafePointer(to: tracking) { trackingPointer in
+        guard let rawKeyPath = unsafe OBObservationTrackingChanged(
+            observationTrackingChangedFunction,
+            trackingPointer
+        ) else {
+            return nil
+        }
+        return unsafe Unmanaged<AnyKeyPath>.fromOpaque(rawKeyPath).takeRetainedValue()
+    }
+    #endif
 }
 
 private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationTracking) {

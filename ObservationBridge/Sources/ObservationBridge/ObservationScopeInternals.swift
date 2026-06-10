@@ -91,21 +91,35 @@ enum InitialScopedObservationResult: Sendable {
 }
 
 protocol ObservationScopePipeline: Sendable {
-    var appliesInsideTracking: Bool { get }
-
     func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool
-    func track(owner: AnyObject) -> Bool
+}
+
+/// A change wake-up carried from registrar callbacks to the observation loop.
+struct ObservationScopePendingEvent: Sendable {
+    let kind: ObservationEvent.Kind
+    var triggers: ObservationEventTriggers
+
+    static let initial = ObservationScopePendingEvent(kind: .initial, triggers: .none)
+}
+
+/// What a registrar callback should do with its backing tracking after reporting a change.
+enum ObservationScopeTrackingDirective: Sendable {
+    /// The tracking is still current (or still covering an in-flight pass); keep it armed.
+    case keepTracking
+
+    /// The tracking was superseded or the slot is cancelled; the callback must cancel it.
+    case cancelTracking
 }
 
 private struct ObservationScopeWaiters: @unchecked Sendable {
-    private var first: CheckedContinuation<ObservationEvent.Kind?, Never>?
-    private var additional: [CheckedContinuation<ObservationEvent.Kind?, Never>]?
+    private var first: CheckedContinuation<ObservationScopePendingEvent?, Never>?
+    private var additional: [CheckedContinuation<ObservationScopePendingEvent?, Never>]?
 
     var isEmpty: Bool {
         first == nil
     }
 
-    mutating func append(_ continuation: CheckedContinuation<ObservationEvent.Kind?, Never>) {
+    mutating func append(_ continuation: CheckedContinuation<ObservationScopePendingEvent?, Never>) {
         guard first != nil else {
             first = continuation
             return
@@ -137,22 +151,22 @@ private struct ObservationScopeWaiters: @unchecked Sendable {
 
 private enum ObservationScopeWaiterBatch: @unchecked Sendable {
     case empty
-    case single(CheckedContinuation<ObservationEvent.Kind?, Never>)
+    case single(CheckedContinuation<ObservationScopePendingEvent?, Never>)
     case many(
-        CheckedContinuation<ObservationEvent.Kind?, Never>,
-        [CheckedContinuation<ObservationEvent.Kind?, Never>]
+        CheckedContinuation<ObservationScopePendingEvent?, Never>,
+        [CheckedContinuation<ObservationScopePendingEvent?, Never>]
     )
 
-    func resumeAll(returning kind: ObservationEvent.Kind?) {
+    func resumeAll(returning event: ObservationScopePendingEvent?) {
         switch self {
         case .empty:
             return
         case .single(let continuation):
-            continuation.resume(returning: kind)
+            continuation.resume(returning: event)
         case .many(let first, let additional):
-            first.resume(returning: kind)
+            first.resume(returning: event)
             for continuation in additional {
-                continuation.resume(returning: kind)
+                continuation.resume(returning: event)
             }
         }
     }
@@ -161,8 +175,6 @@ private enum ObservationScopeWaiterBatch: @unchecked Sendable {
 // Keep the `Owner` metatype out of slot/task/onChange captures. Swift does not treat
 // unconstrained class metatypes as Sendable, so the typed cast is confined to this invoker.
 struct TypedObservationScopeImplicitTrackingPipeline<Owner: AnyObject>: ObservationScopePipeline, @unchecked Sendable {
-    let appliesInsideTracking = true
-
     private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
 
     init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void) {
@@ -177,43 +189,6 @@ struct TypedObservationScopeImplicitTrackingPipeline<Owner: AnyObject>: Observat
         callObservationApply(applyCallback, event, owner)
         return true
     }
-
-    func track(owner _: AnyObject) -> Bool {
-        false
-    }
-}
-
-struct TypedObservationScopeExplicitTrackingPipeline<Owner: AnyObject>: ObservationScopePipeline, @unchecked Sendable {
-    let appliesInsideTracking = false
-
-    private let trackingCallback: @isolated(any) @Sendable (Owner) -> Void
-    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
-
-    init(
-        tracking: @escaping @isolated(any) @Sendable (Owner) -> Void,
-        apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
-    ) {
-        self.trackingCallback = tracking
-        self.applyCallback = apply
-    }
-
-    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool {
-        guard let owner = owner as? Owner else {
-            return false
-        }
-
-        callObservationApply(applyCallback, event, owner)
-        return true
-    }
-
-    func track(owner: AnyObject) -> Bool {
-        guard let owner = owner as? Owner else {
-            return false
-        }
-
-        callObservationTrack(trackingCallback, owner)
-        return true
-    }
 }
 
 // Shared by registrar callbacks, observation tasks, and explicit scope cancellation.
@@ -222,25 +197,34 @@ final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         weak var owner: AnyObject?
         var isCancelled = false
-        var pendingKinds: [ObservationEvent.Kind] = []
+        var pendingEvents: [ObservationScopePendingEvent] = []
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
 
-        mutating func appendPendingKind(_ kind: ObservationEvent.Kind) {
-            guard pendingKinds.last != kind else {
+        // Continuous-tracking bookkeeping. `trackingGeneration` is bumped when a tracking
+        // pass begins; `armedTrackingGeneration` catches up once that pass has installed
+        // its tracking. A superseded tracking keeps delivering while the replacement pass
+        // is still in flight (closing the re-arm window) and cancels itself on its first
+        // change after the replacement is armed.
+        var trackingGeneration: UInt64 = 0
+        var armedTrackingGeneration: UInt64 = 0
+
+        mutating func appendPendingEvent(_ event: ObservationScopePendingEvent) {
+            guard pendingEvents.last?.kind != event.kind else {
+                pendingEvents[pendingEvents.count - 1].triggers.formUnion(event.triggers)
                 return
             }
 
-            pendingKinds.append(kind)
+            pendingEvents.append(event)
         }
 
-        mutating func popPendingKind() -> ObservationEvent.Kind? {
-            guard !pendingKinds.isEmpty else {
+        mutating func popPendingEvent() -> ObservationScopePendingEvent? {
+            guard !pendingEvents.isEmpty else {
                 return nil
             }
 
-            return pendingKinds.removeFirst()
+            return pendingEvents.removeFirst()
         }
     }
 
@@ -248,16 +232,8 @@ final class ObservationScopeSlot: @unchecked Sendable {
         let owner: AnyObject
         let pipeline: any ObservationScopePipeline
 
-        var appliesInsideTracking: Bool {
-            pipeline.appliesInsideTracking
-        }
-
         func apply(event: borrowing ObservationEvent) -> Bool {
             pipeline.apply(event: event, owner: owner)
-        }
-
-        func track() -> Bool {
-            pipeline.track(owner: owner)
         }
     }
 
@@ -268,7 +244,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     private enum WaitSetup {
-        case changed(ObservationEvent.Kind)
+        case changed(ObservationScopePendingEvent)
         case terminated
         case wait
     }
@@ -373,7 +349,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             state.isCancelled = true
-            state.pendingKinds.removeAll(keepingCapacity: false)
+            state.pendingEvents.removeAll(keepingCapacity: false)
             state.owner = nil
             state.pipeline = nil
             let waiters = state.waiters.takeAll()
@@ -391,37 +367,92 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancellation.task?.cancel()
     }
 
-    func emitChange(kind: ObservationEvent.Kind) {
+    func emitChange(kind: ObservationEvent.Kind, triggers: ObservationEventTriggers) {
+        let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let waiters = state.withLock { state -> ObservationScopeWaiterBatch in
             guard !state.isCancelled else {
                 return .empty
             }
 
             if state.waiters.isEmpty {
-                state.appendPendingKind(kind)
+                state.appendPendingEvent(event)
                 return .empty
             }
 
             return state.waiters.takeAll()
         }
 
-        waiters.resumeAll(returning: kind)
+        waiters.resumeAll(returning: event)
     }
 
-    func waitForChange() async -> ObservationEvent.Kind? {
+    /// Marks the start of a tracking pass and returns its generation token.
+    func beginTrackingPass() -> UInt64 {
+        state.withLock { state in
+            state.trackingGeneration &+= 1
+            return state.trackingGeneration
+        }
+    }
+
+    /// Records that the pass for `generation` finished installing its tracking.
+    func markTrackingArmed(_ generation: UInt64) {
+        state.withLock { state in
+            guard generation == state.trackingGeneration else {
+                return
+            }
+
+            state.armedTrackingGeneration = generation
+        }
+    }
+
+    /// Reports a change observed by the tracking armed for `generation`.
+    ///
+    /// Superseded trackings keep delivering while the replacement pass has not finished
+    /// arming (their events are the only coverage for mutations made during that pass);
+    /// once the replacement is armed they are told to cancel and their event is dropped
+    /// because the armed tracking observes the same mutation.
+    func acceptTrackingEvent(
+        generation: UInt64,
+        kind: ObservationEvent.Kind,
+        triggers: ObservationEventTriggers
+    ) -> ObservationScopeTrackingDirective {
+        let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
+        let (directive, waiters) = state.withLock {
+            state -> (ObservationScopeTrackingDirective, ObservationScopeWaiterBatch) in
+            guard !state.isCancelled else {
+                return (.cancelTracking, .empty)
+            }
+
+            if generation != state.trackingGeneration,
+               state.armedTrackingGeneration == state.trackingGeneration {
+                return (.cancelTracking, .empty)
+            }
+
+            if state.waiters.isEmpty {
+                state.appendPendingEvent(event)
+                return (.keepTracking, .empty)
+            }
+
+            return (.keepTracking, state.waiters.takeAll())
+        }
+
+        waiters.resumeAll(returning: event)
+        return directive
+    }
+
+    func waitForChange() async -> ObservationScopePendingEvent? {
         let setup = state.withLock { state -> WaitSetup in
             if state.isCancelled {
                 return .terminated
             }
-            if let kind = state.popPendingKind() {
-                return .changed(kind)
+            if let event = state.popPendingEvent() {
+                return .changed(event)
             }
             return .wait
         }
 
         switch setup {
-        case .changed(let kind):
-            return kind
+        case .changed(let event):
+            return event
         case .terminated:
             return nil
         case .wait:
@@ -433,8 +464,8 @@ final class ObservationScopeSlot: @unchecked Sendable {
                 if state.isCancelled {
                     return .terminated
                 }
-                if let kind = state.popPendingKind() {
-                    return .changed(kind)
+                if let event = state.popPendingEvent() {
+                    return .changed(event)
                 }
                 state.waiters.append(continuation)
 
@@ -446,8 +477,8 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             switch immediate {
-            case .changed(let kind):
-                continuation.resume(returning: kind)
+            case .changed(let event):
+                continuation.resume(returning: event)
             case .terminated:
                 continuation.resume(returning: nil)
             case .wait:
@@ -485,14 +516,3 @@ private func callObservationApply<Owner: AnyObject>(
     unisolated(event, owner)
 }
 
-@inline(__always)
-private func callObservationTrack<Owner: AnyObject>(
-    _ track: @escaping @isolated(any) @Sendable (Owner) -> Void,
-    _ owner: Owner
-) {
-    let unisolated = unsafe unsafeBitCast(
-        track,
-        to: (@Sendable (Owner) -> Void).self
-    )
-    unisolated(owner)
-}
