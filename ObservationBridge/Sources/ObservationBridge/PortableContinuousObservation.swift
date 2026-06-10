@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Observation
 import Synchronization
-import _ObservationBridgePrivateABI
+import _ObservationBridgeRuntimeABI
 
 /// Starts a portable continuous observation.
 ///
