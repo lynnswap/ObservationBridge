@@ -82,9 +82,10 @@ observations.observe(model, options: []) { event, model in
 }
 ```
 
-`[]` delivers only `.initial`. `.didSet` delivers `.initial` plus later events.
-Swift 6.4 adds `.willSet`; Swift 6.4 with OS 27+ adds native `.deinit`.
-Availability-limited events are not synthesized by the legacy backend.
+`[]` delivers only `.initial`. `.didSet` and `.willSet` deliver `.initial` plus
+later events on every supported toolchain. Swift 6.4 with OS 27+ adds native
+`.deinit`. Availability-limited events are not synthesized by the legacy
+backend.
 
 `ObservationEvent` is borrowed for the callback lifetime. Save `event.kind` if
 later code needs the reason for the pass. `event.cancel()` cancels backing

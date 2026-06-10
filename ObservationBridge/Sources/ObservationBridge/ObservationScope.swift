@@ -805,20 +805,16 @@ private func legacyChangeKind(for options: ObservationOptions) -> ObservationEve
             return .didSet
         }
 
-        #if compiler(>=6.4)
         if options.contains(.willSet) {
             return .willSet
         }
-        #endif
 
         return nil
     }
 
-    #if compiler(>=6.4)
     if options.contains(.willSet) {
         return .willSet
     }
-    #endif
 
     return nil
 }

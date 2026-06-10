@@ -6,9 +6,7 @@ public struct ObservationEvent: ~Copyable {
     public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
         private enum RawValue: UInt8, Sendable {
             case initial
-            #if compiler(>=6.4)
             case willSet
-            #endif
             case didSet
             #if compiler(>=6.4)
             case `deinit`
@@ -22,12 +20,10 @@ public struct ObservationEvent: ~Copyable {
             Kind(rawValue: .initial)
         }
 
-        #if compiler(>=6.4)
         /// A pass triggered by a will-set event.
         public static var willSet: Kind {
             Kind(rawValue: .willSet)
         }
-        #endif
 
         /// A pass after observed state changed.
         public static var didSet: Kind {
@@ -46,10 +42,8 @@ public struct ObservationEvent: ~Copyable {
             switch rawValue {
             case .initial:
                 "initial"
-            #if compiler(>=6.4)
             case .willSet:
                 "willSet"
-            #endif
             case .didSet:
                 "didSet"
             #if compiler(>=6.4)

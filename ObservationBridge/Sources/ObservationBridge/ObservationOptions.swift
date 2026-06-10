@@ -88,10 +88,8 @@ public enum ObservationBackend: Sendable, Hashable {
 public struct ObservationOptions: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
-    #if compiler(>=6.4)
     /// Re-runs the observation callback for a will-set event.
     public static let willSet = ObservationOptions(rawValue: 1 << 0)
-    #endif
 
     /// Re-runs the observation callback after observed state changes.
     public static let didSet = ObservationOptions(rawValue: 1 << 1)

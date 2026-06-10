@@ -22,11 +22,11 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.initial != .didSet)
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
 
-        #if compiler(>=6.4)
         #expect(ObservationEvent.Kind.willSet == .willSet)
         #expect(ObservationEvent.Kind.didSet != .willSet)
         #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
 
+        #if compiler(>=6.4)
         if #available(anyAppleOS 27.0, *) {
             #expect(ObservationEvent.Kind.deinit == .deinit)
             #expect(ObservationEvent.Kind.didSet != .deinit)
@@ -262,7 +262,6 @@ final class ObservationScopeObserveTests {
         #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
 
-    #if compiler(>=6.4)
     @Test
     func willSetOptionDeliversWillSetPass() async {
         let model = CounterModel()
@@ -287,6 +286,7 @@ final class ObservationScopeObserveTests {
         #expect(kinds.snapshot() == [.initial, .willSet])
     }
 
+    #if compiler(>=6.4)
     @Test
     func nativeMutationOptionsPreferDidSetOverWillSet() async {
         guard #available(anyAppleOS 27.0, *) else {
@@ -315,6 +315,7 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
         #expect(kinds.snapshot() == [.initial, .didSet])
     }
+    #endif
 
     @Test
     func didSetFallbackUsesWillSetWhenRequested() async {
@@ -344,7 +345,6 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == .willSet)
         #expect(kinds.snapshot() == [.initial, .willSet])
     }
-    #endif
 
     @MainActor
     @Test
