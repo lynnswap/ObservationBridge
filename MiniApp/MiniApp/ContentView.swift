@@ -185,9 +185,8 @@ private struct StressRunResult: Sendable {
 private enum StressBenchmarkRunner {
     private typealias RegisterObservation = @Sendable (
         StressLockedCounterModel,
-        ObservationScope,
         @escaping @Sendable (Int) -> Void
-    ) -> Void
+    ) -> PortableObservationToken
 
     static func run(
         iterations: Int,
@@ -197,8 +196,8 @@ private enum StressBenchmarkRunner {
         let result = await runRandomizedObservationStress(
             iterations: iterations,
             seed: seed
-        ) { model, observations, onObserved in
-            observations.observe(model) { _, model in
+        ) { model, onObserved in
+            withPortableContinuousObservation { _ in
                 onObserved(model.value)
             }
         }
@@ -295,11 +294,10 @@ private enum StressBenchmarkRunner {
                         var rng = StressRNG(seed: workerSeed)
                         let model = StressLockedCounterModel()
                         let observedFlag = Mutex(false)
-                        let observations = ObservationScope()
-                        register(model, observations) { _ in
+                        let observation = register(model) { _ in
                             observedFlag.withLock { $0 = true }
                         }
-                        defer { observations.cancelAll() }
+                        defer { observation.cancel() }
 
                         for iteration in 0..<workerIterations {
                             if Task.isCancelled {

@@ -1,11 +1,58 @@
 import Synchronization
 
-/// Represents an owner-bound observation delivery pipeline.
+/// A token that keeps a portable continuous observation alive.
 ///
-/// `ObservationDelivery` is returned from `ObservationScope.observe(...)`.
-/// Tests can attach value samplers with ``values(_:)`` to wait for
-/// state rendered by the production callback after each delivery completes.
-public final class ObservationDelivery: Sendable {
+/// Cancel the token, or let it deinitialize, to stop the observation.
+/// Tests can attach value samplers with ``values(_:)`` to wait for state
+/// rendered by the production callback after each delivery completes.
+public final class PortableObservationToken: Sendable {
+    private let slot: ObservationScopeSlot
+    private let delivery: ObservationDelivery
+
+    /// Whether the backing observation is still active.
+    public var isActive: Bool {
+        delivery.isActive
+    }
+
+    var _isIdleAfterCompletedDeliveryForTesting: Bool {
+        delivery._isIdleAfterCompletedDeliveryForTesting
+    }
+
+    init(slot: ObservationScopeSlot, delivery: ObservationDelivery) {
+        self.slot = slot
+        self.delivery = delivery
+    }
+
+    deinit {
+        cancel()
+    }
+
+    /// Cancels the backing observation.
+    public func cancel() {
+        slot.cancel()
+    }
+
+    /// Samples a value after each completed observation delivery.
+    ///
+    /// If the observation has already delivered at least once, this samples the
+    /// current rendered state before returning. Previously delivered values are
+    /// not replayed.
+    public func values<Value: Sendable>(
+        @_inheritActorContext _ sample: @escaping @isolated(any) @Sendable () -> Value
+    ) async -> ObservedValues<Value> {
+        await delivery.values(sample)
+    }
+
+    /// Samples a value on an explicit actor after each completed observation delivery.
+    public func values<SampleIsolation: Actor, Value: Sendable>(
+        isolation actor: isolated SampleIsolation,
+        _ sample: @escaping @Sendable (isolated SampleIsolation) -> Value
+    ) async -> ObservedValues<Value> {
+        await delivery.values(isolation: actor, sample)
+    }
+}
+
+final class ObservationDelivery: Sendable {
     private struct State: Sendable {
         var isActive = true
         var hasDelivered = false

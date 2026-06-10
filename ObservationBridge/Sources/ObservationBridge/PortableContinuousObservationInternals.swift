@@ -1,85 +1,8 @@
-import Observation
 import Synchronization
 
 #if canImport(_ObservationBridgeBenchmarkSupport)
 internal import _ObservationBridgeBenchmarkSupport
 #endif
-
-struct ObservationScopeID: Equatable, Sendable {
-    let fileID: ObservationScopeFileID
-    let line: UInt
-    let column: UInt
-
-    init(fileID: StaticString, line: UInt, column: UInt) {
-        self.fileID = ObservationScopeFileID(fileID)
-        self.line = line
-        self.column = column
-    }
-}
-
-struct ObservationScopeDictionaryID: Hashable, Sendable {
-    private let fileID: ObservationScopeFileID
-    private let line: UInt
-    private let column: UInt
-    private let fileFingerprint: UInt64
-
-    init(_ id: ObservationScopeID) {
-        fileID = id.fileID
-        line = id.line
-        column = id.column
-        fileFingerprint = id.fileID.fingerprint
-    }
-
-    static func == (lhs: ObservationScopeDictionaryID, rhs: ObservationScopeDictionaryID) -> Bool {
-        lhs.line == rhs.line
-            && lhs.column == rhs.column
-            && lhs.fileID == rhs.fileID
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(fileID.count)
-        hasher.combine(fileFingerprint)
-        hasher.combine(line)
-        hasher.combine(column)
-    }
-}
-
-// The pointer comes from a `StaticString` literal and refers to process-lifetime
-// read-only storage. Equality still falls back to byte comparison for correctness.
-@safe struct ObservationScopeFileID: Equatable, @unchecked Sendable {
-    fileprivate let bytes: UnsafePointer<UInt8>
-    fileprivate let count: Int
-
-    init(_ value: StaticString) {
-        unsafe bytes = value.utf8Start
-        count = value.utf8CodeUnitCount
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.count == rhs.count else {
-            return false
-        }
-        if unsafe lhs.bytes == rhs.bytes {
-            return true
-        }
-
-        for index in 0..<lhs.count {
-            if unsafe lhs.bytes[index] != rhs.bytes[index] {
-                return false
-            }
-        }
-        return true
-    }
-
-    fileprivate var fingerprint: UInt64 {
-        var fingerprint: UInt64 = 14_695_981_039_346_656_037
-        for index in 0..<count {
-            fingerprint ^= UInt64(unsafe bytes[index])
-            fingerprint &*= 1_099_511_628_211
-        }
-        return fingerprint
-    }
-}
 
 func observationScopeActorID(_ actor: (any Actor)?) -> ObjectIdentifier? {
     actor.map { ObjectIdentifier($0 as AnyObject) }
@@ -91,7 +14,7 @@ enum InitialScopedObservationResult: Sendable {
 }
 
 protocol ObservationScopePipeline: Sendable {
-    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool
+    func apply(event: borrowing ObservationEvent) -> Bool
 }
 
 /// A change wake-up carried from registrar callbacks to the observation loop.
@@ -172,30 +95,23 @@ private enum ObservationScopeWaiterBatch: @unchecked Sendable {
     }
 }
 
-// Keep the `Owner` metatype out of slot/task/onChange captures. Swift does not treat
-// unconstrained class metatypes as Sendable, so the typed cast is confined to this invoker.
-struct TypedObservationScopeImplicitTrackingPipeline<Owner: AnyObject>: ObservationScopePipeline, @unchecked Sendable {
-    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
+struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unchecked Sendable {
+    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent) -> Void
 
-    init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void) {
+    init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void) {
         self.applyCallback = applyCallback
     }
 
-    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool {
-        guard let owner = owner as? Owner else {
-            return false
-        }
-
-        callObservationApply(applyCallback, event, owner)
+    func apply(event: borrowing ObservationEvent) -> Bool {
+        callObservationApply(applyCallback, event)
         return true
     }
 }
 
 // Shared by registrar callbacks, observation tasks, and explicit scope cancellation.
-// Mutable lifecycle state is protected by `state`; the typed owner pipeline is erased above.
+// Mutable lifecycle state is protected by `state`; the typed apply closure is erased above.
 final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
-        weak var owner: AnyObject?
         var isCancelled = false
         var pendingEvents: [ObservationScopePendingEvent] = []
         var waiters = ObservationScopeWaiters()
@@ -229,11 +145,10 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     struct PipelineSnapshot: @unchecked Sendable {
-        let owner: AnyObject
         let pipeline: any ObservationScopePipeline
 
         func apply(event: borrowing ObservationEvent) -> Bool {
-            pipeline.apply(event: event, owner: owner)
+            pipeline.apply(event: event)
         }
     }
 
@@ -261,7 +176,6 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     init(
-        owner: AnyObject,
         options: ObservationOptions,
         observationIsolation: (any Actor)?,
         delivery: ObservationDelivery,
@@ -270,7 +184,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
         self.options = options
         self.observationIsolation = observationIsolation
         self.delivery = delivery
-        state = Mutex(State(owner: owner, pipeline: pipeline))
+        state = Mutex(State(pipeline: pipeline))
     }
 
     deinit {
@@ -279,11 +193,11 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
     func pipelineSnapshot() -> PipelineSnapshot? {
         state.withLock { state in
-            guard !state.isCancelled, let owner = state.owner, let pipeline = state.pipeline else {
+            guard !state.isCancelled, let pipeline = state.pipeline else {
                 return nil
             }
 
-            return PipelineSnapshot(owner: owner, pipeline: pipeline)
+            return PipelineSnapshot(pipeline: pipeline)
         }
     }
 
@@ -350,7 +264,6 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
             state.isCancelled = true
             state.pendingEvents.removeAll(keepingCapacity: false)
-            state.owner = nil
             state.pipeline = nil
             let waiters = state.waiters.takeAll()
             let task = state.task
@@ -504,15 +417,13 @@ final class ObservationScopeSlot: @unchecked Sendable {
 }
 
 @inline(__always)
-private func callObservationApply<Owner: AnyObject>(
-    _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
-    _ event: borrowing ObservationEvent,
-    _ owner: Owner
+private func callObservationApply(
+    _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void,
+    _ event: borrowing ObservationEvent
 ) {
     let unisolated = unsafe unsafeBitCast(
         apply,
-        to: (@Sendable (borrowing ObservationEvent, Owner) -> Void).self
+        to: (@Sendable (borrowing ObservationEvent) -> Void).self
     )
-    unisolated(event, owner)
+    unisolated(event)
 }
-

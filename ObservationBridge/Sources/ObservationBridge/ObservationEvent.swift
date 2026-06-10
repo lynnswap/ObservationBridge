@@ -1,6 +1,6 @@
 import Observation
 
-/// The trigger key paths captured for a single owner-bound observation pass.
+/// The trigger key paths captured for a single portable observation pass.
 ///
 /// `AnyKeyPath` instances are immutable reference types, so sharing them across
 /// isolation domains is safe even though the type predates `Sendable`.
@@ -69,7 +69,7 @@ struct ObservationEventTriggers: @unchecked Sendable {
     }
 }
 
-/// Information about a single owner-bound observation pass.
+/// Information about a single portable observation pass.
 public struct ObservationEvent: ~Copyable {
     /// The reason the observation callback is running.
     public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {

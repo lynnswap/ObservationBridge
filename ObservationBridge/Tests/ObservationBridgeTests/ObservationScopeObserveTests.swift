@@ -36,6 +36,76 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func portableObservationStartsSynchronouslyAndTracksCallbackReads() async {
+        let model = CounterModel()
+        let rendered = RenderedValue(ScopePass(kind: .didSet, value: -1, isEnabled: false))
+
+        let token = withPortableContinuousObservation { event in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: model.isEnabled
+                )
+            )
+        }
+        defer { token.cancel() }
+        let passes = await token.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(rendered.value == ScopePass(kind: .initial, value: 0, isEnabled: false))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+
+        model.value = 1
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
+    }
+
+    @Test
+    func discardedPortableObservationTokenDoesNotKeepObserving() async {
+        let model = CounterModel()
+        let rendered = RenderedValue(-1)
+
+        _ = withPortableContinuousObservation { _ in
+            rendered.set(model.value)
+        }
+
+        #expect(rendered.value == 0)
+
+        model.value = 1
+        await Task.yield()
+        #expect(rendered.value == 0)
+    }
+
+    @Test
+    func portableObservationMatchesReportsTriggerKeyPaths() async {
+        let model = CounterModel()
+        let rendered = RenderedValue("")
+
+        let token = withPortableContinuousObservation { event in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        defer { token.cancel() }
+        let passes = await token.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+
+        model.secondaryValue = 2
+        #expect(await cursor.next() == "didSet:value:false:secondary:true")
+    }
+
+    @Test
     func observeReturnCanBeIgnoredWithoutCancellingObservation() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -560,13 +630,11 @@ final class ObservationScopeObserveTests {
             return
         }
 
-        let model = CounterModel()
         let slot = ObservationScopeSlot(
-            owner: model,
             options: [.willSet, .didSet, .deinit],
             observationIsolation: nil,
             delivery: ObservationDelivery(),
-            pipeline: TypedObservationScopeImplicitTrackingPipeline<CounterModel> { _, _ in }
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
         )
         defer { slot.cancel() }
 
@@ -1307,8 +1375,9 @@ final class ObservationScopeObserveTests {
         let result = await runRandomizedObservationStress(
             iterations: stressIterationCount(local: 20_000, ci: 200),
             seed: stressSeed(default: 0x26_00_00_00_00_00_00_01)
-        ) { model, observations, onObserved in
-            observations.observe(model) { _, model in
+        ) { model, onObserved in
+            withPortableContinuousObservation {
+                _ in
                 onObserved(model.value)
             }
         }
@@ -1349,11 +1418,11 @@ final class ObservationScopeObserveTests {
         let delivery = ObservationDelivery()
         let started = RenderedValue(false)
         let slot = ObservationScopeSlot(
-            owner: model,
             options: .didSet,
             observationIsolation: nil,
             delivery: delivery,
-            pipeline: TypedObservationScopeImplicitTrackingPipeline<CounterModel> { _, _ in
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in
+                _ = model.value
                 started.set(true)
             }
         )
@@ -1439,7 +1508,7 @@ final class ObservationScopeObserveTests {
     func ownerDeinitDoesNotCancelScopeOwnedDelivery() async {
         let observations = ObservationScope()
         let weakModel = WeakDeinitProbeModelBox()
-        var delivery: ObservationDelivery?
+        var delivery: PortableObservationToken?
 
         do {
             let model = DeinitProbeCounterModel {}
@@ -1555,7 +1624,7 @@ private enum ReplacementReadTarget {
 }
 
 private struct RenderedObservation<Value: Sendable>: Sendable {
-    let delivery: ObservationDelivery
+    let delivery: PortableObservationToken
     let values: ObservedValues<Value>
 }
 
@@ -1578,9 +1647,9 @@ private final class RenderedValue<Value: Sendable>: @unchecked Sendable {
 }
 
 private final class DeliveryCancellationProbe: @unchecked Sendable {
-    private let storage = Mutex<ObservationDelivery?>(nil)
+    private let storage = Mutex<PortableObservationToken?>(nil)
 
-    func set(_ delivery: ObservationDelivery) {
+    func set(_ delivery: PortableObservationToken) {
         storage.withLock { storedDelivery in
             storedDelivery = delivery
         }

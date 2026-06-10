@@ -4,230 +4,33 @@ import Observation
 import Synchronization
 import _ObservationBridgePrivateABI
 
-/// Owns owner-bound observations for an explicit lifecycle.
+/// Starts a portable continuous observation.
 ///
-/// Call `observe(...)` at lifecycle boundaries such as
-/// view setup or cell configuration. The scope cancels all stored observations when it is
-/// deallocated.
-public final class ObservationScope: @unchecked Sendable {
-    private let storage = Mutex(ObservationScopeStorage())
-
-    /// Creates an empty observation scope.
-    public init() {}
-
-    /// Starts or replaces an owner-bound observation.
-    ///
-    /// The callback body is the tracking body: every observable property read from `owner` inside
-    /// `apply` becomes part of the observation. Calling the same observation again from the same
-    /// call site replaces the existing pipeline so the new callback body is tracked immediately.
-    /// Use ``ObservationEvent/matches(_:)`` inside the callback to react selectively to the
-    /// key paths that triggered a pass.
-    ///
-    /// - Parameters:
-    ///   - owner: The observable object whose properties are read by `apply`.
-    ///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
-    ///   - apply: The callback to run for the initial pass and selected subsequent events.
-    ///   - isolation: The actor isolation used to start the observation.
-    @discardableResult
-    public func observe<Owner: AnyObject & Observable>(
-        _ owner: Owner,
-        options: ObservationOptions = .didSet,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
-        isolation: isolated (any Actor)? = #isolation,
-        _fileID: StaticString = #fileID,
-        _line: UInt = #line,
-        _column: UInt = #column
-    ) -> ObservationDelivery {
-        let delivery = ObservationDelivery()
-        let slot = installObservation(
-            owner: owner,
-            options: options,
-            startIsolation: isolation,
-            observationIsolation: apply.isolation ?? isolation,
-            delivery: delivery,
-            pipeline: TypedObservationScopeImplicitTrackingPipeline(apply),
-            _fileID: _fileID,
-            _line: _line,
-            _column: _column
-        )
-        delivery.bind(to: slot)
-        return delivery
-    }
-
-    /// Cancels every observation currently owned by the scope.
-    public func cancelAll() {
-        let currentSlots = storage.withLock { storage in
-            storage.takeAllSlots()
-        }
-
-        currentSlots.cancel()
-    }
-
-    deinit {
-        cancelAll()
-    }
-
-    @discardableResult
-    private func installObservation<Owner: AnyObject & Observable>(
-        owner: Owner,
-        options: ObservationOptions,
-        startIsolation: isolated (any Actor)?,
-        observationIsolation: (any Actor)?,
-        delivery: ObservationDelivery,
-        pipeline: any ObservationScopePipeline,
-        _fileID: StaticString,
-        _line: UInt,
-        _column: UInt
-    ) -> ObservationScopeSlot {
-        let cancellationGeneration = storage.withLock { storage in
-            storage.cancellationGeneration
-        }
-        let id = ObservationScopeID(
-            fileID: _fileID,
-            line: _line,
-            column: _column
-        )
-        let slot = makeObservationSlot(
-            owner: owner,
-            options: options,
-            isolation: observationIsolation,
-            delivery: delivery,
-            pipeline: pipeline
-        )
-        let insertion = storage.withLock { storage in
-            storage.install(
-                slot,
-                for: id,
-                expectedCancellationGeneration: cancellationGeneration
-            )
-        }
-        insertion.replacedSlot?.cancel()
-        if insertion.shouldCancelNewSlot {
-            slot.cancel()
-        }
-        insertion.slotToStart?.start(isolation: startIsolation)
-        return slot
-    }
-
-    private func makeObservationSlot<Owner: AnyObject & Observable>(
-        owner: Owner,
-        options: ObservationOptions,
-        isolation: (any Actor)?,
-        delivery: ObservationDelivery,
-        pipeline: any ObservationScopePipeline
-    ) -> ObservationScopeSlot {
-        ObservationScopeSlot(
-            owner: owner,
-            options: options,
-            observationIsolation: isolation,
-            delivery: delivery,
-            pipeline: pipeline
-        )
-    }
-
-}
-
-private struct ObservationScopeStorage {
-    var cancellationGeneration: UInt64 = 0
-    var singleID: ObservationScopeID?
-    var singleSlot: ObservationScopeSlot?
-    var slots: [ObservationScopeDictionaryID: ObservationScopeSlot]?
-
-    mutating func install(
-        _ slot: ObservationScopeSlot,
-        for id: ObservationScopeID,
-        expectedCancellationGeneration: UInt64
-    ) -> ObservationScopeInsertion {
-        guard cancellationGeneration == expectedCancellationGeneration else {
-            return ObservationScopeInsertion(
-                slotToStart: nil,
-                replacedSlot: nil,
-                shouldCancelNewSlot: true
-            )
-        }
-
-        if slots != nil {
-            let replacedSlot = slots!.updateValue(slot, forKey: ObservationScopeDictionaryID(id))
-            return ObservationScopeInsertion(
-                slotToStart: slot,
-                replacedSlot: replacedSlot,
-                shouldCancelNewSlot: false
-            )
-        }
-
-        if let currentID = singleID, let currentSlot = singleSlot {
-            if currentID == id {
-                singleSlot = slot
-                return ObservationScopeInsertion(
-                    slotToStart: slot,
-                    replacedSlot: currentSlot,
-                    shouldCancelNewSlot: false
-                )
-            }
-
-            slots = [
-                ObservationScopeDictionaryID(currentID): currentSlot,
-                ObservationScopeDictionaryID(id): slot,
-            ]
-            singleID = nil
-            singleSlot = nil
-            return ObservationScopeInsertion(
-                slotToStart: slot,
-                replacedSlot: nil,
-                shouldCancelNewSlot: false
-            )
-        }
-
-        singleID = id
-        singleSlot = slot
-        return ObservationScopeInsertion(
-            slotToStart: slot,
-            replacedSlot: nil,
-            shouldCancelNewSlot: false
-        )
-    }
-
-    mutating func takeAllSlots() -> ObservationScopeSlotBatch {
-        cancellationGeneration &+= 1
-
-        if let slot = singleSlot {
-            singleID = nil
-            singleSlot = nil
-            return .single(slot)
-        }
-
-        guard let currentSlots = slots else {
-            return .empty
-        }
-
-        slots = nil
-        return .many(Array(currentSlots.values))
-    }
-}
-
-private struct ObservationScopeInsertion {
-    let slotToStart: ObservationScopeSlot?
-    let replacedSlot: ObservationScopeSlot?
-    let shouldCancelNewSlot: Bool
-}
-
-private enum ObservationScopeSlotBatch {
-    case empty
-    case single(ObservationScopeSlot)
-    case many([ObservationScopeSlot])
-
-    func cancel() {
-        switch self {
-        case .empty:
-            return
-        case .single(let slot):
-            slot.cancel()
-        case .many(let slots):
-            for slot in slots {
-                slot.cancel()
-            }
-        }
-    }
+/// The callback body is the tracking body: every observable property read inside
+/// `apply` becomes part of the observation. The `.initial` pass runs synchronously
+/// when observation starts in the caller's current actor context.
+///
+/// - Parameters:
+///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
+///   - apply: The callback to run for the initial pass and selected subsequent events.
+///   - isolation: The actor isolation used to start the observation.
+/// - Returns: A token that keeps the observation alive until cancelled or deinitialized.
+public func withPortableContinuousObservation(
+    options: ObservationOptions = .didSet,
+    @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void,
+    isolation: isolated (any Actor)? = #isolation
+) -> PortableObservationToken {
+    let delivery = ObservationDelivery()
+    let slot = ObservationScopeSlot(
+        options: options,
+        observationIsolation: apply.isolation ?? isolation,
+        delivery: delivery,
+        pipeline: ObservationScopeImplicitTrackingPipeline(apply)
+    )
+    delivery.bind(to: slot)
+    let token = PortableObservationToken(slot: slot, delivery: delivery)
+    slot.start(isolation: isolation)
+    return token
 }
 
 // Will/did-set events go through the continuous SPI backend on every OS so trigger key

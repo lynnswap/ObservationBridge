@@ -4,7 +4,7 @@ ObservationBridge helps non-SwiftUI code consume `@Observable` state changes.
 
 It provides:
 
-- owner-bound callbacks through `ObservationScope`
+- a portable `withContinuousObservation`-style API for Swift 6.2+ deployment targets
 
 ## Requirements
 
@@ -12,17 +12,17 @@ It provides:
 - iOS 18+
 - macOS 15+
 
-## Owner-Bound Observation
+## Portable Continuous Observation
 
-Use `ObservationScope` as the lifecycle owner for UIKit/AppKit views, view
-controllers, cells, or other non-SwiftUI objects that render observable state.
+Use `withPortableContinuousObservation` where you would use Swift's
+`withContinuousObservation`, but need the same callback shape on older
+deployment targets. Keep the returned token alive for as long as the observation
+should run.
 
 ```swift
 import ObservationBridge
 
-let observations = ObservationScope()
-
-observations.observe(model) { event, model in
+let token = withPortableContinuousObservation { event in
     if event.kind == .initial {
         installViewsIfNeeded()
     }
@@ -33,15 +33,15 @@ observations.observe(model) { event, model in
 }
 ```
 
-The callback body is the tracking body. Every observable property read from
-`model` inside the callback becomes part of the observation.
+The callback body is the tracking body. Every observable property read inside
+the callback becomes part of the observation.
 
 When the callback should react differently depending on which property changed,
 ask the event with `matches(_:)`. A coalesced pass can stand for multiple
 mutations; `matches` returns `true` for every key path that triggered the pass.
 
 ```swift
-observations.observe(model) { event, model in
+let token = withPortableContinuousObservation { event in
     if event.kind == .initial {
         installViewsIfNeeded()
     }
@@ -49,8 +49,11 @@ observations.observe(model) { event, model in
     titleLabel.text = model.title
     countLabel.text = "\(model.count)"
 
-    if event.kind == .initial || event.matches(\Model.count) {
-        cache.update(using: model.expensiveValue(for: model.count))
+    if event.kind == .initial || event.matches(\Model.rows) {
+        applySnapshot(
+            model.rows,
+            animatingDifferences: event.kind != .initial
+        )
     }
 }
 ```
@@ -58,8 +61,8 @@ observations.observe(model) { event, model in
 ### Events
 
 Later event options follow Swift's `withContinuousObservation` semantics where
-available. `.initial` is the ObservationBridge-specific first pass, delivered
-synchronously when observation starts in the owner's current actor context.
+available. `.initial` is the portable API's first pass, delivered synchronously
+when observation starts in the caller's current actor context.
 
 `ObservationEvent.kind` describes why the callback is running:
 
@@ -71,11 +74,11 @@ synchronously when observation starts in the owner's current actor context.
 `ObservationOptions` controls which later events are delivered:
 
 ```swift
-observations.observe(model, options: .didSet) { event, model in
+let token = withPortableContinuousObservation(options: .didSet) { event in
     render(model)
 }
 
-observations.observe(model, options: []) { event, model in
+let initialOnlyToken = withPortableContinuousObservation(options: []) { event in
     renderOnce(model)
 }
 ```
@@ -89,16 +92,15 @@ backend.
 later code needs the reason for the pass. `event.cancel()` cancels backing
 tracking when one is available, including during the synchronous initial pass.
 
-Call `ObservationDelivery.cancel()` to stop one observation, or `cancelAll()` to
-tear down every observation owned by the scope:
+Call `PortableObservationToken.cancel()` to stop one observation. The token also
+cancels when it deinitializes:
 
 ```swift
-let delivery = observations.observe(model) { _, model in
+let token = withPortableContinuousObservation { _ in
     render(model)
 }
 
-delivery.cancel()
-observations.cancelAll()
+token.cancel()
 ```
 
 `ObservationEvent.matches(_:)` reports whether a pass was triggered by a
@@ -116,14 +118,14 @@ The APIs in this section are for tests. Production UIKit/AppKit rendering code
 should usually keep using the `Void` callback form shown above:
 
 ```swift
-observations.observe(model) { _, model in
+let token = withPortableContinuousObservation { _ in
     titleLabel.text = model.title
 }
 ```
 
-### Owner-Bound UI Rendering Timing
+### Native UI Rendering Timing
 
-Use `ObservationDelivery` when the behavior under test belongs to a native UI
+Use `PortableObservationToken` when the behavior under test belongs to a native UI
 owner: a view controller, view, cell, toolbar item owner, or AppKit controller
 that renders observable state into existing UI objects. Keep the production
 callback in the normal `Void` form, and attach a sampler that reads a small
@@ -135,11 +137,11 @@ struct RenderedState: Sendable, Equatable {
     var actionEnabled: Bool
 }
 
-let delivery = observations.observe(model) { _, model in
+let token = withPortableContinuousObservation { _ in
     renderNativeViews(from: model)
 }
 
-let renderedStates = await delivery.values {
+let renderedStates = await token.values {
     RenderedState(
         primaryText: primaryTextForTesting,
         actionEnabled: actionButton.isEnabled
@@ -160,7 +162,7 @@ does not prove the production callback has rendered. Pure model state changes
 should usually be tested directly against the model, without observing rendered
 UI delivery.
 
-`ObservationDelivery.cancel()` cancels the backing observation. `values { ... }`
+`PortableObservationToken.cancel()` cancels the backing observation. `values { ... }`
 returns an `ObservedValues<Value>` recorder for one sampled value stream.
 Awaiting `values { ... }` registers the sampler and, when the observation has
 already delivered once, samples the current rendered state before returning.
@@ -172,19 +174,42 @@ expects updates; call `cancel()` when the test no longer needs that sampled
 stream.
 
 The `timeout` on `ObservedValues` wait methods is only a test guard. It does not
-inject a clock into owner-bound observation delivery.
+inject a clock into portable observation delivery.
 
 ## Migration
+
+### Next
+
+These notes apply when upgrading from the `ObservationScope.observe` API.
+
+- `ObservationScope` and `.observe(model)` have been removed from the public
+  API. Use `withPortableContinuousObservation(options:apply:)` and keep the
+  returned `PortableObservationToken` alive.
+- The callback now matches Swift's `withContinuousObservation` shape. Read
+  observable values directly from the callback body instead of receiving a
+  `model` argument.
+- `ObservationDelivery` has been replaced by `PortableObservationToken`.
+  Attach test samplers with `token.values { ... }`.
+
+```swift
+let token = withPortableContinuousObservation { event in
+    titleLabel.text = model.title
+
+    if event.kind == .initial || event.matches(\Model.rows) {
+        applySnapshot(model.rows)
+    }
+}
+```
 
 ### v0.9.0
 
 These notes apply when upgrading from `v0.8.x` or earlier to `v0.9.0`.
 
-- Owner-bound observation now starts from `ObservationScope`. Replace
-  `model.observe(...).store(in: observations)` with
-  `observations.observe(model) { event, model in ... }`.
-- The callback body is now the tracking body. Read every observed property from
-  `model` inside the callback instead of passing key paths to `observe`.
+- Observation now starts from `withPortableContinuousObservation`. Replace
+  `model.observe(...).store(in: observations)` with a retained
+  `PortableObservationToken`.
+- The callback body is now the tracking body. Read every observed property
+  inside the callback instead of passing key paths to `observe`.
 - `ObservationRegistration` and `.store(in:)` have been removed without a
   compatibility shim.
 
@@ -198,31 +223,46 @@ model.observe(\.count) { value in
 After:
 
 ```swift
-observations.observe(model) { _, model in
-    countLabel.text = "\(model.count)"
+private var countObservation: PortableObservationToken?
+
+func bindCount() {
+    countObservation = withPortableContinuousObservation { _ in
+        countLabel.text = "\(model.count)"
+    }
+}
+
+deinit {
+    countObservation?.cancel()
 }
 ```
 
 - `observeTask` has been removed without a compatibility shim. For async work,
-  start a `Task` from `observe` after copying the values you need. Keep any
+  start a `Task` from the observation callback after copying the values you need. Keep any
   ordering, cancellation, backpressure, debounce, or throttle policy in the
   owner that starts that task.
 
 ```swift
-observations.observe(model) { _, model in
-    let count = model.count
-    Task {
-        await analytics.trackCount(count)
+private var countObservation: PortableObservationToken?
+
+func bindCountTracking() {
+    countObservation = withPortableContinuousObservation { _ in
+        let count = model.count
+        Task {
+            await analytics.trackCount(count)
+        }
     }
+}
+
+deinit {
+    countObservation?.cancel()
 }
 ```
 
 - `id:`, `ObservationScope.update(_:)`, and `ObservationScope.cancel(id:)` have
-  been removed. Use one `ObservationScope` per lifecycle owner and call
-  `cancelAll()` before rebinding a dynamic set of observations.
-- `ObservationOptions` is now an owner-bound event option set. Later event
-  options follow `withContinuousObservation`; use `[]` for initial-only
-  callbacks.
+  been removed. Keep and cancel the returned token before rebinding a dynamic
+  observation.
+- `ObservationOptions` is now a portable event option set. Later event options
+  follow `withContinuousObservation`; use `[]` for initial-only callbacks.
 - `ObservationEvent` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
 - `ObservationEvent.matches(_:)` reports the key paths that triggered a pass.

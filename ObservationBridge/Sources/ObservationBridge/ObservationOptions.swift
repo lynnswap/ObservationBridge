@@ -1,4 +1,4 @@
-/// Options for owner-bound observation callbacks.
+/// Options for portable continuous observation callbacks.
 public struct ObservationOptions: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
