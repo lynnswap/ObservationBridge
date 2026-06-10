@@ -61,7 +61,9 @@ observations.observe(model, tracking: { model in
 
 `ObservationEvent.kind` describes why the callback is running:
 
-- `.initial`: the first tracking pass
+- `.initial`: the first tracking pass. Unlike `withContinuousObservation`, this
+  is delivered synchronously when observation starts in the owner's current
+  actor context.
 - `.didSet`: a later pass after observed state changed
 
 `ObservationOptions` controls which later events are delivered:
