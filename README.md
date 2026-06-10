@@ -5,7 +5,6 @@ ObservationBridge helps non-SwiftUI code consume `@Observable` state changes.
 It provides:
 
 - owner-bound callbacks through `ObservationScope`
-- `AsyncSequence` streams through `ObservationBridge` / `makeObservationBridgeStream`
 
 ## Requirements
 
@@ -111,59 +110,6 @@ every key path so callers never skip work for a mutation that did happen. Key
 paths carry no instance identity, so two tracked objects of the same type are
 indistinguishable.
 
-## AsyncSequence Style
-
-Use `ObservationBridge` when async backpressure, iteration, or rate limiting is
-the natural fit.
-
-```swift
-let stream = ObservationBridge {
-    model.count
-}
-
-for await value in stream {
-    print(value)
-}
-```
-
-`makeObservationBridgeStream` is equivalent:
-
-```swift
-let stream = makeObservationBridgeStream {
-    model.count
-}
-```
-
-### Stream Options
-
-`ObservationStreamOptions` configures backend selection and rate limiting for
-stream observations.
-
-```swift
-let debounce = ObservationDebounce(interval: .milliseconds(250))
-
-let stream = ObservationBridge(
-    options: .rateLimit(.debounce(debounce))
-) {
-    model.count
-}
-```
-
-Available stream configuration:
-
-- `ObservationStreamOptions(rateLimit:backend:)`
-- `.rateLimit(ObservationRateLimit)`
-- `.legacyBackend` on iOS 26.0+ / macOS 26.0+
-- `ObservationDebounce(interval:tolerance:mode:)`
-- `ObservationThrottle(interval:mode:)`
-
-Backend notes:
-
-- automatic stream observations use the legacy `withObservationTracking` loop on Swift 6.2/6.3
-- native `withContinuousObservation` integration is reserved for Swift 6.4+
-- `.legacyBackend` keeps forcing the legacy backend after native support is added
-- non-`Sendable` stream values use the legacy backend
-
 ## Testing
 
 The APIs in this section are for tests. Production UIKit/AppKit rendering code
@@ -211,8 +157,8 @@ Sample rendered facts such as label text, enabled state, selected identifiers,
 row counts, accessibility values, presentation state, or native object identity.
 Do not install a second observation just to wait for the raw model value; that
 does not prove the production callback has rendered. Pure model state changes
-should usually be tested directly against the model, without going through
-`ObservationBridge`.
+should usually be tested directly against the model, without observing rendered
+UI delivery.
 
 `ObservationDelivery.cancel()` cancels the backing observation. `values { ... }`
 returns an `ObservedValues<Value>` recorder for one sampled value stream.
@@ -227,25 +173,6 @@ stream.
 
 The `timeout` on `ObservedValues` wait methods is only a test guard. It does not
 inject a clock into owner-bound observation delivery.
-
-### Stream Rate-Limit Timing
-
-For stream debounce or throttle tests, inject a `Clock` into the stream API
-instead:
-
-```swift
-let debounce = ObservationDebounce(interval: .milliseconds(250))
-
-let stream = makeObservationBridgeStream(
-    options: .rateLimit(.debounce(debounce)),
-    clock: testClock
-) {
-    model.title
-}
-```
-
-That `clock:` controls stream rate-limit timing only. It is separate from
-`ObservedValues` timeouts and from the owner-bound `observe` callback pipeline.
 
 ## Migration
 
@@ -276,9 +203,10 @@ observations.observe(model) { _, model in
 }
 ```
 
-- `observeTask` has been removed without a compatibility shim. For simple
-  fire-and-forget work, start a `Task` from `observe` after copying the values
-  you need.
+- `observeTask` has been removed without a compatibility shim. For async work,
+  start a `Task` from `observe` after copying the values you need. Keep any
+  ordering, cancellation, backpressure, debounce, or throttle policy in the
+  owner that starts that task.
 
 ```swift
 observations.observe(model) { _, model in
@@ -289,9 +217,6 @@ observations.observe(model) { _, model in
 }
 ```
 
-- If ordering, cancellation, or backpressure matter, use `ObservationBridge` or
-  `makeObservationBridgeStream` instead of recreating the old `observeTask`
-  queueing behavior.
 - `id:`, `ObservationScope.update(_:)`, and `ObservationScope.cancel(id:)` have
   been removed. Use one `ObservationScope` per lifecycle owner and call
   `cancelAll()` before rebinding a dynamic set of observations.
@@ -303,5 +228,3 @@ observations.observe(model) { _, model in
 - `ObservationEvent.matches(_:)` reports the key paths that triggered a pass.
   The explicit `tracking:` observe overload has been removed: read the needed
   properties in the callback and filter passes with `matches(_:)` instead.
-- Stream rate-limit and backend settings moved from `ObservationOptions` to
-  `ObservationStreamOptions`.

@@ -37,18 +37,6 @@ func stressIterationCount(local: Int, ci: Int) -> Int {
     ProcessInfo.processInfo.environment["CI"] == "true" ? ci : local
 }
 
-func legacyOptionsForCurrentRuntime(
-    _ additional: ObservationStreamOptions = ObservationStreamOptions()
-) -> ObservationStreamOptions {
-    if #available(iOS 26.0, macOS 26.0, *) {
-        return ObservationStreamOptions(
-            rateLimit: additional.rateLimit,
-            backend: .legacy
-        )
-    }
-    return additional
-}
-
 actor StressFailureRecorder {
     private var firstFailureMessage: String?
 

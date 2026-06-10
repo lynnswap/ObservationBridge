@@ -14,19 +14,6 @@ final class BenchmarkCounterModel: @unchecked Sendable {
     var value = 0
 }
 
-@Observable
-final class BenchmarkPayloadModel: @unchecked Sendable {
-    var payload = BenchmarkPayload(value: 0)
-}
-
-final class BenchmarkPayload {
-    let value: Int
-
-    init(value: Int) {
-        self.value = value
-    }
-}
-
 final class BenchmarkSink: @unchecked Sendable {
     private var storage = 0
 
@@ -139,8 +126,6 @@ enum BenchmarkCase: String, CaseIterable {
     #if canImport(_ObservationBridgeBenchmarkSupport)
     case scopeChangeRuntimeActivity
     #endif
-    case streamConstructAndFirstValue
-    case nonSendableStreamConstructAndFirstValue
 }
 
 struct BenchmarkConfiguration {
@@ -202,14 +187,11 @@ struct RuntimeActivitySnapshot: Encodable {
 
 enum BenchmarkError: Error, CustomStringConvertible {
     case invalidArgument(String)
-    case streamEnded(String)
     case timeout(String)
 
     var description: String {
         switch self {
         case .invalidArgument(let message):
-            message
-        case .streamEnded(let message):
             message
         case .timeout(let message):
             message
@@ -298,12 +280,6 @@ enum ObservationBridgeBenchmarks {
         case .scopeChangeRuntimeActivity:
             return try await runScopeChangeRuntimeActivity(iterations: iterations)
         #endif
-        case .streamConstructAndFirstValue:
-            return BenchmarkExecutionResult(checksum: try await runStreamConstructAndFirstValue(iterations: iterations))
-        case .nonSendableStreamConstructAndFirstValue:
-            return BenchmarkExecutionResult(
-                checksum: try await runNonSendableStreamConstructAndFirstValue(iterations: iterations)
-            )
         }
     }
 
@@ -422,46 +398,6 @@ enum ObservationBridgeBenchmarks {
         )
     }
     #endif
-
-    @inline(never)
-    private static func runStreamConstructAndFirstValue(iterations: Int) async throws -> Int {
-        let sink = BenchmarkSink()
-
-        for index in 0..<iterations {
-            let model = BenchmarkCounterModel()
-            model.value = index
-            let stream = makeObservationBridgeStream {
-                model.value
-            }
-            var iterator = stream.makeAsyncIterator()
-            guard let value = await iterator.next() else {
-                throw BenchmarkError.streamEnded("stream ended before initial value")
-            }
-            sink.record(value)
-        }
-
-        return sink.value
-    }
-
-    @inline(never)
-    private static func runNonSendableStreamConstructAndFirstValue(iterations: Int) async throws -> Int {
-        let sink = BenchmarkSink()
-
-        for index in 0..<iterations {
-            let model = BenchmarkPayloadModel()
-            model.payload = BenchmarkPayload(value: index)
-            let stream = makeObservationBridgeStream {
-                model.payload
-            }
-            var iterator = stream.makeAsyncIterator()
-            guard let payload = await iterator.next() else {
-                throw BenchmarkError.streamEnded("non-Sendable stream ended before initial value")
-            }
-            sink.record(payload.value)
-        }
-
-        return sink.value
-    }
 
     private static func emit(
         _ result: BenchmarkResult,
