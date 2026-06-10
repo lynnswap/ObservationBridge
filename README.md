@@ -59,14 +59,16 @@ observations.observe(model, tracking: { model in
 
 ### Events
 
+Later event options follow Swift's `withContinuousObservation` semantics where
+available. `.initial` is the ObservationBridge-specific first pass, delivered
+synchronously when observation starts in the owner's current actor context.
+
 `ObservationEvent.kind` describes why the callback is running:
 
-- `.initial`: the first tracking pass. Unlike `withContinuousObservation`, this
-  is delivered synchronously when observation starts in the owner's current
-  actor context.
-- `.didSet`: a later pass after observed state changed
-- `.deinit`: a later pass after a tracked observable dependency is deinitialized
-  on the Swift 6.4 native backend for OS 27+
+- `.initial`
+- `.willSet`
+- `.didSet`
+- `.deinit`
 
 `ObservationOptions` controls which later events are delivered:
 
@@ -80,10 +82,9 @@ observations.observe(model, options: []) { event, model in
 }
 ```
 
-`[]` delivers only `.initial`. `.didSet` delivers `.initial` plus subsequent
-change-triggered passes. `.deinit` is available on Swift 6.4 with OS 27+ and
-is not synthesized by the legacy backend. `.willSet` remains unavailable until
-ObservationBridge can preserve native about-to-change timing.
+`[]` delivers only `.initial`. `.didSet` delivers `.initial` plus later events.
+Swift 6.4 adds `.willSet`; Swift 6.4 with OS 27+ adds native `.deinit`.
+Availability-limited events are not synthesized by the legacy backend.
 
 `ObservationEvent` is borrowed for the callback lifetime. Save `event.kind` if
 later code needs the reason for the pass. `event.cancel()` cancels backing
@@ -288,9 +289,9 @@ observations.observe(model) { _, model in
 - `id:`, `ObservationScope.update(_:)`, and `ObservationScope.cancel(id:)` have
   been removed. Use one `ObservationScope` per lifecycle owner and call
   `cancelAll()` before rebinding a dynamic set of observations.
-- `ObservationOptions` is now an owner-bound event option set. Use `.didSet` for
-  initial + subsequent callbacks, `.deinit` on Swift 6.4 with OS 27+ for tracked
-  dependency teardown, or `[]` for initial-only callbacks.
+- `ObservationOptions` is now an owner-bound event option set. Later event
+  options follow `withContinuousObservation`; use `[]` for initial-only
+  callbacks.
 - `ObservationEvent` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
 - `ObservationEvent.matches(_:)` is reserved for a later native matching phase.

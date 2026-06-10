@@ -78,8 +78,13 @@ final class BackendResolutionTests {
         #expect(!ObservationOptions().contains(.didSet))
 
         #if compiler(>=6.4)
+        let willSetOptions: ObservationOptions = [.willSet, .didSet]
+        #expect(willSetOptions.contains(.willSet))
+        #expect(willSetOptions.contains(.didSet))
+
         if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
-            let deinitOptions: ObservationOptions = [.didSet, .deinit]
+            let deinitOptions: ObservationOptions = [.willSet, .didSet, .deinit]
+            #expect(deinitOptions.contains(.willSet))
             #expect(deinitOptions.contains(.didSet))
             #expect(deinitOptions.contains(.deinit))
         }

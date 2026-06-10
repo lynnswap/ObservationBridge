@@ -23,6 +23,10 @@ final class ObservationScopeObserveTests {
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
 
         #if compiler(>=6.4)
+        #expect(ObservationEvent.Kind.willSet == .willSet)
+        #expect(ObservationEvent.Kind.didSet != .willSet)
+        #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
+
         if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
             #expect(ObservationEvent.Kind.deinit == .deinit)
             #expect(ObservationEvent.Kind.didSet != .deinit)
@@ -258,6 +262,90 @@ final class ObservationScopeObserveTests {
         #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
 
+    #if compiler(>=6.4)
+    @Test
+    func willSetOptionDeliversWillSetPass() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: .willSet) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .willSet)
+        #expect(kinds.snapshot() == [.initial, .willSet])
+    }
+
+    @Test
+    func nativeMutationOptionsPreferDidSetOverWillSet() async {
+        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.willSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .didSet)
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(kinds.snapshot() == [.initial, .didSet])
+    }
+
+    @Test
+    func didSetFallbackUsesWillSetWhenRequested() async {
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .willSet)
+        #expect(kinds.snapshot() == [.initial, .willSet])
+    }
+    #endif
+
     @MainActor
     @Test
     func didSetTrackingIsCancelledAfterEachChange() async {
@@ -417,17 +505,20 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let slot = ObservationScopeSlot(
             owner: model,
-            options: [.didSet, .deinit],
+            options: [.willSet, .didSet, .deinit],
             observationIsolation: nil,
             delivery: ObservationDelivery(),
             pipeline: TypedObservationScopeImplicitTrackingPipeline<CounterModel> { _, _ in }
         )
         defer { slot.cancel() }
 
+        slot.emitChange(kind: .willSet)
+        slot.emitChange(kind: .willSet)
         slot.emitChange(kind: .didSet)
         slot.emitChange(kind: .didSet)
         slot.emitChange(kind: .deinit)
 
+        #expect(await slot.waitForChange() == .willSet)
         #expect(await slot.waitForChange() == .didSet)
         #expect(await slot.waitForChange() == .deinit)
     }

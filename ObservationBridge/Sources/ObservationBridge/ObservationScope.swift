@@ -540,6 +540,9 @@ private func nativeTrackingOptions(for options: ObservationOptions) -> Observati
     if options.contains(.didSet) {
         trackingOptions.insert(.didSet)
         hasOptions = true
+    } else if options.contains(.willSet) {
+        trackingOptions.insert(.willSet)
+        hasOptions = true
     }
     if options.contains(.deinit) {
         trackingOptions.insert(.deinit)
@@ -574,6 +577,9 @@ private func nativeScopedObservationEventKind(
 ) -> ObservationEvent.Kind? {
     if nativeKind == .didSet {
         return .didSet
+    }
+    if nativeKind == .willSet {
+        return .willSet
     }
     if nativeKind == .deinit {
         return .deinit
@@ -794,11 +800,27 @@ private func trackLegacyScopedObservationInCurrentContext(
 private func legacyChangeKind(for options: ObservationOptions) -> ObservationEvent.Kind? {
     // Public `withObservationTracking` only exposes will-set timing. Without the hidden did-set
     // SPI, avoid synthesizing an event that can re-read stale values while claiming `.didSet`.
-    guard options.contains(.didSet), canUseObservationTrackingDidSetSPI else {
+    if options.contains(.didSet) {
+        if canUseObservationTrackingDidSetSPI {
+            return .didSet
+        }
+
+        #if compiler(>=6.4)
+        if options.contains(.willSet) {
+            return .willSet
+        }
+        #endif
+
         return nil
     }
 
-    return .didSet
+    #if compiler(>=6.4)
+    if options.contains(.willSet) {
+        return .willSet
+    }
+    #endif
+
+    return nil
 }
 
 private func makeScopedObservationEvent(

@@ -23,8 +23,7 @@ public struct ObservationEvent: ~Copyable {
         }
 
         #if compiler(>=6.4)
-        /// A pass triggered before a tracked property mutation.
-        @available(*, unavailable, message: "ObservationEvent.Kind.willSet is reserved for the Swift 6.4 native backend.")
+        /// A pass triggered by a will-set event.
         public static var willSet: Kind {
             Kind(rawValue: .willSet)
         }

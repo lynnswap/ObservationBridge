@@ -89,8 +89,7 @@ public struct ObservationOptions: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
     #if compiler(>=6.4)
-    /// Re-runs the observation callback when observed state is about to change.
-    @available(*, unavailable, message: "ObservationOptions.willSet is reserved for the Swift 6.4 native backend.")
+    /// Re-runs the observation callback for a will-set event.
     public static let willSet = ObservationOptions(rawValue: 1 << 0)
     #endif
 
