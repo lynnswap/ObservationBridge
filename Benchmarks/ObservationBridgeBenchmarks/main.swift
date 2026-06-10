@@ -14,19 +14,6 @@ final class BenchmarkCounterModel: @unchecked Sendable {
     var value = 0
 }
 
-@Observable
-final class BenchmarkPayloadModel: @unchecked Sendable {
-    var payload = BenchmarkPayload(value: 0)
-}
-
-final class BenchmarkPayload {
-    let value: Int
-
-    init(value: Int) {
-        self.value = value
-    }
-}
-
 final class BenchmarkSink: @unchecked Sendable {
     private var storage = 0
 
@@ -134,17 +121,14 @@ private enum WaiterRegistrationHooks {
 #endif
 
 enum BenchmarkCase: String, CaseIterable {
-    case scopeSetupTeardown
-    case scopeReplaceSameCallsite
+    case portableSetupTeardown
     #if canImport(_ObservationBridgeBenchmarkSupport)
-    case scopeChangeRuntimeActivity
+    case portableChangeRuntimeActivity
     #endif
-    case streamConstructAndFirstValue
-    case nonSendableStreamConstructAndFirstValue
 }
 
 struct BenchmarkConfiguration {
-    var selectedCases: [BenchmarkCase] = [.scopeSetupTeardown]
+    var selectedCases: [BenchmarkCase] = [.portableSetupTeardown]
     var iterations = 100_000
     var warmupIterations = 1_000
     var runs = 5
@@ -202,14 +186,11 @@ struct RuntimeActivitySnapshot: Encodable {
 
 enum BenchmarkError: Error, CustomStringConvertible {
     case invalidArgument(String)
-    case streamEnded(String)
     case timeout(String)
 
     var description: String {
         switch self {
         case .invalidArgument(let message):
-            message
-        case .streamEnded(let message):
             message
         case .timeout(let message):
             message
@@ -290,92 +271,50 @@ enum ObservationBridgeBenchmarks {
         iterations: Int
     ) async throws -> BenchmarkExecutionResult {
         switch benchmarkCase {
-        case .scopeSetupTeardown:
-            return BenchmarkExecutionResult(checksum: runScopeSetupTeardown(iterations: iterations))
-        case .scopeReplaceSameCallsite:
-            return BenchmarkExecutionResult(checksum: runScopeReplaceSameCallsite(iterations: iterations))
+        case .portableSetupTeardown:
+            return BenchmarkExecutionResult(checksum: runPortableSetupTeardown(iterations: iterations))
         #if canImport(_ObservationBridgeBenchmarkSupport)
-        case .scopeChangeRuntimeActivity:
-            return try await runScopeChangeRuntimeActivity(iterations: iterations)
+        case .portableChangeRuntimeActivity:
+            return try await runPortableChangeRuntimeActivity(iterations: iterations)
         #endif
-        case .streamConstructAndFirstValue:
-            return BenchmarkExecutionResult(checksum: try await runStreamConstructAndFirstValue(iterations: iterations))
-        case .nonSendableStreamConstructAndFirstValue:
-            return BenchmarkExecutionResult(
-                checksum: try await runNonSendableStreamConstructAndFirstValue(iterations: iterations)
-            )
         }
     }
 
     @inline(never)
-    private static func runScopeSetupTeardown(iterations: Int) -> Int {
+    private static func runPortableSetupTeardown(iterations: Int) -> Int {
         let sink = BenchmarkSink()
 
         for index in 0..<iterations {
             let model = BenchmarkCounterModel()
             model.value = index
-            let observations = ObservationScope()
-            observations.observe(model, options: []) { _, model in
+            let token = withPortableContinuousObservation(options: []) { _ in
                 sink.record(model.value)
             }
-            observations.cancelAll()
+            token.cancel()
         }
 
         return sink.value
-    }
-
-    @inline(never)
-    private static func runScopeReplaceSameCallsite(iterations: Int) -> Int {
-        let model = BenchmarkCounterModel()
-        let observations = ObservationScope()
-        let sink = BenchmarkSink()
-        defer {
-            observations.cancelAll()
-        }
-
-        for index in 0..<iterations {
-            model.value = index
-            installReplacingObservation(
-                model: model,
-                observations: observations,
-                sink: sink
-            )
-        }
-
-        return sink.value
-    }
-
-    @inline(never)
-    private static func installReplacingObservation(
-        model: BenchmarkCounterModel,
-        observations: ObservationScope,
-        sink: BenchmarkSink
-    ) {
-        observations.observe(model) { _, model in
-            sink.record(model.value)
-        }
     }
 
     #if canImport(_ObservationBridgeBenchmarkSupport)
     @inline(never)
-    private static func runScopeChangeRuntimeActivity(
+    private static func runPortableChangeRuntimeActivity(
         iterations: Int
     ) async throws -> BenchmarkExecutionResult {
         let model = BenchmarkCounterModel()
         model.value = -1
-        let observations = ObservationScope()
         let recorder = ChangeDeliveryRecorder()
-        defer {
-            observations.cancelAll()
-        }
 
         WaiterRegistrationHooks.activate()
         defer {
             WaiterRegistrationHooks.deactivate()
         }
 
-        observations.observe(model) { _, model in
+        let token = withPortableContinuousObservation { _ in
             recorder.recordCallback(model.value)
+        }
+        defer {
+            token.cancel()
         }
         try recorder.waitForCallbackDeliveryCount(1)
         try WaiterRegistrationHooks.waitForCount(1)
@@ -422,46 +361,6 @@ enum ObservationBridgeBenchmarks {
         )
     }
     #endif
-
-    @inline(never)
-    private static func runStreamConstructAndFirstValue(iterations: Int) async throws -> Int {
-        let sink = BenchmarkSink()
-
-        for index in 0..<iterations {
-            let model = BenchmarkCounterModel()
-            model.value = index
-            let stream = makeObservationBridgeStream {
-                model.value
-            }
-            var iterator = stream.makeAsyncIterator()
-            guard let value = await iterator.next() else {
-                throw BenchmarkError.streamEnded("stream ended before initial value")
-            }
-            sink.record(value)
-        }
-
-        return sink.value
-    }
-
-    @inline(never)
-    private static func runNonSendableStreamConstructAndFirstValue(iterations: Int) async throws -> Int {
-        let sink = BenchmarkSink()
-
-        for index in 0..<iterations {
-            let model = BenchmarkPayloadModel()
-            model.payload = BenchmarkPayload(value: index)
-            let stream = makeObservationBridgeStream {
-                model.payload
-            }
-            var iterator = stream.makeAsyncIterator()
-            guard let payload = await iterator.next() else {
-                throw BenchmarkError.streamEnded("non-Sendable stream ended before initial value")
-            }
-            sink.record(payload.value)
-        }
-
-        return sink.value
-    }
 
     private static func emit(
         _ result: BenchmarkResult,

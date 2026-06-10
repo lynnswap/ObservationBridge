@@ -21,6 +21,88 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.didSet == .didSet)
         #expect(ObservationEvent.Kind.initial != .didSet)
         #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
+
+        #expect(ObservationEvent.Kind.willSet == .willSet)
+        #expect(ObservationEvent.Kind.didSet != .willSet)
+        #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
+
+        #if compiler(>=6.4)
+        if #available(anyAppleOS 27.0, *) {
+            #expect(ObservationEvent.Kind.deinit == .deinit)
+            #expect(ObservationEvent.Kind.didSet != .deinit)
+            #expect(String(describing: ObservationEvent.Kind.deinit) == "deinit")
+        }
+        #endif
+    }
+
+    @Test
+    func portableObservationStartsSynchronouslyAndTracksCallbackReads() async {
+        let model = CounterModel()
+        let rendered = RenderedValue(ScopePass(kind: .didSet, value: -1, isEnabled: false))
+
+        let token = withPortableContinuousObservation { event in
+            rendered.set(
+                ScopePass(
+                    kind: event.kind,
+                    value: model.value,
+                    isEnabled: model.isEnabled
+                )
+            )
+        }
+        defer { token.cancel() }
+        let passes = await token.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(rendered.value == ScopePass(kind: .initial, value: 0, isEnabled: false))
+        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+
+        model.value = 1
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
+    }
+
+    @Test
+    func discardedPortableObservationTokenDoesNotKeepObserving() async {
+        let model = CounterModel()
+        let rendered = RenderedValue(-1)
+
+        _ = withPortableContinuousObservation { _ in
+            rendered.set(model.value)
+        }
+
+        #expect(rendered.value == 0)
+
+        model.value = 1
+        await Task.yield()
+        #expect(rendered.value == 0)
+    }
+
+    @Test
+    func portableObservationMatchesReportsTriggerKeyPaths() async {
+        let model = CounterModel()
+        let rendered = RenderedValue("")
+
+        let token = withPortableContinuousObservation { event in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        defer { token.cancel() }
+        let passes = await token.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+
+        model.secondaryValue = 2
+        #expect(await cursor.next() == "didSet:value:false:secondary:true")
     }
 
     @Test
@@ -250,6 +332,84 @@ final class ObservationScopeObserveTests {
         #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
     }
 
+    @Test
+    func willSetOptionDeliversWillSetPass() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: .willSet) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .willSet)
+        #expect(kinds.snapshot() == [.initial, .willSet])
+    }
+
+    @Test
+    func mutationOptionsPreferDidSetOverWillSet() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.willSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .didSet)
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(kinds.snapshot() == [.initial, .didSet])
+    }
+
+    @Test
+    func didSetFallbackUsesWillSetWhenRequested() async {
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        #expect(await cursor.next() == .willSet)
+        #expect(kinds.snapshot() == [.initial, .willSet])
+    }
+
     @MainActor
     @Test
     func didSetTrackingIsCancelledAfterEachChange() async {
@@ -322,6 +482,175 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func rawDeinitOptionDoesNotSynthesizeLegacyEvent() async {
+        #if compiler(>=6.4)
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+        #endif
+
+        let model = ChildContainerModel()
+        let weakChild = WeakChildProbeModelBox()
+        do {
+            let child = ChildProbeModel(value: 7)
+            weakChild.value = child
+            model.child = child
+        }
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let rawDeinitOptions = ObservationOptions(rawValue: 1 << 2)
+        let delivery = observations.observe(model, options: rawDeinitOptions) { event, model in
+            if let child = model.child {
+                _ = child.value
+            }
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+        #expect(delivery.isActive == false)
+
+        model.child = nil
+        #expect(await waitUntilCondition { weakChild.value == nil })
+        #expect(kinds.snapshot() == [.initial])
+    }
+
+    #if compiler(>=6.4)
+    @Test
+    func nativeDeinitOptionDeliversDependencyDeinitEvent() async {
+        guard #available(anyAppleOS 27.0, *) else {
+            return
+        }
+
+        let model = ChildContainerModel()
+        let weakChild = WeakChildProbeModelBox()
+        do {
+            let child = ChildProbeModel(value: 7)
+            weakChild.value = child
+            model.child = child
+        }
+        let observations = ObservationScope()
+        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: .deinit) { event, model in
+            if let child = model.child {
+                _ = child.value
+            }
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+        #expect(weakChild.value != nil)
+
+        model.child = nil
+
+        #expect(await waitUntilCondition { weakChild.value == nil })
+        #expect(await cursor.next() == .deinit)
+        #expect(kinds.snapshot() == [.initial, .deinit])
+    }
+
+    @Test
+    func nativeDeinitObservationsReportConservativeMatches() async {
+        guard #available(anyAppleOS 27.0, *) else {
+            return
+        }
+
+        let model = ChildContainerModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.didSet, .deinit]) { event, model in
+            _ = model.value
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\ChildContainerModel.value)):child:\(event.matches(\ChildContainerModel.child))"
+            )
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == "initial:value:false:child:false")
+
+        model.value = 1
+
+        // The native options backend cannot capture trigger key paths, so will/did-set
+        // passes answer `matches` conservatively for every key path.
+        #expect(await cursor.next() == "didSet:value:true:child:true")
+    }
+
+    @Test
+    func didSetObservationsFallBackToNativeBackendWhenSPIUnavailable() async {
+        guard #available(anyAppleOS 27.0, *) else {
+            return
+        }
+
+        _ObservationScopeTesting.forceContinuousTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceContinuousTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            rendered.set("\(event.kind):\(model.value):\(event.matches(\CounterModel.secondaryValue))")
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:0:false")
+
+        model.value = 1
+
+        // Without the SPI symbols the public native options backend still delivers
+        // didSet passes; matches degrades to conservative answers.
+        #expect(await cursor.next() == "didSet:1:true")
+    }
+
+    @Test
+    func pendingEventKindsCoalesceConsecutiveDuplicatesInOrder() async {
+        guard #available(anyAppleOS 27.0, *) else {
+            return
+        }
+
+        let slot = ObservationScopeSlot(
+            options: [.willSet, .didSet, .deinit],
+            observationIsolation: nil,
+            delivery: ObservationDelivery(),
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
+        )
+        defer { slot.cancel() }
+
+        slot.emitChange(kind: .willSet, triggers: .none)
+        slot.emitChange(kind: .willSet, triggers: .none)
+        slot.emitChange(kind: .didSet, triggers: .none)
+        slot.emitChange(kind: .didSet, triggers: .none)
+        slot.emitChange(kind: .deinit, triggers: .none)
+
+        #expect(await slot.waitForChange()?.kind == .willSet)
+        #expect(await slot.waitForChange()?.kind == .didSet)
+        #expect(await slot.waitForChange()?.kind == .deinit)
+    }
+    #endif
+
+    @Test
     func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -369,21 +698,17 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func explicitTrackingDoesNotTrackApplyOnlyReads() async {
+    func matchesReportsTriggerKeyPaths() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = observations.observe(model, tracking: { model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
-        }) { event, model in
+            _ = model.secondaryValue
             rendered.set(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: model.secondaryValue > 0
-                )
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
             )
         }
         let passes = await delivery.values {
@@ -391,181 +716,154 @@ final class ObservationScopeObserveTests {
         }
         var cursor = ObservedValuesCursor(passes)
 
-        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
 
-        model.secondaryValue = 1
-        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        model.value = 1
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
 
-        model.value = 2
-        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 2, isEnabled: true))
-        #expect(
-            passes.snapshot() == [
-                ScopePass(kind: .initial, value: 0, isEnabled: false),
-                ScopePass(kind: .didSet, value: 2, isEnabled: true),
-            ]
-        )
+        model.secondaryValue = 2
+        #expect(await cursor.next() == "didSet:value:false:secondary:true")
     }
 
     @Test
-    func explicitTrackingRefreshesDependenciesAfterEachPass() async {
+    func matchesReportsTriggerKeyPathOnWillSetPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = observations.observe(model, tracking: { model in
-            _ = model.isEnabled
-            if model.isEnabled {
-                _ = model.secondaryValue
-            } else {
-                _ = model.value
-            }
-        }) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
+            _ = model.value
+            _ = model.secondaryValue
             rendered.set(
-                "\(event.kind):value:\(model.value):secondary:\(model.secondaryValue):enabled:\(model.isEnabled)"
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
             )
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        #expect(await cursor.next() == "willSet:value:true:secondary:false")
+    }
+
+    @Test
+    func coalescedPassReportsAllTriggerKeyPaths() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+            if event.kind == .didSet, model.value == 1, model.secondaryValue == 0 {
+                // Mutate while this pass is still applying: the previous pass's tracking is
+                // still armed, so both wake-ups coalesce into one pass with both key paths.
+                model.value = 2
+                model.secondaryValue = 3
+            }
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        #expect(await cursor.next() == "didSet:value:true:secondary:true")
+    }
+
+    @Test
+    func mutationsDuringApplyPassAreObserved() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let passes = RenderedValue<[String]>([])
+        defer { observations.cancelAll() }
+
+        observations.observe(model) { event, model in
+            passes.set(passes.value + ["\(event.kind):\(model.value)"])
+            if event.kind == .didSet, model.value == 1 {
+                model.value = 2
+            }
+        }
+
+        model.value = 1
+
+        #expect(await waitUntilCondition {
+            passes.value == ["initial:0", "didSet:1", "didSet:2"]
+        })
+    }
+
+    @Test
+    func publicFallbackReportsConservativeMatches() async {
+        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
+            _ = model.value
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        #expect(await cursor.next() == "willSet:value:true:secondary:true")
+    }
+
+    @Test
+    func implicitTrackingRefreshesConditionalDependenciesAfterEachPass() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            let loadedValue = model.isEnabled ? model.secondaryValue : model.value
+            rendered.set("\(event.kind):enabled:\(model.isEnabled):loaded:\(loadedValue)")
         }
         let values = await delivery.values {
             rendered.value
         }
         var cursor = ObservedValuesCursor(values)
 
-        #expect(await cursor.next() == "initial:value:0:secondary:0:enabled:false")
+        #expect(await cursor.next() == "initial:enabled:false:loaded:0")
 
         model.secondaryValue = 1
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
 
         model.value = 2
-        #expect(await cursor.next() == "didSet:value:2:secondary:1:enabled:false")
+        #expect(await cursor.next() == "didSet:enabled:false:loaded:2")
 
         model.isEnabled = true
-        #expect(await cursor.next() == "didSet:value:2:secondary:1:enabled:true")
+        #expect(await cursor.next() == "didSet:enabled:true:loaded:1")
 
         model.value = 3
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
 
         model.secondaryValue = 4
-        #expect(await cursor.next() == "didSet:value:3:secondary:4:enabled:true")
-    }
-
-    @Test
-    func explicitTrackingHonorsInitialOnlyOptions() async {
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let rendered = RenderedValue(ScopePass(kind: .didSet, value: -1, isEnabled: false))
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model, options: [], tracking: { model in
-            _ = model.value
-        }) { event, model in
-            rendered.set(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: model.secondaryValue > 0
-                )
-            )
-        }
-        let passes = await delivery.values {
-            rendered.value
-        }
-        var cursor = ObservedValuesCursor(passes)
-
-        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
-        #expect(delivery.isActive == false)
-        #expect(passes.isActive == false)
-
-        model.value = 1
-        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
-    }
-
-    @Test
-    func explicitTrackingUsesDefaultDidSetOptions() async {
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model, tracking: { model in
-            _ = model.value
-        }) { event, model in
-            rendered.set(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: false
-                )
-            )
-        }
-        let passes = await delivery.values {
-            rendered.value
-        }
-        var cursor = ObservedValuesCursor(passes)
-
-        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
-
-        model.value = 1
-        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
-    }
-
-    @Test
-    func explicitTrackingRearmsBeforeApplyRuns() async {
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let passes = RenderedValue<[String]>([])
-        defer { observations.cancelAll() }
-
-        observations.observe(model, tracking: { model in
-            _ = model.value
-        }) { event, model in
-            passes.set(passes.value + ["\(event.kind):\(model.value)"])
-            if event.kind == .initial {
-                model.value = 1
-            }
-        }
-
-        #expect(await waitUntilCondition {
-            passes.value == ["initial:0", "didSet:1"]
-        })
-    }
-
-    @MainActor
-    @Test
-    func explicitTrackingHonorsActorIsolation() async {
-        let model = MainActorCounterModel()
-        let observations = ObservationScope()
-        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
-        let trackCalls = RenderedValue(0)
-        let applyCalls = RenderedValue(0)
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model, tracking: { model in
-            MainActor.assertIsolated()
-            trackCalls.set(trackCalls.value + 1)
-            _ = model.value
-        }) { event, model in
-            MainActor.assertIsolated()
-            applyCalls.set(applyCalls.value + 1)
-            rendered.set(
-                ScopePass(
-                    kind: event.kind,
-                    value: model.value,
-                    isEnabled: false
-                )
-            )
-        }
-        let passes = await delivery.values {
-            MainActor.assertIsolated()
-            return rendered.value
-        }
-        var cursor = ObservedValuesCursor(passes)
-
-        #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
-
-        model.value = 1
-        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
-        #expect(trackCalls.value == 2)
-        #expect(applyCalls.value == 2)
+        #expect(await cursor.next() == "didSet:enabled:true:loaded:4")
     }
 
     @MainActor
@@ -926,7 +1224,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelStopsCurrentObservationOnly() async {
+    func eventCancelCanStopInitialObservationBeforeObserveReturns() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ObservationEvent.Kind.didSet)
@@ -951,7 +1249,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelStopsDidSetObservation() async {
+    func eventCancelDoesNotStopDidSetObservation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
@@ -979,12 +1277,15 @@ final class ObservationScopeObserveTests {
         model.value = 1
 
         #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
-        #expect(delivery.isActive == false)
+        #expect(delivery.isActive == true)
 
         model.value = 2
+
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 2, isEnabled: false))
         #expect(passes.snapshot() == [
             ScopePass(kind: .initial, value: 0, isEnabled: false),
             ScopePass(kind: .didSet, value: 1, isEnabled: false),
+            ScopePass(kind: .didSet, value: 2, isEnabled: false),
         ])
     }
 
@@ -1058,6 +1359,9 @@ final class ObservationScopeObserveTests {
                 && cancelled.value
         })
         #expect(delivery.isActive == false)
+        #expect(await waitUntilCondition {
+            delivery._isIdleAfterCompletedDeliveryForTesting
+        })
 
         let values = await delivery.values {
             rendered.value
@@ -1071,8 +1375,9 @@ final class ObservationScopeObserveTests {
         let result = await runRandomizedObservationStress(
             iterations: stressIterationCount(local: 20_000, ci: 200),
             seed: stressSeed(default: 0x26_00_00_00_00_00_00_01)
-        ) { model, observations, onObserved in
-            observations.observe(model) { _, model in
+        ) { model, onObserved in
+            withPortableContinuousObservation {
+                _ in
                 onObserved(model.value)
             }
         }
@@ -1113,11 +1418,11 @@ final class ObservationScopeObserveTests {
         let delivery = ObservationDelivery()
         let started = RenderedValue(false)
         let slot = ObservationScopeSlot(
-            owner: model,
             options: .didSet,
             observationIsolation: nil,
             delivery: delivery,
-            pipeline: TypedObservationScopeImplicitTrackingPipeline<CounterModel> { _, _ in
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in
+                _ = model.value
                 started.set(true)
             }
         )
@@ -1203,7 +1508,7 @@ final class ObservationScopeObserveTests {
     func ownerDeinitDoesNotCancelScopeOwnedDelivery() async {
         let observations = ObservationScope()
         let weakModel = WeakDeinitProbeModelBox()
-        var delivery: ObservationDelivery?
+        var delivery: PortableObservationToken?
 
         do {
             let model = DeinitProbeCounterModel {}
@@ -1319,7 +1624,7 @@ private enum ReplacementReadTarget {
 }
 
 private struct RenderedObservation<Value: Sendable>: Sendable {
-    let delivery: ObservationDelivery
+    let delivery: PortableObservationToken
     let values: ObservedValues<Value>
 }
 
@@ -1342,9 +1647,9 @@ private final class RenderedValue<Value: Sendable>: @unchecked Sendable {
 }
 
 private final class DeliveryCancellationProbe: @unchecked Sendable {
-    private let storage = Mutex<ObservationDelivery?>(nil)
+    private let storage = Mutex<PortableObservationToken?>(nil)
 
-    func set(_ delivery: ObservationDelivery) {
+    func set(_ delivery: PortableObservationToken) {
         storage.withLock { storedDelivery in
             storedDelivery = delivery
         }

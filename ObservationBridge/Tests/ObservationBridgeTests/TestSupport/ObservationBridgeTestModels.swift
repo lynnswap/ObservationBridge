@@ -3,6 +3,98 @@ import Foundation
 import Synchronization
 @testable import ObservationBridge
 
+final class ObservationScope: @unchecked Sendable {
+    private struct ID: Hashable, Sendable {
+        let fileID: String
+        let line: UInt
+        let column: UInt
+    }
+
+    private struct State: Sendable {
+        var cancellationGeneration: UInt64 = 0
+        var tokens: [ID: PortableObservationToken] = [:]
+    }
+
+    private let storage = Mutex(State())
+
+    @discardableResult
+    func observe<Owner: AnyObject & Observable>(
+        _ owner: Owner,
+        options: ObservationOptions = .didSet,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
+        isolation: isolated (any Actor)? = #isolation,
+        _fileID: StaticString = #fileID,
+        _line: UInt = #line,
+        _column: UInt = #column
+    ) -> PortableObservationToken {
+        let pipeline = TestObservationScopePipeline(owner: owner, apply: apply)
+        let cancellationGeneration = storage.withLock { state in
+            state.cancellationGeneration
+        }
+        let token = withPortableContinuousObservation(
+            options: options,
+            apply: { event in
+                pipeline.apply(event: event)
+            },
+            isolation: isolation
+        )
+        let id = ID(fileID: "\(_fileID)", line: _line, column: _column)
+        let insertion = storage.withLock { state -> (replaced: PortableObservationToken?, shouldCancel: Bool) in
+            guard state.cancellationGeneration == cancellationGeneration else {
+                return (nil, true)
+            }
+            return (state.tokens.updateValue(token, forKey: id), false)
+        }
+        insertion.replaced?.cancel()
+        if insertion.shouldCancel {
+            token.cancel()
+        }
+        return token
+    }
+
+    func cancelAll() {
+        let tokens = storage.withLock { state in
+            state.cancellationGeneration &+= 1
+            let tokens = Array(state.tokens.values)
+            state.tokens.removeAll()
+            return tokens
+        }
+        for token in tokens {
+            token.cancel()
+        }
+    }
+}
+
+private struct TestObservationScopePipeline: @unchecked Sendable {
+    private final class WeakOwnerBox: @unchecked Sendable {
+        weak var value: AnyObject?
+    }
+
+    private let weakOwner: WeakOwnerBox
+    private let applyCallback: @Sendable (borrowing ObservationEvent, AnyObject) -> Void
+
+    init<Owner: AnyObject>(
+        owner: Owner,
+        apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
+    ) {
+        weakOwner = WeakOwnerBox()
+        weakOwner.value = owner
+        applyCallback = unsafe unsafeBitCast(
+            apply,
+            to: (@Sendable (borrowing ObservationEvent, AnyObject) -> Void).self
+        )
+    }
+
+    func apply(event: borrowing ObservationEvent) {
+        guard let owner = weakOwner.value else {
+            event.cancel()
+            return
+        }
+
+        applyCallback(event, owner)
+    }
+}
+
 @Observable
 final class CounterModel: @unchecked Sendable {
     var value: Int = 0
@@ -91,9 +183,21 @@ final class MainActorOptionalCounterModel {
     var value: Int? = nil
 }
 
-@MainActor
-final class MainActorObservationScopeHolder {
-    let observations = ObservationScope()
+final class ObservationCancellationProbe: @unchecked Sendable {
+    private let storage = Mutex<PortableObservationToken?>(nil)
+
+    func set(_ token: PortableObservationToken) {
+        storage.withLock { storedToken in
+            storedToken = token
+        }
+    }
+
+    func cancel() {
+        let token = storage.withLock { storedToken in
+            storedToken
+        }
+        token?.cancel()
+    }
 }
 
 final class ObservationScopeCancellationProbe: @unchecked Sendable {
@@ -103,6 +207,27 @@ final class ObservationScopeCancellationProbe: @unchecked Sendable {
         observations.cancelAll()
     }
 }
+
+@Observable
+final class ChildContainerModel: @unchecked Sendable {
+    var value: Int = 0
+    var child: ChildProbeModel?
+}
+
+@Observable
+final class ChildProbeModel: @unchecked Sendable {
+    var value: Int
+
+    init(value: Int) {
+        self.value = value
+    }
+}
+
+final class WeakBox<Value: AnyObject>: @unchecked Sendable {
+    weak var value: Value?
+}
+
+typealias WeakChildProbeModelBox = WeakBox<ChildProbeModel>
 
 final class NonSendablePayload {
     let value: Int

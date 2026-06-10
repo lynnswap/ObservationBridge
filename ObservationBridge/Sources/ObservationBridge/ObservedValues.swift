@@ -1,11 +1,11 @@
 import Foundation
 import Synchronization
 
-/// Records values sampled after owner-bound observation delivery.
+/// Records values sampled after portable observation delivery.
 ///
 /// `ObservedValues` is intended for tests that need to synchronize with
-/// `ObservationScope.observe` delivery without sleeping. Instances are produced
-/// by ``ObservationDelivery/values(_:)``.
+/// `withPortableContinuousObservation` delivery without sleeping. Instances are
+/// produced by ``PortableObservationToken/values(_:)``.
 public final class ObservedValues<Value: Sendable>: Sendable {
     private struct Waiter: Sendable {
         let predicate: @Sendable (Value) -> Bool

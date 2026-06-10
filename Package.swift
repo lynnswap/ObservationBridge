@@ -25,20 +25,9 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0")
     ],
     targets: [
-        .target(
-            name: "_ObservationBridgeLegacy",
-            dependencies: ["_ObservationBridgePrivateABI"],
-            path: "ObservationBridge/Sources/_ObservationBridgeLegacy",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-                .defaultIsolation(nil),
-                .strictMemorySafety(),
-            ]
-        ),
         .target(
             name: "_ObservationBridgePrivateABI",
             path: "ObservationBridge/Sources/_ObservationBridgePrivateABI"
@@ -51,8 +40,6 @@ let package = Package(
                     condition: .when(traits: ["BenchmarkSupport"])
                 ),
                 "_ObservationBridgePrivateABI",
-                "_ObservationBridgeLegacy",
-                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
             ],
             path: "ObservationBridge/Sources/ObservationBridge",
             swiftSettings: [
