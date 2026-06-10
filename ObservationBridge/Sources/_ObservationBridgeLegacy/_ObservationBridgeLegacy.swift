@@ -211,9 +211,15 @@ private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationT
         return
     }
 
+    #if compiler(>=6.4)
+    withUnsafePointer(to: tracking) { trackingPointer in
+        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
+    }
+    #else
     unsafe withUnsafePointer(to: tracking) { trackingPointer in
         unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
     }
+    #endif
 }
 
 private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {

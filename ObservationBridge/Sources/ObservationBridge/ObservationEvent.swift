@@ -1,7 +1,7 @@
 import Observation
 
 /// Information about a single owner-bound observation pass.
-public struct ObservationEvent: Sendable {
+public struct ObservationEvent: ~Copyable {
     /// The reason the observation callback is running.
     public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
         private enum RawValue: UInt8, Sendable {
@@ -53,14 +53,14 @@ public struct ObservationEvent: Sendable {
     /// The reason the observation callback is running.
     public let kind: Kind
 
-    private weak var slot: ObservationScopeSlot?
+    private let cancellation: (@Sendable () -> Void)?
 
     init(
         kind: Kind,
-        slot: ObservationScopeSlot
+        cancellation: (@Sendable () -> Void)? = nil
     ) {
         self.kind = kind
-        self.slot = slot
+        self.cancellation = cancellation
     }
 
     #if compiler(>=6.4)
@@ -71,8 +71,8 @@ public struct ObservationEvent: Sendable {
     }
     #endif
 
-    /// Cancels the current observation.
+    /// Cancels the event's backing tracking when one is available.
     public func cancel() {
-        slot?.cancel()
+        cancellation?()
     }
 }

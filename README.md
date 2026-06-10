@@ -82,10 +82,19 @@ observations.observe(model, options: []) { event, model in
 change-triggered passes. `.willSet` is intentionally unavailable until the
 native Swift 6.4 backend can provide accurate about-to-change timing.
 
-Call `event.cancel()` to stop the current observation, or `cancelAll()` to tear
-down every observation owned by the scope:
+`ObservationEvent` is borrowed for the callback lifetime. Save `event.kind` if
+later code needs the reason for the pass. `event.cancel()` cancels backing
+tracking when one is available, including during the synchronous initial pass.
+
+Call `ObservationDelivery.cancel()` to stop one observation, or `cancelAll()` to
+tear down every observation owned by the scope:
 
 ```swift
+let delivery = observations.observe(model) { _, model in
+    render(model)
+}
+
+delivery.cancel()
 observations.cancelAll()
 ```
 
@@ -279,6 +288,8 @@ observations.observe(model) { _, model in
   `cancelAll()` before rebinding a dynamic set of observations.
 - `ObservationOptions` is now an owner-bound event option set. Use `.didSet` for
   initial + subsequent callbacks, or `[]` for initial-only callbacks.
+- `ObservationEvent` is now noncopyable and borrowed by the callback. Save
+  `event.kind` instead of storing the event itself.
 - `ObservationEvent.matches(_:)` is not exposed on Swift 6.3 and earlier. It is
   reserved for the Swift 6.4 native backend where stdlib exposes matching.
 - Stream rate-limit and backend settings moved from `ObservationOptions` to

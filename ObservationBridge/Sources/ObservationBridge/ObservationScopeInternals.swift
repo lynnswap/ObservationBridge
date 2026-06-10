@@ -93,7 +93,7 @@ enum InitialScopedObservationResult: Sendable {
 protocol ObservationScopePipeline: Sendable {
     var appliesInsideTracking: Bool { get }
 
-    func apply(event: ObservationEvent, owner: AnyObject) -> Bool
+    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool
     func track(owner: AnyObject) -> Bool
 }
 
@@ -160,13 +160,13 @@ private enum ObservationScopeWaiterBatch: @unchecked Sendable {
 struct TypedObservationScopeImplicitTrackingPipeline<Owner: AnyObject>: ObservationScopePipeline, @unchecked Sendable {
     let appliesInsideTracking = true
 
-    private let applyCallback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
+    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
 
-    init(_ applyCallback: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void) {
+    init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void) {
         self.applyCallback = applyCallback
     }
 
-    func apply(event: ObservationEvent, owner: AnyObject) -> Bool {
+    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool {
         guard let owner = owner as? Owner else {
             return false
         }
@@ -184,17 +184,17 @@ struct TypedObservationScopeExplicitTrackingPipeline<Owner: AnyObject>: Observat
     let appliesInsideTracking = false
 
     private let trackingCallback: @isolated(any) @Sendable (Owner) -> Void
-    private let applyCallback: @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
+    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
 
     init(
         tracking: @escaping @isolated(any) @Sendable (Owner) -> Void,
-        apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void
+        apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
     ) {
         self.trackingCallback = tracking
         self.applyCallback = apply
     }
 
-    func apply(event: ObservationEvent, owner: AnyObject) -> Bool {
+    func apply(event: borrowing ObservationEvent, owner: AnyObject) -> Bool {
         guard let owner = owner as? Owner else {
             return false
         }
@@ -233,7 +233,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             pipeline.appliesInsideTracking
         }
 
-        func apply(event: ObservationEvent) -> Bool {
+        func apply(event: borrowing ObservationEvent) -> Bool {
             pipeline.apply(event: event, owner: owner)
         }
 
@@ -450,13 +450,13 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
 @inline(__always)
 private func callObservationApply<Owner: AnyObject>(
-    _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
-    _ event: ObservationEvent,
+    _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
+    _ event: borrowing ObservationEvent,
     _ owner: Owner
 ) {
     let unisolated = unsafe unsafeBitCast(
         apply,
-        to: (@Sendable (ObservationEvent, Owner) -> Void).self
+        to: (@Sendable (borrowing ObservationEvent, Owner) -> Void).self
     )
     unisolated(event, owner)
 }

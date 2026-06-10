@@ -926,7 +926,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelStopsCurrentObservationOnly() async {
+    func eventCancelCanStopInitialObservationBeforeObserveReturns() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ObservationEvent.Kind.didSet)
@@ -951,7 +951,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelStopsDidSetObservation() async {
+    func eventCancelDoesNotStopDidSetObservation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
@@ -979,12 +979,15 @@ final class ObservationScopeObserveTests {
         model.value = 1
 
         #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
-        #expect(delivery.isActive == false)
+        #expect(delivery.isActive == true)
 
         model.value = 2
+
+        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 2, isEnabled: false))
         #expect(passes.snapshot() == [
             ScopePass(kind: .initial, value: 0, isEnabled: false),
             ScopePass(kind: .didSet, value: 1, isEnabled: false),
+            ScopePass(kind: .didSet, value: 2, isEnabled: false),
         ])
     }
 
@@ -1058,6 +1061,9 @@ final class ObservationScopeObserveTests {
                 && cancelled.value
         })
         #expect(delivery.isActive == false)
+        #expect(await waitUntilCondition {
+            delivery._isIdleAfterCompletedDeliveryForTesting
+        })
 
         let values = await delivery.values {
             rendered.value

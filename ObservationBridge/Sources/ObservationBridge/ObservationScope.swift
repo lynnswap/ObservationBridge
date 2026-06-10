@@ -30,7 +30,7 @@ public final class ObservationScope: @unchecked Sendable {
     public func observe<Owner: AnyObject & Observable>(
         _ owner: Owner,
         options: ObservationOptions = .didSet,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
         isolation: isolated (any Actor)? = #isolation,
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
@@ -70,7 +70,7 @@ public final class ObservationScope: @unchecked Sendable {
         _ owner: Owner,
         options: ObservationOptions = .didSet,
         @_inheritActorContext tracking: @escaping @isolated(any) @Sendable (Owner) -> Void,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (ObservationEvent, Owner) -> Void,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
         isolation: isolated (any Actor)? = #isolation,
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
@@ -485,7 +485,7 @@ private func trackNativeScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    let event = ObservationEvent(kind: kind, slot: slot)
+    let event = makeScopedObservationEvent(kind: kind, slot: slot)
 
     let delivery = slot.delivery
     guard delivery.beginDelivery() else {
@@ -688,7 +688,7 @@ private func trackLegacyScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    let event = ObservationEvent(kind: kind, slot: slot)
+    let event = makeScopedObservationEvent(kind: kind, slot: slot)
 
     let delivery = slot.delivery
     guard delivery.beginDelivery() else {
@@ -774,6 +774,19 @@ private func legacyChangeKind(for options: ObservationOptions) -> ObservationEve
     return .didSet
 }
 
+private func makeScopedObservationEvent(
+    kind: ObservationEvent.Kind,
+    slot: ObservationScopeSlot
+) -> ObservationEvent {
+    guard kind == .initial else {
+        return ObservationEvent(kind: kind)
+    }
+
+    return ObservationEvent(kind: kind) { [weak slot] in
+        slot?.cancel()
+    }
+}
+
 private func withObservationIsolation<T: Sendable>(
     isolation: isolated (any Actor)?,
     _ operation: () -> T
@@ -840,9 +853,15 @@ private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationT
         return
     }
 
+    #if compiler(>=6.4)
+    withUnsafePointer(to: tracking) { trackingPointer in
+        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
+    }
+    #else
     unsafe withUnsafePointer(to: tracking) { trackingPointer in
         unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
     }
+    #endif
 }
 
 private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
