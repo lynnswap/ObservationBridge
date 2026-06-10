@@ -1,4 +1,4 @@
-#include "ObservationBridgePrivateABI.h"
+#include "ObservationBridgeRuntimeABI.h"
 
 #ifndef __has_attribute
 #define __has_attribute(attribute) 0

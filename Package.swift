@@ -29,8 +29,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "_ObservationBridgePrivateABI",
-            path: "ObservationBridge/Sources/_ObservationBridgePrivateABI"
+            name: "_ObservationBridgeRuntimeABI",
+            path: "ObservationBridge/Sources/_ObservationBridgeRuntimeABI"
         ),
         .target(
             name: "ObservationBridge",
@@ -39,7 +39,7 @@ let package = Package(
                     name: "_ObservationBridgeBenchmarkSupport",
                     condition: .when(traits: ["BenchmarkSupport"])
                 ),
-                "_ObservationBridgePrivateABI",
+                "_ObservationBridgeRuntimeABI",
             ],
             path: "ObservationBridge/Sources/ObservationBridge",
             swiftSettings: [
