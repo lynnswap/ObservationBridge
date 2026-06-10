@@ -297,7 +297,7 @@ func runScopedObservationLoop(
     slot: ObservationScopeSlot
 ) async {
     #if compiler(>=6.4)
-    if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *),
+    if #available(anyAppleOS 27.0, *),
        !shouldForceLegacyScopedObservation {
         await runNativeScopedObservationLoop(
             options: options,
@@ -321,7 +321,7 @@ func runInitialScopedObservationPass(
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
     #if compiler(>=6.4)
-    if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *),
+    if #available(anyAppleOS 27.0, *),
        !shouldForceLegacyScopedObservation {
         return runInitialNativeScopedObservationPass(
             options: options,
@@ -344,7 +344,7 @@ func runScopedObservationLoopAfterInitialPass(
     slot: ObservationScopeSlot
 ) async {
     #if compiler(>=6.4)
-    if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *),
+    if #available(anyAppleOS 27.0, *),
        !shouldForceLegacyScopedObservation {
         await runNativeScopedObservationLoopAfterInitialPass(
             options: options,
@@ -363,7 +363,7 @@ func runScopedObservationLoopAfterInitialPass(
 }
 
 #if compiler(>=6.4)
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func runNativeScopedObservationLoop(
     options: ObservationOptions,
     isolation: (any Actor)?,
@@ -395,7 +395,7 @@ private func runNativeScopedObservationLoop(
     slot.cancel()
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func runInitialNativeScopedObservationPass(
     options: ObservationOptions,
     isolation _: isolated (any Actor)?,
@@ -421,7 +421,7 @@ private func runInitialNativeScopedObservationPass(
     return .waitingForChange
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func runNativeScopedObservationLoopAfterInitialPass(
     options: ObservationOptions,
     isolation: (any Actor)?,
@@ -450,7 +450,7 @@ private func runNativeScopedObservationLoopAfterInitialPass(
     slot.cancel()
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservation(
     kind: ObservationEvent.Kind,
     options: ObservationOptions,
@@ -468,7 +468,7 @@ private func trackNativeScopedObservation(
     return result.shouldContinue
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservationInCurrentContext(
     kind: ObservationEvent.Kind,
     options: ObservationOptions,
@@ -532,7 +532,7 @@ private func trackNativeScopedObservationInCurrentContext(
     return complete(shouldContinue: slot.isActive && didTrack, didApply: didApply)
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func nativeTrackingOptions(for options: ObservationOptions) -> ObservationTracking.Options? {
     var trackingOptions = ObservationTracking.Options()
     var hasOptions = false
@@ -556,7 +556,7 @@ private func nativeTrackingOptions(for options: ObservationOptions) -> Observati
     return trackingOptions
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func emitNativeScopedObservationChange(
     _ nativeEvent: borrowing ObservationTracking.Event,
     slot: ObservationScopeSlot
@@ -571,7 +571,7 @@ private func emitNativeScopedObservationChange(
     slot.emitChange(kind: kind)
 }
 
-@available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+@available(anyAppleOS 27.0, *)
 private func nativeScopedObservationEventKind(
     for nativeKind: ObservationTracking.Event.Kind
 ) -> ObservationEvent.Kind? {

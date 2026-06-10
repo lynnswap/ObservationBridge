@@ -27,7 +27,7 @@ final class ObservationScopeObserveTests {
         #expect(ObservationEvent.Kind.didSet != .willSet)
         #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
 
-        if #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) {
+        if #available(anyAppleOS 27.0, *) {
             #expect(ObservationEvent.Kind.deinit == .deinit)
             #expect(ObservationEvent.Kind.didSet != .deinit)
             #expect(String(describing: ObservationEvent.Kind.deinit) == "deinit")
@@ -289,7 +289,7 @@ final class ObservationScopeObserveTests {
 
     @Test
     func nativeMutationOptionsPreferDidSetOverWillSet() async {
-        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+        guard #available(anyAppleOS 27.0, *) else {
             return
         }
 
@@ -460,7 +460,7 @@ final class ObservationScopeObserveTests {
     #if compiler(>=6.4)
     @Test
     func nativeDeinitOptionDeliversDependencyDeinitEvent() async {
-        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+        guard #available(anyAppleOS 27.0, *) else {
             return
         }
 
@@ -498,7 +498,7 @@ final class ObservationScopeObserveTests {
 
     @Test
     func pendingEventKindsCoalesceConsecutiveDuplicatesInOrder() async {
-        guard #available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *) else {
+        guard #available(anyAppleOS 27.0, *) else {
             return
         }
 

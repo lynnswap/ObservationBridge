@@ -36,7 +36,7 @@ public struct ObservationEvent: ~Copyable {
 
         #if compiler(>=6.4)
         /// A pass triggered after a tracked observable dependency is deinitialized.
-        @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+        @available(anyAppleOS 27.0, *)
         public static var `deinit`: Kind {
             Kind(rawValue: .deinit)
         }

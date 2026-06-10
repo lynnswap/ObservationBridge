@@ -98,7 +98,7 @@ public struct ObservationOptions: OptionSet, Sendable, Hashable {
 
     #if compiler(>=6.4)
     /// Re-runs the observation callback after a tracked observable dependency is deinitialized.
-    @available(iOS 27.0, macOS 27.0, tvOS 27.0, watchOS 27.0, visionOS 27.0, *)
+    @available(anyAppleOS 27.0, *)
     public static let `deinit` = ObservationOptions(rawValue: 1 << 2)
     #endif
 
