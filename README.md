@@ -7,7 +7,11 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 
 - Swift 6.2
 - iOS 18+
+- Mac Catalyst 18+
 - macOS 15+
+- tvOS 18+
+- watchOS 11+
+- visionOS 2+
 
 ## Portable Continuous Observation
 
