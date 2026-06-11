@@ -33,13 +33,9 @@ public func withPortableContinuousObservation(
     return token
 }
 
-// Will/did-set events go through the continuous SPI backend on every OS so trigger key
-// paths can be captured for `PortableObservationTracking.Event.matches(_:)`
-// without an untracked window between passes. The native
-// `withObservationTracking(options:)` backend is used when `.deinit` events are
-// requested (dependency deinit cannot be observed any other way), or as the
-// did-set fallback when the SPI symbols are unavailable: the public native API
-// still observes did-set changes that the public legacy API cannot deliver.
+// Swift 6.4 / OS 27+ uses the public native `withObservationTracking(options:)`
+// backend for later events. Older runtimes keep the legacy SPI backend so
+// will/did-set delivery remains available where the public API cannot express it.
 func runScopedObservationLoop(
     options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
@@ -330,11 +326,7 @@ private func shouldUseNativeScopedObservation(for options: PortableObservationTr
         return false
     }
 
-    if options.contains(.deinit) {
-        return true
-    }
-
-    return options.contains(.didSet) && !canUseObservationTrackingSPI
+    return nativeTrackingOptions(for: options) != nil
 }
 
 private var shouldForceLegacyScopedObservation: Bool {
@@ -649,10 +641,10 @@ private var canUseObservationTrackingSPI: Bool {
 }
 
 enum _ObservationScopeTesting {
-    /// Forces the public-API fallback on every backend, including the native one.
+    /// Forces the old public one-shot fallback by disabling native tracking and continuous SPI.
     static let forcePublicDidSetFallback = Mutex(false)
 
-    /// Simulates missing SPI symbols while leaving the native backend available.
+    /// Simulates missing SPI symbols when the legacy backend is selected.
     static let forceContinuousTrackingSPIUnavailable = Mutex(false)
 }
 

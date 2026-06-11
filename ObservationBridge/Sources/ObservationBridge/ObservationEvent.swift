@@ -149,9 +149,9 @@ extension PortableObservationTracking {
         ///
         /// A coalesced pass can stand for multiple mutations; this returns `true` when any of
         /// them used `keyPath`. `.initial` and `.deinit` passes return `false`. When trigger
-        /// key paths cannot be captured (the public-API fallback backend, or `.deinit`-enabled
-        /// native observations), this conservatively returns `true` for every key path so
-        /// callers never skip work for a mutation that did happen.
+        /// key paths cannot be captured (including the Swift 6.4 / OS 27+ native backend),
+        /// this conservatively returns `true` for every key path so callers never skip work
+        /// for a mutation that did happen.
         ///
         /// Key paths carry no instance identity: two tracked objects of the same type are
         /// indistinguishable, and the comparison is exact, so a subclass-rooted key path does

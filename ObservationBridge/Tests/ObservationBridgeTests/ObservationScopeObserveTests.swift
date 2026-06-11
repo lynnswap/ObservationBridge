@@ -13,6 +13,16 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
     weak var model: DeinitProbeCounterModel?
 }
 
+private func usesNativeDefaultObservationBackend() -> Bool {
+    #if compiler(>=6.4)
+    if #available(anyAppleOS 27.0, *) {
+        return true
+    }
+    #endif
+
+    return false
+}
+
 @Suite(.serialized)
 final class ObservationScopeObserveTests {
     @Test
@@ -99,10 +109,18 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        if usesNativeDefaultObservationBackend() {
+            #expect(await cursor.next() == "didSet:value:true:secondary:true")
+        } else {
+            #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        }
 
         model.secondaryValue = 2
-        #expect(await cursor.next() == "didSet:value:false:secondary:true")
+        if usesNativeDefaultObservationBackend() {
+            #expect(await cursor.next() == "didSet:value:true:secondary:true")
+        } else {
+            #expect(await cursor.next() == "didSet:value:false:secondary:true")
+        }
     }
 
     @Test
@@ -536,28 +554,35 @@ final class ObservationScopeObserveTests {
             model.child = child
         }
         let observations = ObservationScope()
-        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
+        let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: .deinit) { event, model in
             if let child = model.child {
                 _ = child.value
             }
-            rendered.set(event.kind)
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\ChildContainerModel.value)):child:\(event.matches(\ChildContainerModel.child))"
+            )
         }
-        let kinds = await delivery.values {
+        let passes = await delivery.values {
             rendered.value
         }
-        var cursor = ObservedValuesCursor(kinds)
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await cursor.next() == .initial)
+        #expect(await cursor.next() == "initial:value:false:child:false")
         #expect(weakChild.value != nil)
 
         model.child = nil
 
         #expect(await waitUntilCondition { weakChild.value == nil })
-        #expect(await cursor.next() == .deinit)
-        #expect(kinds.snapshot() == [.initial, .deinit])
+        #expect(await cursor.next() == "deinit:value:false:child:false")
+        #expect(
+            passes.snapshot() == [
+                "initial:value:false:child:false",
+                "deinit:value:false:child:false",
+            ]
+        )
     }
 
     @Test
@@ -592,14 +617,9 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func didSetObservationsFallBackToNativeBackendWhenSPIUnavailable() async {
-        guard #available(anyAppleOS 27.0, *) else {
+    func didSetObservationsUseNativeBackendByDefaultOnOS27() async {
+        guard usesNativeDefaultObservationBackend() else {
             return
-        }
-
-        _ObservationScopeTesting.forceContinuousTrackingSPIUnavailable.withLock { $0 = true }
-        defer {
-            _ObservationScopeTesting.forceContinuousTrackingSPIUnavailable.withLock { $0 = false }
         }
 
         let model = CounterModel()
@@ -619,8 +639,8 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
 
-        // Without the SPI symbols the public native options backend still delivers
-        // didSet passes; matches degrades to conservative answers.
+        // The default Swift 6.4 / OS 27+ native backend delivers did-set passes,
+        // but trigger details are unavailable and matches degrades conservatively.
         #expect(await cursor.next() == "didSet:1:true")
     }
 
@@ -719,10 +739,18 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        if usesNativeDefaultObservationBackend() {
+            #expect(await cursor.next() == "didSet:value:true:secondary:true")
+        } else {
+            #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        }
 
         model.secondaryValue = 2
-        #expect(await cursor.next() == "didSet:value:false:secondary:true")
+        if usesNativeDefaultObservationBackend() {
+            #expect(await cursor.next() == "didSet:value:true:secondary:true")
+        } else {
+            #expect(await cursor.next() == "didSet:value:false:secondary:true")
+        }
     }
 
     @Test
@@ -747,11 +775,21 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        #expect(await cursor.next() == "willSet:value:true:secondary:false")
+        if usesNativeDefaultObservationBackend() {
+            #expect(await cursor.next() == "willSet:value:true:secondary:true")
+        } else {
+            #expect(await cursor.next() == "willSet:value:true:secondary:false")
+        }
     }
 
     @Test
     func coalescedPassReportsAllTriggerKeyPaths() async {
+        // Exact trigger coalescing is a legacy continuous-SPI property. The
+        // native OS 27+ backend reports conservative matches instead.
+        guard !usesNativeDefaultObservationBackend() else {
+            return
+        }
+
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
@@ -784,6 +822,12 @@ final class ObservationScopeObserveTests {
 
     @Test
     func mutationsDuringApplyPassAreObserved() async {
+        // The legacy continuous-SPI backend keeps previous tracking armed while
+        // a replacement pass applies. The native OS 27+ backend is one-shot.
+        guard !usesNativeDefaultObservationBackend() else {
+            return
+        }
+
         let model = CounterModel()
         let observations = ObservationScope()
         let passes = RenderedValue<[String]>([])

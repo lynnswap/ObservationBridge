@@ -49,7 +49,7 @@ deinit {
 
 Read the observable values that should keep triggering the callback on every
 pass. Use `matches(_:)` to decide whether to perform additional work for a
-changed key path.
+changed key path, not as the only guard for correctness.
 
 ### Events
 
@@ -87,8 +87,9 @@ cancels when it deinitializes.
 
 `PortableObservationTracking.Event.matches(_:)` reports whether the current pass can be treated as
 triggered by a mutation of the supplied key path. `.initial` and `.deinit` passes
-match nothing. When trigger details are unavailable, `matches(_:)` returns
-`true` so callers do not skip work for a possible mutation.
+match nothing. Swift 6.4 / OS 27+ uses the native Observation backend for later
+events; when trigger details are unavailable, `matches(_:)` returns `true` so
+callers do not skip work for a possible mutation.
 
 ## Testing
 
@@ -227,6 +228,7 @@ deinit {
   follow `withContinuousObservation`; use `[]` for initial-only callbacks.
 - `PortableObservationTracking.Event` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
-- `PortableObservationTracking.Event.matches(_:)` reports the key paths that triggered a pass.
-  The explicit `tracking:` observe overload has been removed: read the needed
-  properties in the callback and filter passes with `matches(_:)` instead.
+- `PortableObservationTracking.Event.matches(_:)` filters the current pass by
+  trigger key path when trigger details are available. The explicit `tracking:`
+  observe overload has been removed: read the needed properties in the callback
+  and use `matches(_:)` only to gate optional extra work for that pass.
