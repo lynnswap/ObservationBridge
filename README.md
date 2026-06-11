@@ -88,8 +88,11 @@ cancels when it deinitializes.
 `withContinuousObservation` matching behavior: mutation passes compare the
 event's `ObservationTracking.changed` key path with the supplied key path, and
 `.initial` matches nothing. Exact matching relies on weak-linked Observation
-runtime SPI; when the required symbols are unavailable, ObservationBridge avoids
-direct calls and completes after the synchronous `.initial` pass.
+runtime SPI. When the required symbols are unavailable on Swift 6.4 / OS 27+
+runtimes, ObservationBridge falls back to public `withContinuousObservation` so
+updates keep flowing; in that fallback only, `.initial` and mutation event
+cadence follow native continuous timing, and mutation `matches(_:)` answers
+conservatively.
 
 ## Testing
 

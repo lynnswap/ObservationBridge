@@ -1,3 +1,5 @@
+import Foundation
+import Observation
 import Synchronization
 
 extension PortableObservationTracking {
@@ -7,13 +9,16 @@ extension PortableObservationTracking {
     /// Tests can attach value samplers with ``values(_:)`` to wait for state
     /// rendered by the production callback after each delivery completes.
     public struct Token: Sendable {
-        private final class Storage: Sendable {
-            let slot: ObservationScopeSlot
+        private final class Storage: @unchecked Sendable {
+            private let cancelOperation: @Sendable () -> Void
             let delivery: ObservationDelivery
 
-            init(slot: ObservationScopeSlot, delivery: ObservationDelivery) {
-                self.slot = slot
+            init(
+                delivery: ObservationDelivery,
+                cancelOperation: @escaping @Sendable () -> Void
+            ) {
                 self.delivery = delivery
+                self.cancelOperation = cancelOperation
             }
 
             deinit {
@@ -21,7 +26,7 @@ extension PortableObservationTracking {
             }
 
             func cancel() {
-                slot.cancel()
+                cancelOperation()
             }
         }
 
@@ -37,8 +42,23 @@ extension PortableObservationTracking {
         }
 
         init(slot: ObservationScopeSlot, delivery: ObservationDelivery) {
-            storage = Storage(slot: slot, delivery: delivery)
+            storage = Storage(delivery: delivery) {
+                slot.cancel()
+            }
         }
+
+        #if compiler(>=6.4)
+        @available(anyAppleOS 27.0, *)
+        init(
+            nativeContinuousCancellation: NativeContinuousObservationCancellation,
+            delivery: ObservationDelivery
+        ) {
+            storage = Storage(delivery: delivery) {
+                nativeContinuousCancellation.cancel()
+                delivery.finish()
+            }
+        }
+        #endif
 
         /// Cancels the backing observation.
         public func cancel() {
@@ -65,6 +85,94 @@ extension PortableObservationTracking {
         }
     }
 }
+
+#if compiler(>=6.4)
+@available(anyAppleOS 27.0, *)
+private struct NativeContinuousObservationTokenStorage: ~Copyable {
+    var token: ObservationTracking.Token
+
+    init(_ token: consuming ObservationTracking.Token) {
+        self.token = token
+    }
+}
+
+@available(anyAppleOS 27.0, *)
+private func makeNativeContinuousObservationTokenStorage(
+    _ token: consuming ObservationTracking.Token
+) -> UnsafeMutableRawPointer {
+    let pointer = UnsafeMutablePointer<NativeContinuousObservationTokenStorage>.allocate(capacity: 1)
+    pointer.initialize(to: NativeContinuousObservationTokenStorage(token))
+    return UnsafeMutableRawPointer(pointer)
+}
+
+@available(anyAppleOS 27.0, *)
+private func releaseNativeContinuousObservationTokenStorage(
+    _ rawPointer: UnsafeMutableRawPointer
+) {
+    let pointer = rawPointer.assumingMemoryBound(to: NativeContinuousObservationTokenStorage.self)
+    pointer.deinitialize(count: 1)
+    pointer.deallocate()
+}
+
+@available(anyAppleOS 27.0, *)
+final class NativeContinuousObservationCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokenStorage: UnsafeMutableRawPointer?
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
+
+    deinit {
+        cancel()
+    }
+
+    func install(_ token: consuming ObservationTracking.Token) {
+        let tokenStorage = makeNativeContinuousObservationTokenStorage(token)
+
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            releaseNativeContinuousObservationTokenStorage(tokenStorage)
+            return
+        }
+
+        let oldTokenStorage = self.tokenStorage
+        self.tokenStorage = tokenStorage
+        task = nil
+        lock.unlock()
+        if let oldTokenStorage {
+            releaseNativeContinuousObservationTokenStorage(oldTokenStorage)
+        }
+    }
+
+    func installTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            task.cancel()
+            return
+        }
+
+        let taskToCancel = self.task
+        self.task = task
+        lock.unlock()
+        taskToCancel?.cancel()
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let tokenStorageToRelease = tokenStorage
+        tokenStorage = nil
+        let taskToCancel = task
+        task = nil
+        lock.unlock()
+        if let tokenStorageToRelease {
+            releaseNativeContinuousObservationTokenStorage(tokenStorageToRelease)
+        }
+        taskToCancel?.cancel()
+    }
+}
+#endif
 
 final class ObservationDelivery: Sendable {
     private struct State: Sendable {
@@ -390,6 +498,50 @@ final class ObservationDelivery: Sendable {
         let samplers = state.samplers.values.map(\.sampler)
         state.samplers.removeAll(keepingCapacity: true)
         return samplers
+    }
+}
+
+final class ObservationDeliveryCompletionQueue: Sendable {
+    private struct State: Sendable {
+        var completions: [ObservationDeliveryCompletion] = []
+        var isDraining = false
+    }
+
+    private let state = Mutex(State())
+
+    func enqueue(_ completion: ObservationDeliveryCompletion) {
+        let shouldStartDrain = state.withLock { state in
+            state.completions.append(completion)
+            guard !state.isDraining else {
+                return false
+            }
+
+            state.isDraining = true
+            return true
+        }
+
+        if shouldStartDrain {
+            Task {
+                await drain()
+            }
+        }
+    }
+
+    private func nextCompletion() -> ObservationDeliveryCompletion? {
+        state.withLock { state in
+            guard !state.completions.isEmpty else {
+                state.isDraining = false
+                return nil
+            }
+
+            return state.completions.removeFirst()
+        }
+    }
+
+    private func drain() async {
+        while let completion = nextCompletion() {
+            await completion.sampleAndFinish()
+        }
     }
 }
 

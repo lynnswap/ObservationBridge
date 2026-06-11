@@ -21,11 +21,29 @@ public func withPortableContinuousObservation(
     isolation: isolated (any Actor)? = #isolation
 ) -> PortableObservationTracking.Token {
     let delivery = ObservationDelivery()
+    let observationIsolation = apply.isolation ?? isolation
+    let pipeline = ObservationScopeImplicitTrackingPipeline(apply)
+
+    #if compiler(>=6.4)
+    if #available(anyAppleOS 27.0, *),
+        runtimeTrackingMode(for: options) == nil,
+        let nativeOptions = nativeContinuousObservationOptions(for: options)
+    {
+        return startNativeContinuousObservationFallback(
+            options: nativeOptions,
+            pipeline: pipeline,
+            delivery: delivery,
+            observationIsolation: observationIsolation,
+            currentIsolation: isolation
+        )
+    }
+    #endif
+
     let slot = ObservationScopeSlot(
         options: options,
-        observationIsolation: apply.isolation ?? isolation,
+        observationIsolation: observationIsolation,
         delivery: delivery,
-        pipeline: ObservationScopeImplicitTrackingPipeline(apply)
+        pipeline: pipeline
     )
     delivery.bind(to: slot)
     let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
@@ -35,8 +53,8 @@ public func withPortableContinuousObservation(
 
 // Mutation events use the Observation runtime SPI on every OS so `matches(_:)`
 // can mirror Swift's `withContinuousObservation` key-path comparison. The public
-// native `withObservationTracking(options:)` Event cannot be retained across the
-// deferred portable callback pass, so it cannot preserve exact `matches(_:)`.
+// native Event cannot be retained across the deferred portable callback pass, so
+// the native continuous fallback is reserved for liveness when exact SPI is unavailable.
 func runScopedObservationLoop(
     options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
@@ -161,6 +179,135 @@ func runRuntimeScopedObservationLoopAfterInitialPass(
 
     slot.cancel()
 }
+
+#if compiler(>=6.4)
+@available(anyAppleOS 27.0, *)
+private func startNativeContinuousObservationFallback(
+    options: ObservationTracking.Options,
+    pipeline: ObservationScopeImplicitTrackingPipeline,
+    delivery: ObservationDelivery,
+    observationIsolation: (any Actor)?,
+    currentIsolation: isolated (any Actor)?
+) -> PortableObservationTracking.Token {
+    let cancellation = NativeContinuousObservationCancellation()
+    let completionQueue = ObservationDeliveryCompletionQueue()
+    let token = PortableObservationTracking.Token(
+        nativeContinuousCancellation: cancellation,
+        delivery: delivery
+    )
+
+    let startsInCurrentIsolation =
+        observationScopeActorID(observationIsolation) == observationScopeActorID(currentIsolation)
+
+    if startsInCurrentIsolation {
+        installNativeContinuousObservationFallback(
+            options: options,
+            pipeline: pipeline,
+            delivery: delivery,
+            cancellation: cancellation,
+            completionQueue: completionQueue
+        )
+    } else {
+        cancellation.installTask(makeObservationTask {
+            await withObservationIsolation(isolation: observationIsolation) {
+                installNativeContinuousObservationFallback(
+                    options: options,
+                    pipeline: pipeline,
+                    delivery: delivery,
+                    cancellation: cancellation,
+                    completionQueue: completionQueue
+                )
+            }
+        })
+    }
+
+    return token
+}
+
+@available(anyAppleOS 27.0, *)
+private func installNativeContinuousObservationFallback(
+    options: ObservationTracking.Options,
+    pipeline: ObservationScopeImplicitTrackingPipeline,
+    delivery: ObservationDelivery,
+    cancellation: NativeContinuousObservationCancellation,
+    completionQueue: ObservationDeliveryCompletionQueue
+) {
+    let nativeToken = withContinuousObservation(options: options) { nativeEvent in
+        deliverNativeContinuousObservationEvent(
+            nativeEvent,
+            pipeline: pipeline,
+            delivery: delivery,
+            cancellation: cancellation,
+            completionQueue: completionQueue
+        )
+    }
+    cancellation.install(nativeToken)
+}
+
+@available(anyAppleOS 27.0, *)
+private func deliverNativeContinuousObservationEvent(
+    _ nativeEvent: borrowing ObservationTracking.Event,
+    pipeline: ObservationScopeImplicitTrackingPipeline,
+    delivery: ObservationDelivery,
+    cancellation: NativeContinuousObservationCancellation,
+    completionQueue: ObservationDeliveryCompletionQueue
+) {
+    guard let kind = portableNativeContinuousObservationEventKind(for: nativeEvent.kind) else {
+        return
+    }
+
+    guard delivery.beginDelivery() else {
+        return
+    }
+
+    let triggers: ObservationEventTriggers = kind == .initial ? .none : .conservative
+    let event = PortableObservationTracking.Event(kind: kind, triggers: triggers) {
+        cancellation.cancel()
+        delivery.finish()
+    }
+
+    if pipeline.apply(event: event) {
+        completionQueue.enqueue(delivery.endDelivery())
+    } else {
+        delivery.discardDelivery()
+    }
+}
+
+@available(anyAppleOS 27.0, *)
+private func nativeContinuousObservationOptions(
+    for options: PortableObservationTracking.Options
+) -> ObservationTracking.Options? {
+    var nativeOptions = ObservationTracking.Options()
+    var hasMutationOption = false
+
+    if options.contains(.willSet) {
+        nativeOptions.insert(.willSet)
+        hasMutationOption = true
+    }
+    if options.contains(.didSet) {
+        nativeOptions.insert(.didSet)
+        hasMutationOption = true
+    }
+
+    return hasMutationOption ? nativeOptions : nil
+}
+
+@available(anyAppleOS 27.0, *)
+private func portableNativeContinuousObservationEventKind(
+    for nativeKind: ObservationTracking.Event.Kind
+) -> PortableObservationTracking.Event.Kind? {
+    if nativeKind == .initial {
+        return .initial
+    }
+    if nativeKind == .willSet {
+        return .willSet
+    }
+    if nativeKind == .didSet {
+        return .didSet
+    }
+    return nil
+}
+#endif
 
 private func trackRuntimeScopedObservation(
     event pendingEvent: ObservationScopePendingEvent,
@@ -376,6 +523,10 @@ private var canUseObservationTrackingSupportSPI: Bool {
         return false
     }
 
+    return canUseObservationTrackingSupportSPIIgnoringTestOverride
+}
+
+private var canUseObservationTrackingSupportSPIIgnoringTestOverride: Bool {
     #if arch(arm64) || arch(x86_64)
     return observationTrackingChangedAddress != nil
         && observationTrackingCancelAddress != nil
@@ -399,6 +550,38 @@ private var canUseCombinedObservationTrackingSPI: Bool {
 enum _ObservationScopeTesting {
     /// Simulates missing Observation runtime SPI symbols.
     static let forceObservationTrackingSPIUnavailable = Mutex(false)
+
+    static var missingRequiredObservationTrackingSPISymbols: [String] {
+        missingRequiredRuntimeSPISymbols()
+    }
+
+    static var hasRequiredObservationTrackingSPISymbols: Bool {
+        missingRequiredRuntimeSPISymbols().isEmpty
+    }
+}
+
+private func missingRequiredRuntimeSPISymbols() -> [String] {
+    #if arch(arm64) || arch(x86_64)
+    var missing: [String] = []
+    if observationTrackingDidSetAddress == nil {
+        missing.append("withObservationTracking(_:didSet:)")
+    }
+    if observationTrackingWillSetAddress == nil {
+        missing.append("withObservationTracking(_:willSet:)")
+    }
+    if observationTrackingWillSetDidSetAddress == nil {
+        missing.append("withObservationTracking(_:willSet:didSet:)")
+    }
+    if observationTrackingCancelAddress == nil {
+        missing.append("ObservationTracking.cancel")
+    }
+    if observationTrackingChangedAddress == nil {
+        missing.append("ObservationTracking.changed")
+    }
+    return missing
+    #else
+    return ["unsupported architecture"]
+    #endif
 }
 
 private func observationTrackingChangedKeyPath(

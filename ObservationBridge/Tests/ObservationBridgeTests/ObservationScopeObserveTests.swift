@@ -28,6 +28,17 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func requiredObservationTrackingSPISymbolsAreAvailableInDevelopmentRuntime() {
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
+        #expect(_ObservationScopeTesting.missingRequiredObservationTrackingSPISymbols.isEmpty)
+    }
+
+    @Test
     func portableObservationStartsSynchronouslyAndTracksCallbackReads() async {
         let model = CounterModel()
         let rendered = RenderedValue(ScopePass(kind: .didSet, value: -1, isEnabled: false))
@@ -291,7 +302,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func didSetUnavailableFallbackDoesNotEmitStaleDidSet() async {
+    func didSetUnavailableUsesNativeContinuousFallbackWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -317,11 +328,18 @@ final class ObservationScopeObserveTests {
         var cursor = ObservedValuesCursor(passes)
 
         #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
-        #expect(delivery.isActive == false)
-        #expect(passes.isActive == false)
 
         model.value = 11
-        #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+
+        if usesNativeContinuousFallbackForTesting() {
+            #expect(await cursor.next() == ScopePass(kind: .didSet, value: 11, isEnabled: false))
+            #expect(delivery.isActive == true)
+            #expect(passes.isActive == true)
+        } else {
+            #expect(delivery.isActive == false)
+            #expect(passes.isActive == false)
+            #expect(passes.snapshot() == [ScopePass(kind: .initial, value: 0, isEnabled: false)])
+        }
     }
 
     @Test
@@ -375,7 +393,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func exactSPIUnavailableFinishesAfterInitialPass() async {
+    func spiUnavailableDeliversNativeContinuousFallbackWillSetWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -386,7 +404,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
             _ = model.value
             rendered.set(event.kind)
         }
@@ -399,9 +417,51 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
 
-        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
-        #expect(delivery.isActive == false)
-        #expect(kinds.snapshot() == [.initial])
+        if usesNativeContinuousFallbackForTesting() {
+            #expect(await cursor.next() == .willSet)
+            #expect(delivery.isActive == true)
+            #expect(kinds.snapshot() == [.initial, .willSet])
+        } else {
+            #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+            #expect(delivery.isActive == false)
+            #expect(kinds.snapshot() == [.initial])
+        }
+    }
+
+    @Test
+    func spiUnavailableBothOptionsUseNativeContinuousFallbackMutationWhenAvailable() async {
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        if usesNativeContinuousFallbackForTesting() {
+            let mutationKind = await cursor.next()
+            #expect(mutationKind == .willSet || mutationKind == .didSet)
+            #expect(delivery.isActive == true)
+        } else {
+            #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+            #expect(delivery.isActive == false)
+            #expect(kinds.snapshot() == [.initial])
+        }
     }
 
     @MainActor
@@ -683,7 +743,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func spiUnavailableDoesNotReportConservativeMatches() async {
+    func spiUnavailableFallbackReportsConservativeMatchesWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -708,9 +768,54 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
+        if usesNativeContinuousFallbackForTesting() {
+            let mutationPass = await cursor.next()
+            #expect(
+                mutationPass == "willSet:value:true:secondary:true"
+                    || mutationPass == "didSet:value:true:secondary:true"
+            )
+            #expect(delivery.isActive == true)
+        } else {
+            #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+            #expect(delivery.isActive == false)
+            #expect(passes.snapshot() == ["initial:value:false:secondary:false"])
+        }
+    }
+
+    @Test
+    func nativeContinuousFallbackCancelStopsMutationDeliveryAndFinishesSamplers() async {
+        guard usesNativeContinuousFallbackForTesting() else {
+            return
+        }
+
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let rendered = RenderedValue("")
+
+        let token = withPortableContinuousObservation { event in
+            rendered.set("\(event.kind):\(model.value)")
+        }
+        let passes = await token.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:0")
+
+        model.value = 1
+        #expect(await cursor.next() == "didSet:1")
+
+        token.cancel()
+        #expect(token.isActive == false)
+        #expect(passes.isActive == false)
+
+        model.value = 2
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
-        #expect(delivery.isActive == false)
-        #expect(passes.snapshot() == ["initial:value:false:secondary:false"])
+        #expect(passes.snapshot() == ["initial:0", "didSet:1"])
     }
 
     @Test
@@ -1507,6 +1612,15 @@ private enum ReplacementReadTarget {
 private struct RenderedObservation<Value: Sendable>: Sendable {
     let delivery: PortableObservationTracking.Token
     let values: ObservedValues<Value>
+}
+
+private func usesNativeContinuousFallbackForTesting() -> Bool {
+    #if compiler(>=6.4)
+    if #available(anyAppleOS 27.0, *) {
+        return true
+    }
+    #endif
+    return false
 }
 
 private final class RenderedValue<Value: Sendable>: @unchecked Sendable {

@@ -5,18 +5,34 @@ import Observation
 /// `AnyKeyPath` instances are immutable reference types, so sharing them across
 /// isolation domains is safe even though the type predates `Sendable`.
 struct ObservationEventTriggers: @unchecked Sendable {
-    private var keyPath: AnyKeyPath?
+    private enum Storage {
+        case none
+        case exact(AnyKeyPath?)
+        case conservative
+    }
+
+    private var storage: Storage
 
     /// No mutation triggered the pass (`.initial` passes).
-    static let none = ObservationEventTriggers(keyPath: nil)
+    static let none = ObservationEventTriggers(storage: .none)
+
+    /// A mutation triggered the pass, but its key path could not be preserved.
+    static let conservative = ObservationEventTriggers(storage: .conservative)
 
     /// A mutation of `keyPath` triggered the pass.
     static func keyPath(_ keyPath: AnyKeyPath?) -> ObservationEventTriggers {
-        ObservationEventTriggers(keyPath: keyPath)
+        ObservationEventTriggers(storage: .exact(keyPath))
     }
 
     func contains(_ keyPath: AnyKeyPath) -> Bool {
-        self.keyPath == keyPath
+        switch storage {
+        case .none:
+            false
+        case .exact(let trigger):
+            trigger == keyPath
+        case .conservative:
+            true
+        }
     }
 }
 
