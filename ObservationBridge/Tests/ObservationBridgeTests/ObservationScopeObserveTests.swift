@@ -13,16 +13,6 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
     weak var model: DeinitProbeCounterModel?
 }
 
-private func usesNativeDefaultObservationBackend() -> Bool {
-    #if compiler(>=6.4)
-    if #available(anyAppleOS 27.0, *) {
-        return true
-    }
-    #endif
-
-    return false
-}
-
 @Suite(.serialized)
 final class ObservationScopeObserveTests {
     @Test
@@ -35,14 +25,6 @@ final class ObservationScopeObserveTests {
         #expect(PortableObservationTracking.Event.Kind.willSet == .willSet)
         #expect(PortableObservationTracking.Event.Kind.didSet != .willSet)
         #expect(String(describing: PortableObservationTracking.Event.Kind.willSet) == "willSet")
-
-        #if compiler(>=6.4)
-        if #available(anyAppleOS 27.0, *) {
-            #expect(PortableObservationTracking.Event.Kind.deinit == .deinit)
-            #expect(PortableObservationTracking.Event.Kind.didSet != .deinit)
-            #expect(String(describing: PortableObservationTracking.Event.Kind.deinit) == "deinit")
-        }
-        #endif
     }
 
     @Test
@@ -109,18 +91,10 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        if usesNativeDefaultObservationBackend() {
-            #expect(await cursor.next() == "didSet:value:true:secondary:true")
-        } else {
-            #expect(await cursor.next() == "didSet:value:true:secondary:false")
-        }
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
 
         model.secondaryValue = 2
-        if usesNativeDefaultObservationBackend() {
-            #expect(await cursor.next() == "didSet:value:true:secondary:true")
-        } else {
-            #expect(await cursor.next() == "didSet:value:false:secondary:true")
-        }
+        #expect(await cursor.next() == "didSet:value:false:secondary:true")
     }
 
     @Test
@@ -318,9 +292,9 @@ final class ObservationScopeObserveTests {
 
     @Test
     func didSetUnavailableFallbackDoesNotEmitStaleDidSet() async {
-        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
-            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
         }
 
         let model = DelayedMutationCounterModel()
@@ -375,35 +349,36 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func mutationOptionsPreferDidSetOverWillSet() async {
+    func mutationOptionsDeliverWillSetThenDidSet() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.willSet)
+        let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
             _ = model.value
-            rendered.set(event.kind)
+            rendered.set("\(event.kind):\(event.matches(\CounterModel.value))")
         }
-        let kinds = await delivery.values {
+        let passes = await delivery.values {
             rendered.value
         }
-        var cursor = ObservedValuesCursor(kinds)
+        var cursor = ObservedValuesCursor(passes)
 
-        #expect(await cursor.next() == .initial)
+        #expect(await cursor.next() == "initial:false")
 
         model.value = 1
 
-        #expect(await cursor.next() == .didSet)
+        #expect(await cursor.next() == "willSet:true")
+        #expect(await cursor.next() == "didSet:true")
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
-        #expect(kinds.snapshot() == [.initial, .didSet])
+        #expect(passes.snapshot() == ["initial:false", "willSet:true", "didSet:true"])
     }
 
     @Test
-    func didSetFallbackUsesWillSetWhenRequested() async {
-        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+    func exactSPIUnavailableFinishesAfterInitialPass() async {
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
-            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
         }
 
         let model = CounterModel()
@@ -424,8 +399,9 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
 
-        #expect(await cursor.next() == .willSet)
-        #expect(kinds.snapshot() == [.initial, .willSet])
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(delivery.isActive == false)
+        #expect(kinds.snapshot() == [.initial])
     }
 
     @MainActor
@@ -501,13 +477,6 @@ final class ObservationScopeObserveTests {
 
     @Test
     func rawDeinitOptionDoesNotSynthesizeLegacyEvent() async {
-        #if compiler(>=6.4)
-        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
-        defer {
-            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
-        }
-        #endif
-
         let model = ChildContainerModel()
         let weakChild = WeakChildProbeModelBox()
         do {
@@ -539,119 +508,10 @@ final class ObservationScopeObserveTests {
         #expect(kinds.snapshot() == [.initial])
     }
 
-    #if compiler(>=6.4)
     @Test
-    func nativeDeinitOptionDeliversDependencyDeinitEvent() async {
-        guard #available(anyAppleOS 27.0, *) else {
-            return
-        }
-
-        let model = ChildContainerModel()
-        let weakChild = WeakChildProbeModelBox()
-        do {
-            let child = ChildProbeModel(value: 7)
-            weakChild.value = child
-            model.child = child
-        }
-        let observations = ObservationScope()
-        let rendered = RenderedValue("")
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model, options: .deinit) { event, model in
-            if let child = model.child {
-                _ = child.value
-            }
-            rendered.set(
-                "\(event.kind):value:\(event.matches(\ChildContainerModel.value)):child:\(event.matches(\ChildContainerModel.child))"
-            )
-        }
-        let passes = await delivery.values {
-            rendered.value
-        }
-        var cursor = ObservedValuesCursor(passes)
-
-        #expect(await cursor.next() == "initial:value:false:child:false")
-        #expect(weakChild.value != nil)
-
-        model.child = nil
-
-        #expect(await waitUntilCondition { weakChild.value == nil })
-        #expect(await cursor.next() == "deinit:value:false:child:false")
-        #expect(
-            passes.snapshot() == [
-                "initial:value:false:child:false",
-                "deinit:value:false:child:false",
-            ]
-        )
-    }
-
-    @Test
-    func nativeDeinitObservationsReportConservativeMatches() async {
-        guard #available(anyAppleOS 27.0, *) else {
-            return
-        }
-
-        let model = ChildContainerModel()
-        let observations = ObservationScope()
-        let rendered = RenderedValue("")
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model, options: [.didSet, .deinit]) { event, model in
-            _ = model.value
-            rendered.set(
-                "\(event.kind):value:\(event.matches(\ChildContainerModel.value)):child:\(event.matches(\ChildContainerModel.child))"
-            )
-        }
-        let kinds = await delivery.values {
-            rendered.value
-        }
-        var cursor = ObservedValuesCursor(kinds)
-
-        #expect(await cursor.next() == "initial:value:false:child:false")
-
-        model.value = 1
-
-        // The native options backend cannot capture trigger key paths, so will/did-set
-        // passes answer `matches` conservatively for every key path.
-        #expect(await cursor.next() == "didSet:value:true:child:true")
-    }
-
-    @Test
-    func didSetObservationsUseNativeBackendByDefaultOnOS27() async {
-        guard usesNativeDefaultObservationBackend() else {
-            return
-        }
-
-        let model = CounterModel()
-        let observations = ObservationScope()
-        let rendered = RenderedValue("")
-        defer { observations.cancelAll() }
-
-        let delivery = observations.observe(model) { event, model in
-            rendered.set("\(event.kind):\(model.value):\(event.matches(\CounterModel.secondaryValue))")
-        }
-        let passes = await delivery.values {
-            rendered.value
-        }
-        var cursor = ObservedValuesCursor(passes)
-
-        #expect(await cursor.next() == "initial:0:false")
-
-        model.value = 1
-
-        // The default Swift 6.4 / OS 27+ native backend delivers did-set passes,
-        // but trigger details are unavailable and matches degrades conservatively.
-        #expect(await cursor.next() == "didSet:1:true")
-    }
-
-    @Test
-    func pendingEventKindsCoalesceConsecutiveDuplicatesInOrder() async {
-        guard #available(anyAppleOS 27.0, *) else {
-            return
-        }
-
+    func pendingEventKeepsLatestEventWhenNoWaiterIsRegistered() async {
         let slot = ObservationScopeSlot(
-            options: [.willSet, .didSet, .deinit],
+            options: [.willSet, .didSet],
             observationIsolation: nil,
             delivery: ObservationDelivery(),
             pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
@@ -659,16 +519,10 @@ final class ObservationScopeObserveTests {
         defer { slot.cancel() }
 
         slot.emitChange(kind: .willSet, triggers: .none)
-        slot.emitChange(kind: .willSet, triggers: .none)
         slot.emitChange(kind: .didSet, triggers: .none)
-        slot.emitChange(kind: .didSet, triggers: .none)
-        slot.emitChange(kind: .deinit, triggers: .none)
 
-        #expect(await slot.waitForChange()?.kind == .willSet)
         #expect(await slot.waitForChange()?.kind == .didSet)
-        #expect(await slot.waitForChange()?.kind == .deinit)
     }
-    #endif
 
     @Test
     func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
@@ -739,18 +593,10 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        if usesNativeDefaultObservationBackend() {
-            #expect(await cursor.next() == "didSet:value:true:secondary:true")
-        } else {
-            #expect(await cursor.next() == "didSet:value:true:secondary:false")
-        }
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
 
         model.secondaryValue = 2
-        if usesNativeDefaultObservationBackend() {
-            #expect(await cursor.next() == "didSet:value:true:secondary:true")
-        } else {
-            #expect(await cursor.next() == "didSet:value:false:secondary:true")
-        }
+        #expect(await cursor.next() == "didSet:value:false:secondary:true")
     }
 
     @Test
@@ -775,21 +621,11 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        if usesNativeDefaultObservationBackend() {
-            #expect(await cursor.next() == "willSet:value:true:secondary:true")
-        } else {
-            #expect(await cursor.next() == "willSet:value:true:secondary:false")
-        }
+        #expect(await cursor.next() == "willSet:value:true:secondary:false")
     }
 
     @Test
-    func coalescedPassReportsAllTriggerKeyPaths() async {
-        // Exact trigger coalescing is a legacy continuous-SPI property. The
-        // native OS 27+ backend reports conservative matches instead.
-        guard !usesNativeDefaultObservationBackend() else {
-            return
-        }
-
+    func mutationsDuringApplyPassAreNotObservedByCurrentTracking() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
@@ -802,8 +638,6 @@ final class ObservationScopeObserveTests {
                 "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
             )
             if event.kind == .didSet, model.value == 1, model.secondaryValue == 0 {
-                // Mutate while this pass is still applying: the previous pass's tracking is
-                // still armed, so both wake-ups coalesce into one pass with both key paths.
                 model.value = 2
                 model.secondaryValue = 3
             }
@@ -817,17 +651,13 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
         #expect(await cursor.next() == "didSet:value:true:secondary:false")
-        #expect(await cursor.next() == "didSet:value:true:secondary:true")
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(model.value == 2)
+        #expect(model.secondaryValue == 3)
     }
 
     @Test
-    func mutationsDuringApplyPassAreObserved() async {
-        // The legacy continuous-SPI backend keeps previous tracking armed while
-        // a replacement pass applies. The native OS 27+ backend is one-shot.
-        guard !usesNativeDefaultObservationBackend() else {
-            return
-        }
-
+    func nextExternalMutationRetracksAfterApplyPassMutation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let passes = RenderedValue<[String]>([])
@@ -843,15 +673,20 @@ final class ObservationScopeObserveTests {
         model.value = 1
 
         #expect(await waitUntilCondition {
-            passes.value == ["initial:0", "didSet:1", "didSet:2"]
+            passes.value == ["initial:0", "didSet:1"]
+        })
+
+        model.value = 3
+        #expect(await waitUntilCondition {
+            passes.value == ["initial:0", "didSet:1", "didSet:3"]
         })
     }
 
     @Test
-    func publicFallbackReportsConservativeMatches() async {
-        _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = true }
+    func spiUnavailableDoesNotReportConservativeMatches() async {
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
-            _ObservationScopeTesting.forcePublicDidSetFallback.withLock { $0 = false }
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
         }
 
         let model = CounterModel()
@@ -873,7 +708,9 @@ final class ObservationScopeObserveTests {
         #expect(await cursor.next() == "initial:value:false:secondary:false")
 
         model.value = 1
-        #expect(await cursor.next() == "willSet:value:true:secondary:true")
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(delivery.isActive == false)
+        #expect(passes.snapshot() == ["initial:value:false:secondary:false"])
     }
 
     @Test

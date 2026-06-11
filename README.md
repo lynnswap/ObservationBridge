@@ -61,7 +61,6 @@ the observation starts. Later passes are controlled by `PortableObservationTrack
 - `.initial`: the first pass
 - `.willSet`: a tracked dependency is about to change
 - `.didSet`: a tracked dependency changed
-- `.deinit`: a tracked dependency deinitialized
 
 `PortableObservationTracking.Options` controls which later events are delivered. The default is
 `.didSet`:
@@ -77,7 +76,7 @@ let initialOnlyObservation = withPortableContinuousObservation(options: []) { ev
 ```
 
 `[]` delivers only `.initial`. `.didSet` and `.willSet` are available on all
-supported versions. `.deinit` is delivered on Swift 6.4 and OS 27+.
+supported versions.
 
 Do not store `PortableObservationTracking.Event`. Save `event.kind` if later code needs the
 reason for the pass.
@@ -85,11 +84,12 @@ reason for the pass.
 Call `PortableObservationTracking.Token.cancel()` to stop an observation. The token also
 cancels when it deinitializes.
 
-`PortableObservationTracking.Event.matches(_:)` reports whether the current pass can be treated as
-triggered by a mutation of the supplied key path. `.initial` and `.deinit` passes
-match nothing. Swift 6.4 / OS 27+ uses the native Observation backend for later
-events; when trigger details are unavailable, `matches(_:)` returns `true` so
-callers do not skip work for a possible mutation.
+`PortableObservationTracking.Event.matches(_:)` mirrors Swift's
+`withContinuousObservation` matching behavior: mutation passes compare the
+event's `ObservationTracking.changed` key path with the supplied key path, and
+`.initial` matches nothing. Exact matching relies on weak-linked Observation
+runtime SPI; when the required symbols are unavailable, ObservationBridge avoids
+direct calls and completes after the synchronous `.initial` pass.
 
 ## Testing
 

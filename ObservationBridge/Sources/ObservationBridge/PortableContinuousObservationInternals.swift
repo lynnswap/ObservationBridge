@@ -25,15 +25,6 @@ struct ObservationScopePendingEvent: Sendable {
     static let initial = ObservationScopePendingEvent(kind: .initial, triggers: .none)
 }
 
-/// What a registrar callback should do with its backing tracking after reporting a change.
-enum ObservationScopeTrackingDirective: Sendable {
-    /// The tracking is still current (or still covering an in-flight pass); keep it armed.
-    case keepTracking
-
-    /// The tracking was superseded or the slot is cancelled; the callback must cancel it.
-    case cancelTracking
-}
-
 private struct ObservationScopeWaiters: @unchecked Sendable {
     private var first: CheckedContinuation<ObservationScopePendingEvent?, Never>?
     private var additional: [CheckedContinuation<ObservationScopePendingEvent?, Never>]?
@@ -113,34 +104,14 @@ struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unch
 final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         var isCancelled = false
-        var pendingEvents: [ObservationScopePendingEvent] = []
+        var pendingEvent: ObservationScopePendingEvent?
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
 
-        // Continuous-tracking bookkeeping. `trackingGeneration` is bumped when a tracking
-        // pass begins; `armedTrackingGeneration` catches up once that pass has installed
-        // its tracking. A superseded tracking keeps delivering while the replacement pass
-        // is still in flight (closing the re-arm window) and cancels itself on its first
-        // change after the replacement is armed.
-        var trackingGeneration: UInt64 = 0
-        var armedTrackingGeneration: UInt64 = 0
-
-        mutating func appendPendingEvent(_ event: ObservationScopePendingEvent) {
-            guard pendingEvents.last?.kind != event.kind else {
-                pendingEvents[pendingEvents.count - 1].triggers.formUnion(event.triggers)
-                return
-            }
-
-            pendingEvents.append(event)
-        }
-
         mutating func popPendingEvent() -> ObservationScopePendingEvent? {
-            guard !pendingEvents.isEmpty else {
-                return nil
-            }
-
-            return pendingEvents.removeFirst()
+            defer { pendingEvent = nil }
+            return pendingEvent
         }
     }
 
@@ -263,7 +234,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             state.isCancelled = true
-            state.pendingEvents.removeAll(keepingCapacity: false)
+            state.pendingEvent = nil
             state.pipeline = nil
             let waiters = state.waiters.takeAll()
             let task = state.task
@@ -280,76 +251,24 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancellation.task?.cancel()
     }
 
-    func emitChange(kind: PortableObservationTracking.Event.Kind, triggers: ObservationEventTriggers) {
+    @discardableResult
+    func emitChange(kind: PortableObservationTracking.Event.Kind, triggers: ObservationEventTriggers) -> Bool {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
-        let waiters = state.withLock { state -> ObservationScopeWaiterBatch in
+        let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
             guard !state.isCancelled else {
-                return .empty
+                return (false, .empty)
             }
 
             if state.waiters.isEmpty {
-                state.appendPendingEvent(event)
-                return .empty
+                state.pendingEvent = event
+                return (true, .empty)
             }
 
-            return state.waiters.takeAll()
+            return (true, state.waiters.takeAll())
         }
 
         waiters.resumeAll(returning: event)
-    }
-
-    /// Marks the start of a tracking pass and returns its generation token.
-    func beginTrackingPass() -> UInt64 {
-        state.withLock { state in
-            state.trackingGeneration &+= 1
-            return state.trackingGeneration
-        }
-    }
-
-    /// Records that the pass for `generation` finished installing its tracking.
-    func markTrackingArmed(_ generation: UInt64) {
-        state.withLock { state in
-            guard generation == state.trackingGeneration else {
-                return
-            }
-
-            state.armedTrackingGeneration = generation
-        }
-    }
-
-    /// Reports a change observed by the tracking armed for `generation`.
-    ///
-    /// Superseded trackings keep delivering while the replacement pass has not finished
-    /// arming (their events are the only coverage for mutations made during that pass);
-    /// once the replacement is armed they are told to cancel and their event is dropped
-    /// because the armed tracking observes the same mutation.
-    func acceptTrackingEvent(
-        generation: UInt64,
-        kind: PortableObservationTracking.Event.Kind,
-        triggers: ObservationEventTriggers
-    ) -> ObservationScopeTrackingDirective {
-        let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
-        let (directive, waiters) = state.withLock {
-            state -> (ObservationScopeTrackingDirective, ObservationScopeWaiterBatch) in
-            guard !state.isCancelled else {
-                return (.cancelTracking, .empty)
-            }
-
-            if generation != state.trackingGeneration,
-               state.armedTrackingGeneration == state.trackingGeneration {
-                return (.cancelTracking, .empty)
-            }
-
-            if state.waiters.isEmpty {
-                state.appendPendingEvent(event)
-                return (.keepTracking, .empty)
-            }
-
-            return (.keepTracking, state.waiters.takeAll())
-        }
-
-        waiters.resumeAll(returning: event)
-        return directive
+        return accepted
     }
 
     func waitForChange() async -> ObservationScopePendingEvent? {
