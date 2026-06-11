@@ -6,7 +6,10 @@ let package = Package(
     name: "ObservationBridge",
     platforms: [
         .iOS(.v18),
-        .macOS(.v15)
+        .macCatalyst(.v18),
+        .macOS(.v15),
+        .tvOS(.v18),
+        .visionOS(.v2)
     ],
     products: [
         .library(
