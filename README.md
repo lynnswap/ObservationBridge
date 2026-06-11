@@ -10,7 +10,6 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 - Mac Catalyst 18+
 - macOS 15+
 - tvOS 18+
-- watchOS 11+
 - visionOS 2+
 
 ## Portable Continuous Observation
