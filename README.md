@@ -12,12 +12,12 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 ## Portable Continuous Observation
 
 Create an observation with `withPortableContinuousObservation(options:apply:)`.
-The returned `PortableObservationToken` keeps the observation alive.
+The returned `PortableObservationTracking.Token` keeps the observation alive.
 
 ```swift
 import ObservationBridge
 
-private var observation: PortableObservationToken?
+private var observation: PortableObservationTracking.Token?
 
 func bindModel() {
     observation = withPortableContinuousObservation { [weak self] event in
@@ -51,16 +51,16 @@ changed key path.
 ### Events
 
 `withPortableContinuousObservation` runs its `.initial` pass synchronously when
-the observation starts. Later passes are controlled by `ObservationOptions`.
+the observation starts. Later passes are controlled by `PortableObservationTracking.Options`.
 
-`ObservationEvent.kind` describes why the callback is running:
+`PortableObservationTracking.Event.kind` describes why the callback is running:
 
 - `.initial`: the first pass
 - `.willSet`: a tracked dependency is about to change
 - `.didSet`: a tracked dependency changed
 - `.deinit`: a tracked dependency deinitialized
 
-`ObservationOptions` controls which later events are delivered. The default is
+`PortableObservationTracking.Options` controls which later events are delivered. The default is
 `.didSet`:
 
 ```swift
@@ -76,13 +76,13 @@ let initialOnlyObservation = withPortableContinuousObservation(options: []) { ev
 `[]` delivers only `.initial`. `.didSet` and `.willSet` are available on all
 supported versions. `.deinit` is delivered on Swift 6.4 and OS 27+.
 
-Do not store `ObservationEvent`. Save `event.kind` if later code needs the
+Do not store `PortableObservationTracking.Event`. Save `event.kind` if later code needs the
 reason for the pass.
 
-Call `PortableObservationToken.cancel()` to stop an observation. The token also
+Call `PortableObservationTracking.Token.cancel()` to stop an observation. The token also
 cancels when it deinitializes.
 
-`ObservationEvent.matches(_:)` reports whether the current pass can be treated as
+`PortableObservationTracking.Event.matches(_:)` reports whether the current pass can be treated as
 triggered by a mutation of the supplied key path. `.initial` and `.deinit` passes
 match nothing. When trigger details are unavailable, `matches(_:)` returns
 `true` so callers do not skip work for a possible mutation.
@@ -135,13 +135,18 @@ Use the notes for the version you are upgrading to.
 
 These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.
 
+- `ObservationOptions` has been renamed to
+  `PortableObservationTracking.Options`.
+- `ObservationEvent` has been renamed to `PortableObservationTracking.Event`.
+- `PortableObservationToken` has been renamed to
+  `PortableObservationTracking.Token`.
 - `ObservationScope` and `.observe(model)` have been removed from the public
   API. Use `withPortableContinuousObservation(options:apply:)` and keep the
-  returned `PortableObservationToken` alive.
+  returned `PortableObservationTracking.Token` alive.
 - The callback now matches Swift's `withContinuousObservation` shape. Read
   observable values directly from the callback body instead of receiving a
   `model` argument.
-- `ObservationDelivery` has been replaced by `PortableObservationToken`.
+- `ObservationDelivery` has been replaced by `PortableObservationTracking.Token`.
   Attach test samplers with `token.values { ... }`.
 
 ```swift
@@ -161,7 +166,7 @@ These notes apply when upgrading from `v0.8.x` or earlier to `v0.9.0`.
 
 - Start observations with `withPortableContinuousObservation`. Replace
   `model.observe(...).store(in: observations)` with a retained
-  `PortableObservationToken`.
+  `PortableObservationTracking.Token`.
 - Read observed values inside the callback instead of passing key paths to
   `observe`.
 - `ObservationRegistration` and `.store(in:)` have been removed without a
@@ -177,7 +182,7 @@ model.observe(\.count) { value in
 After:
 
 ```swift
-private var countObservation: PortableObservationToken?
+private var countObservation: PortableObservationTracking.Token?
 
 func bindCount() {
     countObservation = withPortableContinuousObservation { _ in
@@ -196,7 +201,7 @@ deinit {
   the owner that starts that task.
 
 ```swift
-private var countObservation: PortableObservationToken?
+private var countObservation: PortableObservationTracking.Token?
 
 func bindCountTracking() {
     countObservation = withPortableContinuousObservation { _ in
@@ -215,10 +220,10 @@ deinit {
 - `id:`, `ObservationScope.update(_:)`, and `ObservationScope.cancel(id:)` have
   been removed. Keep and cancel the returned token before rebinding a dynamic
   observation.
-- `ObservationOptions` is now a portable event option set. Later event options
+- `PortableObservationTracking.Options` is now a portable event option set. Later event options
   follow `withContinuousObservation`; use `[]` for initial-only callbacks.
-- `ObservationEvent` is now noncopyable and borrowed by the callback. Save
+- `PortableObservationTracking.Event` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
-- `ObservationEvent.matches(_:)` reports the key paths that triggered a pass.
+- `PortableObservationTracking.Event.matches(_:)` reports the key paths that triggered a pass.
   The explicit `tracking:` observe overload has been removed: read the needed
   properties in the callback and filter passes with `matches(_:)` instead.

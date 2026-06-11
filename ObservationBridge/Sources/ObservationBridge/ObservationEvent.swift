@@ -69,98 +69,100 @@ struct ObservationEventTriggers: @unchecked Sendable {
     }
 }
 
-/// Information about a single portable observation pass.
-public struct ObservationEvent: ~Copyable {
-    /// The reason the observation callback is running.
-    public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
-        private enum RawValue: UInt8, Sendable {
-            case initial
-            case willSet
-            case didSet
+extension PortableObservationTracking {
+    /// Information about a single portable observation pass.
+    public struct Event: ~Copyable {
+        /// The reason the observation callback is running.
+        public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
+            private enum RawValue: UInt8, Sendable {
+                case initial
+                case willSet
+                case didSet
+                #if compiler(>=6.4)
+                case `deinit`
+                #endif
+            }
+
+            private let rawValue: RawValue
+
+            /// The initial tracking pass.
+            public static var initial: Kind {
+                Kind(rawValue: .initial)
+            }
+
+            /// A pass triggered by a will-set event.
+            public static var willSet: Kind {
+                Kind(rawValue: .willSet)
+            }
+
+            /// A pass after observed state changed.
+            public static var didSet: Kind {
+                Kind(rawValue: .didSet)
+            }
+
             #if compiler(>=6.4)
-            case `deinit`
+            /// A pass triggered after a tracked observable dependency is deinitialized.
+            @available(anyAppleOS 27.0, *)
+            public static var `deinit`: Kind {
+                Kind(rawValue: .deinit)
+            }
             #endif
-        }
 
-        private let rawValue: RawValue
+            public var description: String {
+                switch rawValue {
+                case .initial:
+                    "initial"
+                case .willSet:
+                    "willSet"
+                case .didSet:
+                    "didSet"
+                #if compiler(>=6.4)
+                case .deinit:
+                    "deinit"
+                #endif
+                }
+            }
 
-        /// The initial tracking pass.
-        public static var initial: Kind {
-            Kind(rawValue: .initial)
-        }
-
-        /// A pass triggered by a will-set event.
-        public static var willSet: Kind {
-            Kind(rawValue: .willSet)
-        }
-
-        /// A pass after observed state changed.
-        public static var didSet: Kind {
-            Kind(rawValue: .didSet)
-        }
-
-        #if compiler(>=6.4)
-        /// A pass triggered after a tracked observable dependency is deinitialized.
-        @available(anyAppleOS 27.0, *)
-        public static var `deinit`: Kind {
-            Kind(rawValue: .deinit)
-        }
-        #endif
-
-        public var description: String {
-            switch rawValue {
-            case .initial:
-                "initial"
-            case .willSet:
-                "willSet"
-            case .didSet:
-                "didSet"
-            #if compiler(>=6.4)
-            case .deinit:
-                "deinit"
-            #endif
+            private init(rawValue: RawValue) {
+                self.rawValue = rawValue
             }
         }
 
-        private init(rawValue: RawValue) {
-            self.rawValue = rawValue
+        /// The reason the observation callback is running.
+        public let kind: Kind
+
+        private let triggers: ObservationEventTriggers
+
+        private let cancellation: (@Sendable () -> Void)?
+
+        init(
+            kind: Kind,
+            triggers: ObservationEventTriggers = .none,
+            cancellation: (@Sendable () -> Void)? = nil
+        ) {
+            self.kind = kind
+            self.triggers = triggers
+            self.cancellation = cancellation
         }
-    }
 
-    /// The reason the observation callback is running.
-    public let kind: Kind
+        /// Returns whether this pass was triggered by a mutation of the supplied key path.
+        ///
+        /// A coalesced pass can stand for multiple mutations; this returns `true` when any of
+        /// them used `keyPath`. `.initial` and `.deinit` passes return `false`. When trigger
+        /// key paths cannot be captured (the public-API fallback backend, or `.deinit`-enabled
+        /// native observations), this conservatively returns `true` for every key path so
+        /// callers never skip work for a mutation that did happen.
+        ///
+        /// Key paths carry no instance identity: two tracked objects of the same type are
+        /// indistinguishable, and the comparison is exact, so a subclass-rooted key path does
+        /// not match its superclass storage.
+        public func matches(_ keyPath: PartialKeyPath<some Observable>) -> Bool {
+            triggers.contains(keyPath)
+        }
 
-    private let triggers: ObservationEventTriggers
-
-    private let cancellation: (@Sendable () -> Void)?
-
-    init(
-        kind: Kind,
-        triggers: ObservationEventTriggers = .none,
-        cancellation: (@Sendable () -> Void)? = nil
-    ) {
-        self.kind = kind
-        self.triggers = triggers
-        self.cancellation = cancellation
-    }
-
-    /// Returns whether this pass was triggered by a mutation of the supplied key path.
-    ///
-    /// A coalesced pass can stand for multiple mutations; this returns `true` when any of
-    /// them used `keyPath`. `.initial` and `.deinit` passes return `false`. When trigger
-    /// key paths cannot be captured (the public-API fallback backend, or `.deinit`-enabled
-    /// native observations), this conservatively returns `true` for every key path so
-    /// callers never skip work for a mutation that did happen.
-    ///
-    /// Key paths carry no instance identity: two tracked objects of the same type are
-    /// indistinguishable, and the comparison is exact, so a subclass-rooted key path does
-    /// not match its superclass storage.
-    public func matches(_ keyPath: PartialKeyPath<some Observable>) -> Bool {
-        triggers.contains(keyPath)
-    }
-
-    /// Cancels the event's backing tracking when one is available.
-    public func cancel() {
-        cancellation?()
+        /// Cancels the event's backing tracking when one is available.
+        public func cancel() {
+            cancellation?()
+        }
     }
 }

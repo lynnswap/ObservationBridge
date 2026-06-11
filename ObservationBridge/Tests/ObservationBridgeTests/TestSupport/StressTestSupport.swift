@@ -58,7 +58,7 @@ struct StressRunOutcome: Sendable {
 typealias NativeStressRegistrar = @Sendable (
     LockedCounterModel,
     @escaping @Sendable (Int) -> Void
-) -> PortableObservationToken
+) -> PortableObservationTracking.Token
 
 func runTwoThreadWriteAndReadRound(
     model: LockedCounterModel,

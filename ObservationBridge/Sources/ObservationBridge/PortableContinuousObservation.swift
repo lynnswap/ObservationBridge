@@ -11,15 +11,15 @@ import _ObservationBridgeRuntimeABI
 /// when observation starts in the caller's current actor context.
 ///
 /// - Parameters:
-///   - options: Event delivery options. Defaults to ``ObservationOptions/didSet``.
+///   - options: Event delivery options. Defaults to ``PortableObservationTracking/Options/didSet``.
 ///   - apply: The callback to run for the initial pass and selected subsequent events.
 ///   - isolation: The actor isolation used to start the observation.
 /// - Returns: A token that keeps the observation alive until cancelled or deinitialized.
 public func withPortableContinuousObservation(
-    options: ObservationOptions = .didSet,
-    @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void,
+    options: PortableObservationTracking.Options = .didSet,
+    @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
     isolation: isolated (any Actor)? = #isolation
-) -> PortableObservationToken {
+) -> PortableObservationTracking.Token {
     let delivery = ObservationDelivery()
     let slot = ObservationScopeSlot(
         options: options,
@@ -28,19 +28,20 @@ public func withPortableContinuousObservation(
         pipeline: ObservationScopeImplicitTrackingPipeline(apply)
     )
     delivery.bind(to: slot)
-    let token = PortableObservationToken(slot: slot, delivery: delivery)
+    let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
     slot.start(isolation: isolation)
     return token
 }
 
 // Will/did-set events go through the continuous SPI backend on every OS so trigger key
-// paths can be captured for `ObservationEvent.matches(_:)` without an untracked window
-// between passes. The native `withObservationTracking(options:)` backend is used when
-// `.deinit` events are requested (dependency deinit cannot be observed any other way),
-// or as the did-set fallback when the SPI symbols are unavailable: the public native API
+// paths can be captured for `PortableObservationTracking.Event.matches(_:)`
+// without an untracked window between passes. The native
+// `withObservationTracking(options:)` backend is used when `.deinit` events are
+// requested (dependency deinit cannot be observed any other way), or as the
+// did-set fallback when the SPI symbols are unavailable: the public native API
 // still observes did-set changes that the public legacy API cannot deliver.
 func runScopedObservationLoop(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -64,7 +65,7 @@ func runScopedObservationLoop(
 }
 
 func runInitialScopedObservationPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: isolated (any Actor)?,
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
@@ -87,7 +88,7 @@ func runInitialScopedObservationPass(
 }
 
 func runScopedObservationLoopAfterInitialPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -113,7 +114,7 @@ func runScopedObservationLoopAfterInitialPass(
 #if compiler(>=6.4)
 @available(anyAppleOS 27.0, *)
 private func runNativeScopedObservationLoop(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -145,7 +146,7 @@ private func runNativeScopedObservationLoop(
 
 @available(anyAppleOS 27.0, *)
 private func runInitialNativeScopedObservationPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation _: isolated (any Actor)?,
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
@@ -171,7 +172,7 @@ private func runInitialNativeScopedObservationPass(
 
 @available(anyAppleOS 27.0, *)
 private func runNativeScopedObservationLoopAfterInitialPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -201,7 +202,7 @@ private func runNativeScopedObservationLoopAfterInitialPass(
 @available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservation(
     event pendingEvent: ObservationScopePendingEvent,
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async -> Bool {
@@ -219,7 +220,7 @@ private func trackNativeScopedObservation(
 @available(anyAppleOS 27.0, *)
 private func trackNativeScopedObservationInCurrentContext(
     event pendingEvent: ObservationScopePendingEvent,
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     slot: ObservationScopeSlot
 ) -> ScopedObservationTrackResult {
     guard let pipeline = slot.pipelineSnapshot() else {
@@ -264,7 +265,7 @@ private func trackNativeScopedObservationInCurrentContext(
 }
 
 @available(anyAppleOS 27.0, *)
-private func nativeTrackingOptions(for options: ObservationOptions) -> ObservationTracking.Options? {
+private func nativeTrackingOptions(for options: PortableObservationTracking.Options) -> ObservationTracking.Options? {
     var trackingOptions = ObservationTracking.Options()
     var hasOptions = false
 
@@ -309,7 +310,7 @@ private func emitNativeScopedObservationChange(
 @available(anyAppleOS 27.0, *)
 private func nativeScopedObservationEventKind(
     for nativeKind: ObservationTracking.Event.Kind
-) -> ObservationEvent.Kind? {
+) -> PortableObservationTracking.Event.Kind? {
     if nativeKind == .didSet {
         return .didSet
     }
@@ -324,7 +325,7 @@ private func nativeScopedObservationEventKind(
 }
 
 @available(anyAppleOS 27.0, *)
-private func shouldUseNativeScopedObservation(for options: ObservationOptions) -> Bool {
+private func shouldUseNativeScopedObservation(for options: PortableObservationTracking.Options) -> Bool {
     if shouldForceLegacyScopedObservation {
         return false
     }
@@ -342,7 +343,7 @@ private var shouldForceLegacyScopedObservation: Bool {
 #endif
 
 private func runLegacyScopedObservationLoop(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -375,7 +376,7 @@ private func runLegacyScopedObservationLoop(
 }
 
 func runInitialLegacyScopedObservationPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation _: isolated (any Actor)?,
     slot: ObservationScopeSlot
 ) -> InitialScopedObservationResult {
@@ -402,7 +403,7 @@ func runInitialLegacyScopedObservationPass(
 }
 
 func runLegacyScopedObservationLoopAfterInitialPass(
-    options: ObservationOptions,
+    options: PortableObservationTracking.Options,
     isolation: (any Actor)?,
     slot: ObservationScopeSlot
 ) async {
@@ -539,13 +540,13 @@ private func trackLegacyScopedObservationInCurrentContext(
 
 private enum LegacyScopedTrackingMode: Equatable {
     /// SPI-based tracking that stays armed across passes and captures trigger key paths.
-    case continuous(ObservationEvent.Kind)
+    case continuous(PortableObservationTracking.Event.Kind)
 
     /// Public `withObservationTracking` fallback: one-shot, will-set timing, no key paths.
-    case publicOneShot(ObservationEvent.Kind)
+    case publicOneShot(PortableObservationTracking.Event.Kind)
 }
 
-private func legacyTrackingMode(for options: ObservationOptions) -> LegacyScopedTrackingMode? {
+private func legacyTrackingMode(for options: PortableObservationTracking.Options) -> LegacyScopedTrackingMode? {
     // Public `withObservationTracking` only exposes will-set timing. Without the hidden SPI,
     // avoid synthesizing an event that can re-read stale values while claiming `.didSet`.
     if options.contains(.didSet) {
@@ -574,12 +575,12 @@ private func legacyTrackingMode(for options: ObservationOptions) -> LegacyScoped
 private func makeScopedObservationEvent(
     _ pendingEvent: ObservationScopePendingEvent,
     slot: ObservationScopeSlot
-) -> ObservationEvent {
+) -> PortableObservationTracking.Event {
     guard pendingEvent.kind == .initial else {
-        return ObservationEvent(kind: pendingEvent.kind, triggers: pendingEvent.triggers)
+        return PortableObservationTracking.Event(kind: pendingEvent.kind, triggers: pendingEvent.triggers)
     }
 
-    return ObservationEvent(kind: pendingEvent.kind) { [weak slot] in
+    return PortableObservationTracking.Event(kind: pendingEvent.kind) { [weak slot] in
         slot?.cancel()
     }
 }

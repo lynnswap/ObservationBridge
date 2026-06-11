@@ -186,7 +186,7 @@ private enum StressBenchmarkRunner {
     private typealias RegisterObservation = @Sendable (
         StressLockedCounterModel,
         @escaping @Sendable (Int) -> Void
-    ) -> PortableObservationToken
+    ) -> PortableObservationTracking.Token
 
     static func run(
         iterations: Int,

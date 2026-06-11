@@ -5,7 +5,7 @@ import Synchronization
 ///
 /// `ObservedValues` is intended for tests that need to synchronize with
 /// `withPortableContinuousObservation` delivery without sleeping. Instances are
-/// produced by ``PortableObservationToken/values(_:)``.
+/// produced by ``PortableObservationTracking/Token/values(_:)``.
 public final class ObservedValues<Value: Sendable>: Sendable {
     private struct Waiter: Sendable {
         let predicate: @Sendable (Value) -> Bool
