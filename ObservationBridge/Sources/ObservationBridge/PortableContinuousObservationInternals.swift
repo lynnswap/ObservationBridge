@@ -14,12 +14,12 @@ enum InitialScopedObservationResult: Sendable {
 }
 
 protocol ObservationScopePipeline: Sendable {
-    func apply(event: borrowing ObservationEvent) -> Bool
+    func apply(event: borrowing PortableObservationTracking.Event) -> Bool
 }
 
 /// A change wake-up carried from registrar callbacks to the observation loop.
 struct ObservationScopePendingEvent: Sendable {
-    let kind: ObservationEvent.Kind
+    let kind: PortableObservationTracking.Event.Kind
     var triggers: ObservationEventTriggers
 
     static let initial = ObservationScopePendingEvent(kind: .initial, triggers: .none)
@@ -96,13 +96,13 @@ private enum ObservationScopeWaiterBatch: @unchecked Sendable {
 }
 
 struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unchecked Sendable {
-    private let applyCallback: @isolated(any) @Sendable (borrowing ObservationEvent) -> Void
+    private let applyCallback: @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void
 
-    init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void) {
+    init(_ applyCallback: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void) {
         self.applyCallback = applyCallback
     }
 
-    func apply(event: borrowing ObservationEvent) -> Bool {
+    func apply(event: borrowing PortableObservationTracking.Event) -> Bool {
         callObservationApply(applyCallback, event)
         return true
     }
@@ -147,7 +147,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     struct PipelineSnapshot: @unchecked Sendable {
         let pipeline: any ObservationScopePipeline
 
-        func apply(event: borrowing ObservationEvent) -> Bool {
+        func apply(event: borrowing PortableObservationTracking.Event) -> Bool {
             pipeline.apply(event: event)
         }
     }
@@ -164,7 +164,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
         case wait
     }
 
-    let options: ObservationOptions
+    let options: PortableObservationTracking.Options
     let observationIsolation: (any Actor)?
     let delivery: ObservationDelivery
     private let state: Mutex<State>
@@ -176,7 +176,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     init(
-        options: ObservationOptions,
+        options: PortableObservationTracking.Options,
         observationIsolation: (any Actor)?,
         delivery: ObservationDelivery,
         pipeline: any ObservationScopePipeline
@@ -280,7 +280,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancellation.task?.cancel()
     }
 
-    func emitChange(kind: ObservationEvent.Kind, triggers: ObservationEventTriggers) {
+    func emitChange(kind: PortableObservationTracking.Event.Kind, triggers: ObservationEventTriggers) {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let waiters = state.withLock { state -> ObservationScopeWaiterBatch in
             guard !state.isCancelled else {
@@ -325,7 +325,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     /// because the armed tracking observes the same mutation.
     func acceptTrackingEvent(
         generation: UInt64,
-        kind: ObservationEvent.Kind,
+        kind: PortableObservationTracking.Event.Kind,
         triggers: ObservationEventTriggers
     ) -> ObservationScopeTrackingDirective {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
@@ -418,12 +418,12 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
 @inline(__always)
 private func callObservationApply(
-    _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent) -> Void,
-    _ event: borrowing ObservationEvent
+    _ apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
+    _ event: borrowing PortableObservationTracking.Event
 ) {
     let unisolated = unsafe unsafeBitCast(
         apply,
-        to: (@Sendable (borrowing ObservationEvent) -> Void).self
+        to: (@Sendable (borrowing PortableObservationTracking.Event) -> Void).self
     )
     unisolated(event)
 }

@@ -12,7 +12,7 @@ final class ObservationScope: @unchecked Sendable {
 
     private struct State: Sendable {
         var cancellationGeneration: UInt64 = 0
-        var tokens: [ID: PortableObservationToken] = [:]
+        var tokens: [ID: PortableObservationTracking.Token] = [:]
     }
 
     private let storage = Mutex(State())
@@ -20,13 +20,13 @@ final class ObservationScope: @unchecked Sendable {
     @discardableResult
     func observe<Owner: AnyObject & Observable>(
         _ owner: Owner,
-        options: ObservationOptions = .didSet,
-        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void,
+        options: PortableObservationTracking.Options = .didSet,
+        @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event, Owner) -> Void,
         isolation: isolated (any Actor)? = #isolation,
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
         _column: UInt = #column
-    ) -> PortableObservationToken {
+    ) -> PortableObservationTracking.Token {
         let pipeline = TestObservationScopePipeline(owner: owner, apply: apply)
         let cancellationGeneration = storage.withLock { state in
             state.cancellationGeneration
@@ -39,7 +39,7 @@ final class ObservationScope: @unchecked Sendable {
             isolation: isolation
         )
         let id = ID(fileID: "\(_fileID)", line: _line, column: _column)
-        let insertion = storage.withLock { state -> (replaced: PortableObservationToken?, shouldCancel: Bool) in
+        let insertion = storage.withLock { state -> (replaced: PortableObservationTracking.Token?, shouldCancel: Bool) in
             guard state.cancellationGeneration == cancellationGeneration else {
                 return (nil, true)
             }
@@ -71,21 +71,21 @@ private struct TestObservationScopePipeline: @unchecked Sendable {
     }
 
     private let weakOwner: WeakOwnerBox
-    private let applyCallback: @Sendable (borrowing ObservationEvent, AnyObject) -> Void
+    private let applyCallback: @Sendable (borrowing PortableObservationTracking.Event, AnyObject) -> Void
 
     init<Owner: AnyObject>(
         owner: Owner,
-        apply: @escaping @isolated(any) @Sendable (borrowing ObservationEvent, Owner) -> Void
+        apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event, Owner) -> Void
     ) {
         weakOwner = WeakOwnerBox()
         weakOwner.value = owner
         applyCallback = unsafe unsafeBitCast(
             apply,
-            to: (@Sendable (borrowing ObservationEvent, AnyObject) -> Void).self
+            to: (@Sendable (borrowing PortableObservationTracking.Event, AnyObject) -> Void).self
         )
     }
 
-    func apply(event: borrowing ObservationEvent) {
+    func apply(event: borrowing PortableObservationTracking.Event) {
         guard let owner = weakOwner.value else {
             event.cancel()
             return
@@ -184,9 +184,9 @@ final class MainActorOptionalCounterModel {
 }
 
 final class ObservationCancellationProbe: @unchecked Sendable {
-    private let storage = Mutex<PortableObservationToken?>(nil)
+    private let storage = Mutex<PortableObservationTracking.Token?>(nil)
 
-    func set(_ token: PortableObservationToken) {
+    func set(_ token: PortableObservationTracking.Token) {
         storage.withLock { storedToken in
             storedToken = token
         }

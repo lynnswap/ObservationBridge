@@ -1,24 +1,28 @@
-/// Options for portable continuous observation callbacks.
-public struct ObservationOptions: OptionSet, Sendable, Hashable {
-    public let rawValue: UInt8
+/// A namespace for portable continuous observation API types.
+public struct PortableObservationTracking: Sendable {}
 
-    /// Re-runs the observation callback for a will-set event.
-    public static let willSet = ObservationOptions(rawValue: 1 << 0)
+extension PortableObservationTracking {
+    /// Options for portable continuous observation callbacks.
+    public struct Options: OptionSet, Sendable, Hashable {
+        public let rawValue: UInt8
 
-    /// Re-runs the observation callback after observed state changes.
-    public static let didSet = ObservationOptions(rawValue: 1 << 1)
+        /// Re-runs the observation callback for a will-set event.
+        public static let willSet = Options(rawValue: 1 << 0)
 
-    #if compiler(>=6.4)
-    /// Re-runs the observation callback after a tracked observable dependency is deinitialized.
-    @available(anyAppleOS 27.0, *)
-    public static let `deinit` = ObservationOptions(rawValue: 1 << 2)
-    #endif
+        /// Re-runs the observation callback after observed state changes.
+        public static let didSet = Options(rawValue: 1 << 1)
 
-    /// Creates observation options from a raw value.
-    ///
-    /// An empty option set delivers only the initial observation callback.
-    public init(rawValue: UInt8) {
-        self.rawValue = rawValue
+        #if compiler(>=6.4)
+        /// Re-runs the observation callback after a tracked observable dependency is deinitialized.
+        @available(anyAppleOS 27.0, *)
+        public static let `deinit` = Options(rawValue: 1 << 2)
+        #endif
+
+        /// Creates observation options from a raw value.
+        ///
+        /// An empty option set delivers only the initial observation callback.
+        public init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
     }
-
 }

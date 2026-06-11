@@ -4,7 +4,7 @@ import Testing
 @testable import ObservationBridge
 
 private struct ScopePass: Sendable, Equatable {
-    let kind: ObservationEvent.Kind
+    let kind: PortableObservationTracking.Event.Kind
     let value: Int
     let isEnabled: Bool
 }
@@ -17,20 +17,20 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
 final class ObservationScopeObserveTests {
     @Test
     func observationEventKindStaticValuesAreEquatable() {
-        #expect(ObservationEvent.Kind.initial == .initial)
-        #expect(ObservationEvent.Kind.didSet == .didSet)
-        #expect(ObservationEvent.Kind.initial != .didSet)
-        #expect(String(describing: ObservationEvent.Kind.didSet) == "didSet")
+        #expect(PortableObservationTracking.Event.Kind.initial == .initial)
+        #expect(PortableObservationTracking.Event.Kind.didSet == .didSet)
+        #expect(PortableObservationTracking.Event.Kind.initial != .didSet)
+        #expect(String(describing: PortableObservationTracking.Event.Kind.didSet) == "didSet")
 
-        #expect(ObservationEvent.Kind.willSet == .willSet)
-        #expect(ObservationEvent.Kind.didSet != .willSet)
-        #expect(String(describing: ObservationEvent.Kind.willSet) == "willSet")
+        #expect(PortableObservationTracking.Event.Kind.willSet == .willSet)
+        #expect(PortableObservationTracking.Event.Kind.didSet != .willSet)
+        #expect(String(describing: PortableObservationTracking.Event.Kind.willSet) == "willSet")
 
         #if compiler(>=6.4)
         if #available(anyAppleOS 27.0, *) {
-            #expect(ObservationEvent.Kind.deinit == .deinit)
-            #expect(ObservationEvent.Kind.didSet != .deinit)
-            #expect(String(describing: ObservationEvent.Kind.deinit) == "deinit")
+            #expect(PortableObservationTracking.Event.Kind.deinit == .deinit)
+            #expect(PortableObservationTracking.Event.Kind.didSet != .deinit)
+            #expect(String(describing: PortableObservationTracking.Event.Kind.deinit) == "deinit")
         }
         #endif
     }
@@ -336,7 +336,7 @@ final class ObservationScopeObserveTests {
     func willSetOptionDeliversWillSetPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: .willSet) { event, model in
@@ -360,7 +360,7 @@ final class ObservationScopeObserveTests {
     func mutationOptionsPreferDidSetOverWillSet() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.willSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.willSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
@@ -390,7 +390,7 @@ final class ObservationScopeObserveTests {
 
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
@@ -498,10 +498,10 @@ final class ObservationScopeObserveTests {
             model.child = child
         }
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let rawDeinitOptions = ObservationOptions(rawValue: 1 << 2)
+        let rawDeinitOptions = PortableObservationTracking.Options(rawValue: 1 << 2)
         let delivery = observations.observe(model, options: rawDeinitOptions) { event, model in
             if let child = model.child {
                 _ = child.value
@@ -536,7 +536,7 @@ final class ObservationScopeObserveTests {
             model.child = child
         }
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model, options: .deinit) { event, model in
@@ -1227,7 +1227,7 @@ final class ObservationScopeObserveTests {
     func eventCancelCanStopInitialObservationBeforeObserveReturns() async {
         let model = CounterModel()
         let observations = ObservationScope()
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model) { event, model in
@@ -1391,7 +1391,7 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
-        let rendered = RenderedValue(ObservationEvent.Kind.didSet)
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
         let delivery = observations.observe(model) { event, model in
@@ -1508,7 +1508,7 @@ final class ObservationScopeObserveTests {
     func ownerDeinitDoesNotCancelScopeOwnedDelivery() async {
         let observations = ObservationScope()
         let weakModel = WeakDeinitProbeModelBox()
-        var delivery: PortableObservationToken?
+        var delivery: PortableObservationTracking.Token?
 
         do {
             let model = DeinitProbeCounterModel {}
@@ -1624,7 +1624,7 @@ private enum ReplacementReadTarget {
 }
 
 private struct RenderedObservation<Value: Sendable>: Sendable {
-    let delivery: PortableObservationToken
+    let delivery: PortableObservationTracking.Token
     let values: ObservedValues<Value>
 }
 
@@ -1647,9 +1647,9 @@ private final class RenderedValue<Value: Sendable>: @unchecked Sendable {
 }
 
 private final class DeliveryCancellationProbe: @unchecked Sendable {
-    private let storage = Mutex<PortableObservationToken?>(nil)
+    private let storage = Mutex<PortableObservationTracking.Token?>(nil)
 
-    func set(_ delivery: PortableObservationToken) {
+    func set(_ delivery: PortableObservationTracking.Token) {
         storage.withLock { storedDelivery in
             storedDelivery = delivery
         }
@@ -1678,7 +1678,7 @@ private final class MainActorSampleProbe: @unchecked Sendable {
 private func installReplacingObservation(
     observations: ObservationScope,
     model: CounterModel,
-    options: ObservationOptions = .didSet,
+    options: PortableObservationTracking.Options = .didSet,
     label: String
 ) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
@@ -1696,7 +1696,7 @@ private func installReplacingObservation(
 private func installReplacingObservation(
     observations: ObservationScope,
     model: MainActorCounterModel,
-    options: ObservationOptions = .didSet,
+    options: PortableObservationTracking.Options = .didSet,
     label: String
 ) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
