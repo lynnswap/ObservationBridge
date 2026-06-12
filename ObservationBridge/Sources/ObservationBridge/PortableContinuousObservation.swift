@@ -13,15 +13,26 @@ import _ObservationBridgeRuntimeABI
 /// - Parameters:
 ///   - options: Event delivery options. Defaults to ``PortableObservationTracking/Options/didSet``.
 ///   - apply: The callback to run for the initial pass and selected subsequent events.
-///   - isolation: The actor isolation used to start the observation.
 /// - Returns: A token that keeps the observation alive until cancelled or deinitialized.
 public func withPortableContinuousObservation(
     options: PortableObservationTracking.Options = .didSet,
     @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
-    isolation: isolated (any Actor)? = #isolation
+    _ currentIsolation: isolated (any Actor)? = #isolation
+) -> PortableObservationTracking.Token {
+    startPortableContinuousObservation(
+        options: options,
+        apply: apply,
+        currentIsolation: currentIsolation
+    )
+}
+
+private func startPortableContinuousObservation(
+    options: PortableObservationTracking.Options,
+    apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
+    currentIsolation: isolated (any Actor)?
 ) -> PortableObservationTracking.Token {
     let delivery = ObservationDelivery()
-    let observationIsolation = apply.isolation ?? isolation
+    let observationIsolation = apply.isolation ?? currentIsolation
     let pipeline = ObservationScopeImplicitTrackingPipeline(apply)
 
     #if compiler(>=6.4)
@@ -29,26 +40,13 @@ public func withPortableContinuousObservation(
         runtimeTrackingMode(for: options) == nil,
         let nativeOptions = nativeContinuousObservationOptions(for: options)
     {
-        // Public `withContinuousObservation` can preserve lexical isolation, but
-        // this wrapper cannot rebuild an arbitrary dynamic actor isolation for
-        // its fallback closure. Keep the liveness fallback to nonisolated and
-        // MainActor observations; other custom-actor observations finish after
-        // `.initial` rather than running callbacks off actor.
-        if observationIsolation == nil {
-            return startNativeContinuousObservationFallback(
-                options: nativeOptions,
-                pipeline: pipeline,
-                delivery: delivery
-            )
-        }
-
-        if isMainActorIsolation(observationIsolation) {
-            return startMainActorNativeContinuousObservationFallback(
-                options: nativeOptions,
-                pipeline: pipeline,
-                delivery: delivery
-            )
-        }
+        return startNativeContinuousObservationFallback(
+            options: nativeOptions,
+            pipeline: pipeline,
+            delivery: delivery,
+            observationIsolation: observationIsolation,
+            currentIsolation: currentIsolation
+        )
     }
     #endif
 
@@ -60,7 +58,7 @@ public func withPortableContinuousObservation(
     )
     delivery.bind(to: slot)
     let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
-    slot.start(isolation: isolation)
+    slot.start(isolation: currentIsolation)
     return token
 }
 
@@ -198,60 +196,9 @@ func runRuntimeScopedObservationLoopAfterInitialPass(
 private func startNativeContinuousObservationFallback(
     options: ObservationTracking.Options,
     pipeline: ObservationScopeImplicitTrackingPipeline,
-    delivery: ObservationDelivery
-) -> PortableObservationTracking.Token {
-    let cancellation = NativeContinuousObservationCancellation()
-    let completionQueue = ObservationDeliveryCompletionQueue()
-    let token = PortableObservationTracking.Token(
-        nativeContinuousCancellation: cancellation,
-        delivery: delivery
-    )
-    let nativeToken = withContinuousObservation(options: options) { nativeEvent in
-        // This closure is the native continuous tracking body. It must read the
-        // observed values before returning, so `withContinuousObservation` can
-        // install the next dependency set.
-        deliverNativeContinuousObservationEvent(
-            nativeEvent,
-            pipeline: pipeline,
-            delivery: delivery,
-            cancellation: cancellation,
-            completionQueue: completionQueue
-        )
-    }
-    cancellation.install(nativeToken)
-
-    return token
-}
-
-@MainActor
-@available(anyAppleOS 27.0, *)
-private func installMainActorNativeContinuousObservationFallback(
-    options: ObservationTracking.Options,
-    pipeline: ObservationScopeImplicitTrackingPipeline,
     delivery: ObservationDelivery,
-    cancellation: NativeContinuousObservationCancellation,
-    completionQueue: ObservationDeliveryCompletionQueue
-) {
-    let nativeToken = withContinuousObservation(options: options) { nativeEvent in
-        // This closure is the native continuous tracking body. It must read the
-        // observed values before returning, so `withContinuousObservation` can
-        // install the next dependency set.
-        deliverNativeContinuousObservationEvent(
-            nativeEvent,
-            pipeline: pipeline,
-            delivery: delivery,
-            cancellation: cancellation,
-            completionQueue: completionQueue
-        )
-    }
-    cancellation.install(nativeToken)
-}
-
-@available(anyAppleOS 27.0, *)
-private func startMainActorNativeContinuousObservationFallback(
-    options: ObservationTracking.Options,
-    pipeline: ObservationScopeImplicitTrackingPipeline,
-    delivery: ObservationDelivery
+    observationIsolation: (any Actor)?,
+    currentIsolation: isolated (any Actor)?
 ) -> PortableObservationTracking.Token {
     let cancellation = NativeContinuousObservationCancellation()
     let completionQueue = ObservationDeliveryCompletionQueue()
@@ -259,24 +206,94 @@ private func startMainActorNativeContinuousObservationFallback(
         nativeContinuousCancellation: cancellation,
         delivery: delivery
     )
-    cancellation.installTask(Task { @MainActor in
-        installMainActorNativeContinuousObservationFallback(
+
+    let startsInCurrentIsolation =
+        observationScopeActorID(observationIsolation) == observationScopeActorID(currentIsolation)
+
+    if startsInCurrentIsolation {
+        installNativeContinuousObservationFallback(
             options: options,
             pipeline: pipeline,
             delivery: delivery,
             cancellation: cancellation,
-            completionQueue: completionQueue
+            completionQueue: completionQueue,
+            isolation: currentIsolation
         )
-    })
+    } else if let observationIsolation {
+        cancellation.installTask(makeObservationTask {
+            await withObservationIsolation(isolation: observationIsolation) { isolatedObservation in
+                installNativeContinuousObservationFallback(
+                    options: options,
+                    pipeline: pipeline,
+                    delivery: delivery,
+                    cancellation: cancellation,
+                    completionQueue: completionQueue,
+                    isolation: isolatedObservation
+                )
+            }
+        })
+    } else {
+        installNativeContinuousObservationFallback(
+            options: options,
+            pipeline: pipeline,
+            delivery: delivery,
+            cancellation: cancellation,
+            completionQueue: completionQueue,
+            isolation: nil
+        )
+    }
     return token
 }
 
-private func isMainActorIsolation(_ actor: (any Actor)?) -> Bool {
-    guard let actor else {
-        return false
+@available(anyAppleOS 27.0, *)
+private func installNativeContinuousObservationFallback(
+    options: ObservationTracking.Options,
+    pipeline: ObservationScopeImplicitTrackingPipeline,
+    delivery: ObservationDelivery,
+    cancellation: NativeContinuousObservationCancellation,
+    completionQueue: ObservationDeliveryCompletionQueue,
+    isolation: isolated (any Actor)?
+) {
+    let nativeToken = withContinuousObservation(options: options) { nativeEvent in
+        isolation?.assertIsolated()
+        // This closure is the native continuous tracking body. It must read the
+        // observed values before returning, so `withContinuousObservation` can
+        // install the next dependency set.
+        deliverNativeContinuousObservationEvent(
+            nativeEvent,
+            pipeline: pipeline,
+            delivery: delivery,
+            cancellation: cancellation,
+            completionQueue: completionQueue
+        )
     }
+    cancellation.install(nativeToken)
+}
 
-    return observationScopeActorID(actor) == observationScopeActorID(MainActor.shared)
+@available(anyAppleOS 27.0, *)
+private func installNativeContinuousObservationFallback(
+    options: ObservationTracking.Options,
+    pipeline: ObservationScopeImplicitTrackingPipeline,
+    delivery: ObservationDelivery,
+    cancellation: NativeContinuousObservationCancellation,
+    completionQueue: ObservationDeliveryCompletionQueue,
+    isolation: isolated (any Actor)
+) {
+    isolation.assertIsolated()
+    let nativeToken = withContinuousObservation(options: options) { nativeEvent in
+        isolation.assertIsolated()
+        // This closure is the native continuous tracking body. It must read the
+        // observed values before returning, so `withContinuousObservation` can
+        // install the next dependency set.
+        deliverNativeContinuousObservationEvent(
+            nativeEvent,
+            pipeline: pipeline,
+            delivery: delivery,
+            cancellation: cancellation,
+            completionQueue: completionQueue
+        )
+    }
+    cancellation.install(nativeToken)
 }
 
 @available(anyAppleOS 27.0, *)
@@ -514,6 +531,13 @@ private func withObservationIsolation<T: Sendable>(
 ) -> T {
     // The isolated parameter makes the caller hop to `isolation` before this body runs.
     return operation()
+}
+
+private func withObservationIsolation<T: Sendable>(
+    isolation: isolated (any Actor),
+    _ operation: @Sendable (isolated (any Actor)) -> T
+) -> T {
+    operation(isolation)
 }
 
 // `ObservationTracking` is hidden from the Swift 6.2 public interface even though the

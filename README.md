@@ -15,7 +15,9 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 ## Portable Continuous Observation
 
 Create an observation with `withPortableContinuousObservation(options:apply:)`.
-The returned `PortableObservationTracking.Token` keeps the observation alive.
+The callback inherits the caller's actor context like Swift's native
+`withContinuousObservation`. The returned `PortableObservationTracking.Token`
+keeps the observation alive.
 
 ```swift
 import ObservationBridge
@@ -114,13 +116,12 @@ cancels when it deinitializes.
 event's `ObservationTracking.changed` key path with the supplied key path, and
 `.initial` matches nothing. Exact matching relies on weak-linked Observation
 runtime SPI. When the required symbols are unavailable on Swift 6.4 / OS 27+
-runtimes, ObservationBridge falls back to public `withContinuousObservation` for
-nonisolated and MainActor observations so updates keep flowing. In that fallback
+runtimes, ObservationBridge falls back to public `withContinuousObservation` so
+updates keep flowing in the callback's inherited actor context. In that fallback
 only, `.initial` and mutation event cadence follow native continuous timing, and
-mutation `matches(_:)` answers conservatively. Custom actor observations finish
-after `.initial` if the exact SPI is unavailable, rather than running callbacks
-off actor. On older supported runtimes, the required SPI symbols are part of the
-development test contract; ObservationBridge does not partially downgrade
+mutation `matches(_:)` answers conservatively. On older supported runtimes, the
+required SPI symbols are part of the development test contract; ObservationBridge
+does not partially downgrade
 `[.willSet, .didSet]` to a single mutation kind because that would change the
 requested event sequence.
 
@@ -183,6 +184,9 @@ These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.
 - The callback now matches Swift's `withContinuousObservation` shape. Read
   observable values directly from the callback body instead of receiving a
   `model` argument.
+- Explicit actor override is not part of the public API. Call
+  `withPortableContinuousObservation` from the actor context that should own the
+  callback.
 - `ObservationDelivery` has been replaced by `PortableObservationTracking.Token`.
   Attach test samplers with `token.values { ... }`.
 

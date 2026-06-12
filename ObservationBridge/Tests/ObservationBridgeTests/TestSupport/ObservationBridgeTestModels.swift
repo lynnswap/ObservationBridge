@@ -22,7 +22,7 @@ final class ObservationScope: @unchecked Sendable {
         _ owner: Owner,
         options: PortableObservationTracking.Options = .didSet,
         @_inheritActorContext _ apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event, Owner) -> Void,
-        isolation: isolated (any Actor)? = #isolation,
+        _ currentIsolation: isolated (any Actor)? = #isolation,
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
         _column: UInt = #column
@@ -36,7 +36,7 @@ final class ObservationScope: @unchecked Sendable {
             apply: { event in
                 pipeline.apply(event: event)
             },
-            isolation: isolation
+            currentIsolation
         )
         let id = ID(fileID: "\(_fileID)", line: _line, column: _column)
         let insertion = storage.withLock { state -> (replaced: PortableObservationTracking.Token?, shouldCancel: Bool) in
