@@ -410,6 +410,10 @@ private enum RuntimeScopedTrackingMode: Equatable {
 
 private func runtimeTrackingMode(for options: PortableObservationTracking.Options) -> RuntimeScopedTrackingMode? {
     if options.contains(.willSet), options.contains(.didSet) {
+        // Both mutation options require the combined SPI so the pass sequence stays
+        // willSet then didSet. Do not downgrade to a single-kind SPI here; OS 27+
+        // liveness fallback is selected before slot creation, and older runtimes
+        // are covered by the development symbol-availability test.
         return canUseCombinedObservationTrackingSPI ? .willSetAndDidSet : nil
     }
 

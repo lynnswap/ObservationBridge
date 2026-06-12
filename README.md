@@ -117,7 +117,10 @@ runtime SPI. When the required symbols are unavailable on Swift 6.4 / OS 27+
 runtimes, ObservationBridge falls back to public `withContinuousObservation` so
 updates keep flowing; in that fallback only, `.initial` and mutation event
 cadence follow native continuous timing, and mutation `matches(_:)` answers
-conservatively.
+conservatively. On older supported runtimes, the required SPI symbols are part
+of the development test contract; ObservationBridge does not partially downgrade
+`[.willSet, .didSet]` to a single mutation kind because that would change the
+requested event sequence.
 
 ## Testing
 
