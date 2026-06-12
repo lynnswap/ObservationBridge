@@ -96,28 +96,32 @@ private struct NativeContinuousObservationTokenStorage: ~Copyable {
     }
 }
 
+@safe
 @available(anyAppleOS 27.0, *)
-private func makeNativeContinuousObservationTokenStorage(
-    _ token: consuming ObservationTracking.Token
-) -> UnsafeMutableRawPointer {
-    let pointer = UnsafeMutablePointer<NativeContinuousObservationTokenStorage>.allocate(capacity: 1)
-    pointer.initialize(to: NativeContinuousObservationTokenStorage(token))
-    return UnsafeMutableRawPointer(pointer)
-}
+private struct NativeContinuousObservationTokenHandle {
+    private var rawPointer: UnsafeMutableRawPointer
 
-@available(anyAppleOS 27.0, *)
-private func releaseNativeContinuousObservationTokenStorage(
-    _ rawPointer: UnsafeMutableRawPointer
-) {
-    let pointer = rawPointer.assumingMemoryBound(to: NativeContinuousObservationTokenStorage.self)
-    pointer.deinitialize(count: 1)
-    pointer.deallocate()
+    private init(rawPointer: UnsafeMutableRawPointer) {
+        unsafe self.rawPointer = unsafe rawPointer
+    }
+
+    static func allocate(_ token: consuming ObservationTracking.Token) -> Self {
+        let pointer = UnsafeMutablePointer<NativeContinuousObservationTokenStorage>.allocate(capacity: 1)
+        unsafe pointer.initialize(to: NativeContinuousObservationTokenStorage(token))
+        return unsafe Self(rawPointer: UnsafeMutableRawPointer(pointer))
+    }
+
+    func release() {
+        let pointer = unsafe rawPointer.assumingMemoryBound(to: NativeContinuousObservationTokenStorage.self)
+        unsafe pointer.deinitialize(count: 1)
+        unsafe pointer.deallocate()
+    }
 }
 
 @available(anyAppleOS 27.0, *)
 final class NativeContinuousObservationCancellation: @unchecked Sendable {
     private let lock = NSLock()
-    private var tokenStorage: UnsafeMutableRawPointer?
+    private var tokenStorage: NativeContinuousObservationTokenHandle?
     private var task: Task<Void, Never>?
     private var isCancelled = false
 
@@ -126,12 +130,12 @@ final class NativeContinuousObservationCancellation: @unchecked Sendable {
     }
 
     func install(_ token: consuming ObservationTracking.Token) {
-        let tokenStorage = makeNativeContinuousObservationTokenStorage(token)
+        let tokenStorage = NativeContinuousObservationTokenHandle.allocate(token)
 
         lock.lock()
         if isCancelled {
             lock.unlock()
-            releaseNativeContinuousObservationTokenStorage(tokenStorage)
+            tokenStorage.release()
             return
         }
 
@@ -140,7 +144,7 @@ final class NativeContinuousObservationCancellation: @unchecked Sendable {
         task = nil
         lock.unlock()
         if let oldTokenStorage {
-            releaseNativeContinuousObservationTokenStorage(oldTokenStorage)
+            oldTokenStorage.release()
         }
     }
 
@@ -167,7 +171,7 @@ final class NativeContinuousObservationCancellation: @unchecked Sendable {
         task = nil
         lock.unlock()
         if let tokenStorageToRelease {
-            releaseNativeContinuousObservationTokenStorage(tokenStorageToRelease)
+            tokenStorageToRelease.release()
         }
         taskToCancel?.cancel()
     }
