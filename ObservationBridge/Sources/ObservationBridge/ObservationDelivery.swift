@@ -550,7 +550,7 @@ final class ObservationDeliveryCompletionQueue: Sendable {
 }
 
 struct ObservationDeliveryCompletion: Sendable {
-    private weak var delivery: ObservationDelivery?
+    private let delivery: ObservationDelivery
     private let isActive: Bool
     private let generation: UInt64
     private let needsSampling: Bool
@@ -572,7 +572,7 @@ struct ObservationDeliveryCompletion: Sendable {
             return
         }
 
-        await delivery?.sampleActiveDeliveryAndFinish(generation: generation)
+        await delivery.sampleActiveDeliveryAndFinish(generation: generation)
     }
 
     func finishWithoutSampling() {
@@ -580,7 +580,7 @@ struct ObservationDeliveryCompletion: Sendable {
             return
         }
 
-        delivery?.finishActiveDelivery()
+        delivery.finishActiveDelivery()
     }
 }
 

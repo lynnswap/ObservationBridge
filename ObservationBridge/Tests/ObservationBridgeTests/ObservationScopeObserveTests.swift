@@ -585,6 +585,28 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func deliveryCompletionRetainsDeliveryUntilQueuedSamplingFinishes() async {
+        var delivery: ObservationDelivery? = ObservationDelivery()
+        weak var weakDelivery = delivery
+
+        let values = await delivery!._registerValuesForTesting(beforeImmediateSample: {}) {
+            "sampled"
+        }
+
+        #expect(delivery!.beginDelivery() == true)
+        let completion = delivery!.endDelivery()
+        delivery!.finish()
+        delivery = nil
+
+        #expect(weakDelivery != nil)
+
+        await completion.sampleAndFinish()
+
+        #expect(values.snapshot() == ["sampled"])
+        #expect(values.isActive == false)
+    }
+
+    @Test
     func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
         let model = CounterModel()
         let observations = ObservationScope()
