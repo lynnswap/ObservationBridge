@@ -53,12 +53,37 @@ changed key path, not as the only guard for correctness.
 
 ### Events
 
-`withPortableContinuousObservation` runs its `.initial` pass synchronously when
-the observation starts. Later passes are controlled by `PortableObservationTracking.Options`.
+`withPortableContinuousObservation` intentionally differs from Swift's native
+`withContinuousObservation` in one place: it runs its `.initial` pass
+synchronously when the observation starts. That pass is still the first tracking
+pass. Observable values read during `.initial` become the dependencies that
+allow later `.willSet` and `.didSet` passes to fire.
+
+Do not return from `.initial` before reading the values you want to keep
+tracking:
+
+```swift
+let token = withPortableContinuousObservation { event in
+    let title = model.title
+    let rows = model.rows
+
+    guard event.kind != .initial else {
+        return
+    }
+
+    titleLabel.text = title
+
+    if event.matches(\Model.rows) {
+        applySnapshot(rows)
+    }
+}
+```
+
+Later passes are controlled by `PortableObservationTracking.Options`.
 
 `PortableObservationTracking.Event.kind` describes why the callback is running:
 
-- `.initial`: the first pass
+- `.initial`: the first tracking pass, delivered synchronously by ObservationBridge
 - `.willSet`: a tracked dependency is about to change
 - `.didSet`: a tracked dependency changed
 
