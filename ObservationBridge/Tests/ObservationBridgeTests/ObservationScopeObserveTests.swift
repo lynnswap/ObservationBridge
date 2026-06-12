@@ -739,6 +739,38 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
+    func synchronousExternalMutationsDuringRearmKeepLatestTrigger() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model) { event, model in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        model.secondaryValue = 2
+
+        let firstMutationPass = await cursor.next()
+        let secondMutationPass = await cursor.next(timeout: .milliseconds(250))
+        #expect(
+            firstMutationPass == "didSet:value:false:secondary:true"
+                || secondMutationPass == "didSet:value:false:secondary:true"
+        )
+    }
+
+    @Test
     func nextExternalMutationRetracksAfterApplyPassMutation() async {
         let model = CounterModel()
         let observations = ObservationScope()
@@ -1573,6 +1605,64 @@ final class ObservationScopeObserveTests {
         model.value = 4
         #expect(await cursor.next() == 4)
         #expect(observation.values.snapshot() == [0, 4])
+        await probe.cancelAll()
+    }
+
+    @MainActor
+    @Test
+    func nativeContinuousFallbackUsesMainActorIsolationForCallbacksAndSamplers() async {
+        guard usesNativeContinuousFallbackForTesting() else {
+            return
+        }
+
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = MainActorCounterModel()
+        let rendered = RenderedValue(-1)
+
+        let token = withPortableContinuousObservation { _ in
+            MainActor.assertIsolated()
+            rendered.set(model.value)
+        }
+        defer { token.cancel() }
+
+        let values = await token.values {
+            MainActor.assertIsolated()
+            return rendered.value
+        }
+        var cursor = ObservedValuesCursor(values)
+        #expect(await cursor.next() == 0)
+
+        model.value = 6
+        #expect(await cursor.next() == 6)
+        #expect(values.snapshot() == [0, 6])
+    }
+
+    @Test
+    func spiUnavailableCustomActorObservationFinishesAfterInitialWhenNativeFallbackCannotPreserveIsolation() async {
+        guard usesNativeContinuousFallbackForTesting() else {
+            return
+        }
+
+        _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let probe = CustomActorObservationProbe()
+
+        let observation = await probe.observe(model)
+        var cursor = ObservedValuesCursor(observation.values)
+        #expect(await cursor.next() == 0)
+
+        model.value = 8
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+        #expect(observation.delivery.isActive == false)
+        #expect(observation.values.snapshot() == [0])
         await probe.cancelAll()
     }
 

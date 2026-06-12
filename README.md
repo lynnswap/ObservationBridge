@@ -114,11 +114,13 @@ cancels when it deinitializes.
 event's `ObservationTracking.changed` key path with the supplied key path, and
 `.initial` matches nothing. Exact matching relies on weak-linked Observation
 runtime SPI. When the required symbols are unavailable on Swift 6.4 / OS 27+
-runtimes, ObservationBridge falls back to public `withContinuousObservation` so
-updates keep flowing; in that fallback only, `.initial` and mutation event
-cadence follow native continuous timing, and mutation `matches(_:)` answers
-conservatively. On older supported runtimes, the required SPI symbols are part
-of the development test contract; ObservationBridge does not partially downgrade
+runtimes, ObservationBridge falls back to public `withContinuousObservation` for
+nonisolated and MainActor observations so updates keep flowing. In that fallback
+only, `.initial` and mutation event cadence follow native continuous timing, and
+mutation `matches(_:)` answers conservatively. Custom actor observations finish
+after `.initial` if the exact SPI is unavailable, rather than running callbacks
+off actor. On older supported runtimes, the required SPI symbols are part of the
+development test contract; ObservationBridge does not partially downgrade
 `[.willSet, .didSet]` to a single mutation kind because that would change the
 requested event sequence.
 

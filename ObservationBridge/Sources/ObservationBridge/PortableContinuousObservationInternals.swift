@@ -105,6 +105,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         var isCancelled = false
         var pendingEvent: ObservationScopePendingEvent?
+        var trackingCancellationsAfterNextPass: [@Sendable () -> Void] = []
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
@@ -127,6 +128,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var shouldCancel: Bool
         var waiters: ObservationScopeWaiterBatch
         var task: Task<Void, Never>?
+        var trackingCancellations: [@Sendable () -> Void]
     }
 
     private enum WaitSetup {
@@ -230,16 +232,23 @@ final class ObservationScopeSlot: @unchecked Sendable {
     func cancel() {
         let cancellation = state.withLock { state -> Cancellation in
             guard !state.isCancelled else {
-                return Cancellation(shouldCancel: false, waiters: .empty, task: nil)
+                return Cancellation(shouldCancel: false, waiters: .empty, task: nil, trackingCancellations: [])
             }
 
             state.isCancelled = true
             state.pendingEvent = nil
             state.pipeline = nil
+            let trackingCancellations = state.trackingCancellationsAfterNextPass
+            state.trackingCancellationsAfterNextPass.removeAll(keepingCapacity: true)
             let waiters = state.waiters.takeAll()
             let task = state.task
             state.task = nil
-            return Cancellation(shouldCancel: true, waiters: waiters, task: task)
+            return Cancellation(
+                shouldCancel: true,
+                waiters: waiters,
+                task: task,
+                trackingCancellations: trackingCancellations
+            )
         }
 
         guard cancellation.shouldCancel else {
@@ -247,16 +256,27 @@ final class ObservationScopeSlot: @unchecked Sendable {
         }
 
         cancellation.waiters.resumeAll(returning: nil)
+        for cancelTracking in cancellation.trackingCancellations {
+            cancelTracking()
+        }
         delivery.finish()
         cancellation.task?.cancel()
     }
 
     @discardableResult
-    func emitChange(kind: PortableObservationTracking.Event.Kind, triggers: ObservationEventTriggers) -> Bool {
+    func emitChange(
+        kind: PortableObservationTracking.Event.Kind,
+        triggers: ObservationEventTriggers,
+        cancelTrackingAfterNextPass: (@Sendable () -> Void)? = nil
+    ) -> Bool {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
             guard !state.isCancelled else {
                 return (false, .empty)
+            }
+
+            if let cancelTrackingAfterNextPass {
+                state.trackingCancellationsAfterNextPass.append(cancelTrackingAfterNextPass)
             }
 
             if state.waiters.isEmpty {
@@ -269,6 +289,18 @@ final class ObservationScopeSlot: @unchecked Sendable {
 
         waiters.resumeAll(returning: event)
         return accepted
+    }
+
+    func cancelTrackingsDeferredUntilNextPass() {
+        let trackingCancellations = state.withLock { state in
+            let trackingCancellations = state.trackingCancellationsAfterNextPass
+            state.trackingCancellationsAfterNextPass.removeAll(keepingCapacity: true)
+            return trackingCancellations
+        }
+
+        for cancelTracking in trackingCancellations {
+            cancelTracking()
+        }
     }
 
     func waitForChange() async -> ObservationScopePendingEvent? {
