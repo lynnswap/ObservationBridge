@@ -104,15 +104,26 @@ struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unch
 final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         var isCancelled = false
-        var pendingEvent: ObservationScopePendingEvent?
+        var pendingEvents: [ObservationScopePendingEvent] = []
         var trackingCancellationsAfterNextPass: [@Sendable () -> Void] = []
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
 
+        mutating func appendPendingEvent(_ event: ObservationScopePendingEvent) {
+            if pendingEvents.last?.kind == .willSet, event.kind == .didSet {
+                pendingEvents.append(event)
+            } else {
+                pendingEvents = [event]
+            }
+        }
+
         mutating func popPendingEvent() -> ObservationScopePendingEvent? {
-            defer { pendingEvent = nil }
-            return pendingEvent
+            guard !pendingEvents.isEmpty else {
+                return nil
+            }
+
+            return pendingEvents.removeFirst()
         }
     }
 
@@ -236,7 +247,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             state.isCancelled = true
-            state.pendingEvent = nil
+            state.pendingEvents.removeAll(keepingCapacity: true)
             state.pipeline = nil
             let trackingCancellations = state.trackingCancellationsAfterNextPass
             state.trackingCancellationsAfterNextPass.removeAll(keepingCapacity: true)
@@ -280,7 +291,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             }
 
             if state.waiters.isEmpty {
-                state.pendingEvent = event
+                state.appendPendingEvent(event)
                 return (true, .empty)
             }
 

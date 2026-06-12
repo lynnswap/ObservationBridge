@@ -597,7 +597,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func pendingEventKeepsLatestEventWhenNoWaiterIsRegistered() async {
+    func pendingDidSetKeepsLatestEventWhenNoWaiterIsRegistered() async {
         let slot = ObservationScopeSlot(
             options: [.willSet, .didSet],
             observationIsolation: nil,
@@ -606,10 +606,35 @@ final class ObservationScopeObserveTests {
         )
         defer { slot.cancel() }
 
-        slot.emitChange(kind: .willSet, triggers: .none)
-        slot.emitChange(kind: .didSet, triggers: .none)
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value))
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.secondaryValue))
 
-        #expect(await slot.waitForChange()?.kind == .didSet)
+        let event = await slot.waitForChange()
+        #expect(event?.kind == .didSet)
+        #expect(event?.triggers.contains(\CounterModel.value) == false)
+        #expect(event?.triggers.contains(\CounterModel.secondaryValue) == true)
+    }
+
+    @Test
+    func pendingMutationSequencePreservesWillSetThenDidSetWhenNoWaiterIsRegistered() async {
+        let slot = ObservationScopeSlot(
+            options: [.willSet, .didSet],
+            observationIsolation: nil,
+            delivery: ObservationDelivery(),
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
+        )
+        defer { slot.cancel() }
+
+        slot.emitChange(kind: .willSet, triggers: .keyPath(\CounterModel.value))
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value))
+
+        let willSet = await slot.waitForChange()
+        let didSet = await slot.waitForChange()
+
+        #expect(willSet?.kind == .willSet)
+        #expect(willSet?.triggers.contains(\CounterModel.value) == true)
+        #expect(didSet?.kind == .didSet)
+        #expect(didSet?.triggers.contains(\CounterModel.value) == true)
     }
 
     @Test
