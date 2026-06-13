@@ -26,14 +26,14 @@ struct ObservationScopePendingEvent: Sendable {
 }
 
 private struct ObservationScopeWaiters: @unchecked Sendable {
-    private var first: CheckedContinuation<ObservationScopePendingEvent?, Never>?
-    private var additional: [CheckedContinuation<ObservationScopePendingEvent?, Never>]?
+    private var first: CheckedContinuation<Void, Never>?
+    private var additional: [CheckedContinuation<Void, Never>]?
 
     var isEmpty: Bool {
         first == nil
     }
 
-    mutating func append(_ continuation: CheckedContinuation<ObservationScopePendingEvent?, Never>) {
+    mutating func append(_ continuation: CheckedContinuation<Void, Never>) {
         guard first != nil else {
             first = continuation
             return
@@ -65,22 +65,22 @@ private struct ObservationScopeWaiters: @unchecked Sendable {
 
 private enum ObservationScopeWaiterBatch: @unchecked Sendable {
     case empty
-    case single(CheckedContinuation<ObservationScopePendingEvent?, Never>)
+    case single(CheckedContinuation<Void, Never>)
     case many(
-        CheckedContinuation<ObservationScopePendingEvent?, Never>,
-        [CheckedContinuation<ObservationScopePendingEvent?, Never>]
+        CheckedContinuation<Void, Never>,
+        [CheckedContinuation<Void, Never>]
     )
 
-    func resumeAll(returning event: ObservationScopePendingEvent?) {
+    func resumeAll() {
         switch self {
         case .empty:
             return
         case .single(let continuation):
-            continuation.resume(returning: event)
+            continuation.resume()
         case .many(let first, let additional):
-            first.resume(returning: event)
+            first.resume()
             for continuation in additional {
-                continuation.resume(returning: event)
+                continuation.resume()
             }
         }
     }
@@ -104,26 +104,20 @@ struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unch
 final class ObservationScopeSlot: @unchecked Sendable {
     private struct State: @unchecked Sendable {
         var isCancelled = false
-        var pendingEvents: [ObservationScopePendingEvent] = []
-        var trackingCancellationsAfterNextPass: [@Sendable () -> Void] = []
+        var pendingEvent: ObservationScopePendingEvent?
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
 
-        mutating func appendPendingEvent(_ event: ObservationScopePendingEvent) {
-            if pendingEvents.last?.kind == .willSet, event.kind == .didSet {
-                pendingEvents.append(event)
-            } else {
-                pendingEvents = [event]
-            }
+        mutating func storePendingEvent(_ event: ObservationScopePendingEvent) {
+            pendingEvent = event
         }
 
-        mutating func popPendingEvent() -> ObservationScopePendingEvent? {
-            guard !pendingEvents.isEmpty else {
-                return nil
+        mutating func takePendingEvent() -> ObservationScopePendingEvent? {
+            defer {
+                pendingEvent = nil
             }
-
-            return pendingEvents.removeFirst()
+            return pendingEvent
         }
     }
 
@@ -139,7 +133,6 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var shouldCancel: Bool
         var waiters: ObservationScopeWaiterBatch
         var task: Task<Void, Never>?
-        var trackingCancellations: [@Sendable () -> Void]
     }
 
     private enum WaitSetup {
@@ -243,22 +236,19 @@ final class ObservationScopeSlot: @unchecked Sendable {
     func cancel() {
         let cancellation = state.withLock { state -> Cancellation in
             guard !state.isCancelled else {
-                return Cancellation(shouldCancel: false, waiters: .empty, task: nil, trackingCancellations: [])
+                return Cancellation(shouldCancel: false, waiters: .empty, task: nil)
             }
 
             state.isCancelled = true
-            state.pendingEvents.removeAll(keepingCapacity: true)
+            state.pendingEvent = nil
             state.pipeline = nil
-            let trackingCancellations = state.trackingCancellationsAfterNextPass
-            state.trackingCancellationsAfterNextPass.removeAll(keepingCapacity: true)
             let waiters = state.waiters.takeAll()
             let task = state.task
             state.task = nil
             return Cancellation(
                 shouldCancel: true,
                 waiters: waiters,
-                task: task,
-                trackingCancellations: trackingCancellations
+                task: task
             )
         }
 
@@ -266,10 +256,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             return
         }
 
-        cancellation.waiters.resumeAll(returning: nil)
-        for cancelTracking in cancellation.trackingCancellations {
-            cancelTracking()
-        }
+        cancellation.waiters.resumeAll()
         delivery.finish()
         cancellation.task?.cancel()
     }
@@ -277,8 +264,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     @discardableResult
     func emitChange(
         kind: PortableObservationTracking.Event.Kind,
-        triggers: ObservationEventTriggers,
-        cancelTrackingAfterNextPass: (@Sendable () -> Void)? = nil
+        triggers: ObservationEventTriggers
     ) -> Bool {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
@@ -286,32 +272,12 @@ final class ObservationScopeSlot: @unchecked Sendable {
                 return (false, .empty)
             }
 
-            if let cancelTrackingAfterNextPass {
-                state.trackingCancellationsAfterNextPass.append(cancelTrackingAfterNextPass)
-            }
-
-            if state.waiters.isEmpty {
-                state.appendPendingEvent(event)
-                return (true, .empty)
-            }
-
+            state.storePendingEvent(event)
             return (true, state.waiters.takeAll())
         }
 
-        waiters.resumeAll(returning: event)
+        waiters.resumeAll()
         return accepted
-    }
-
-    func cancelTrackingsDeferredUntilNextPass() {
-        let trackingCancellations = state.withLock { state in
-            let trackingCancellations = state.trackingCancellationsAfterNextPass
-            state.trackingCancellationsAfterNextPass.removeAll(keepingCapacity: true)
-            return trackingCancellations
-        }
-
-        for cancelTracking in trackingCancellations {
-            cancelTracking()
-        }
     }
 
     func waitForChange() async -> ObservationScopePendingEvent? {
@@ -319,7 +285,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             if state.isCancelled {
                 return .terminated
             }
-            if let event = state.popPendingEvent() {
+            if let event = state.takePendingEvent() {
                 return .changed(event)
             }
             return .wait
@@ -334,32 +300,43 @@ final class ObservationScopeSlot: @unchecked Sendable {
             break
         }
 
-        return await withCheckedContinuation { continuation in
-            let immediate = state.withLock { state -> WaitSetup? in
+        while true {
+            await withCheckedContinuation { continuation in
+                let shouldResumeImmediately = state.withLock { state -> Bool in
+                    if state.isCancelled || state.pendingEvent != nil {
+                        return true
+                    }
+                    state.waiters.append(continuation)
+
+                    #if canImport(_ObservationBridgeBenchmarkSupport)
+                    ObservationBridgeBenchmarkObservationScopeWaiterRegistered()
+                    #endif
+
+                    return false
+                }
+
+                if shouldResumeImmediately {
+                    continuation.resume()
+                }
+            }
+
+            let setup = state.withLock { state -> WaitSetup in
                 if state.isCancelled {
                     return .terminated
                 }
-                if let event = state.popPendingEvent() {
+                if let event = state.takePendingEvent() {
                     return .changed(event)
                 }
-                state.waiters.append(continuation)
-
-                #if canImport(_ObservationBridgeBenchmarkSupport)
-                ObservationBridgeBenchmarkObservationScopeWaiterRegistered()
-                #endif
-
-                return nil
+                return .wait
             }
 
-            switch immediate {
+            switch setup {
             case .changed(let event):
-                continuation.resume(returning: event)
+                return event
             case .terminated:
-                continuation.resume(returning: nil)
+                return nil
             case .wait:
-                preconditionFailure("Observation wait registration cannot resume with a suspended state.")
-            case nil:
-                break
+                continue
             }
         }
     }

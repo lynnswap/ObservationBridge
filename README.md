@@ -110,7 +110,9 @@ let initialOnlyObservation = withPortableContinuousObservation(options: []) { ev
 ```
 
 `[]` delivers only `.initial`. `.didSet` and `.willSet` are available on all
-supported versions.
+supported versions. When both `.willSet` and `.didSet` are requested,
+ObservationBridge follows native continuous observation cadence and delivers one
+`.didSet` pass for a normal mutation.
 
 Do not store `PortableObservationTracking.Event`. Save `event.kind` if later code needs the
 reason for the pass.

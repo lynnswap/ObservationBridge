@@ -1,13 +1,14 @@
 # Continuous Observation Compatibility Investigation
 
 This document records the native `withContinuousObservation` behavior that
-ObservationBridge should target in follow-up compatibility work. It is an
-investigation note, not a versioned release contract.
+ObservationBridge follows for portable mutation delivery. It is an investigation
+note, not a versioned release contract.
 
 ObservationBridge intentionally differs from native `withContinuousObservation`
 only for the `.initial` pass timing: ObservationBridge delivers `.initial`
 synchronously before `withPortableContinuousObservation` returns. Mutation
-delivery should otherwise follow the native continuous API in the target design.
+delivery otherwise follows the native continuous API, except for the documented
+iOS 27+ liveness fallback.
 
 ## Investigation Scope
 
@@ -114,8 +115,7 @@ initial: value=0 secondary=0 matches(value)=false matches(secondary)=false
 didSet:  value=1 secondary=0 matches(value)=true  matches(secondary)=false
 ```
 
-Follow-up target: ObservationBridge should match this exactly after the synchronous
-`.initial` pass.
+ObservationBridge matches this after the synchronous `.initial` pass.
 
 ### Single `.willSet`
 
@@ -127,23 +127,24 @@ initial: value=0 secondary=0 matches(value)=false matches(secondary)=false
 willSet: value=1 secondary=0 matches(value)=true  matches(secondary)=false
 ```
 
-Follow-up target: ObservationBridge should deliver `.willSet` with the same
-post-mutation read behavior.
+ObservationBridge delivers `.willSet` with the same post-mutation read behavior.
 
 ### `[.willSet, .didSet]`
 
 Native one-shot `withObservationTracking(options:)` can invoke both will-set and
 did-set callbacks for one mutation. Native `withContinuousObservation` exposes a
 single stored event to the continuous callback. In the observed iOS 27 behavior,
-did-set wins for a normal mutation.
+did-set wins for a normal mutation. ObservationBridge follows that precedence:
+when both `.willSet` and `.didSet` are requested, `.didSet` is the exposed
+continuous pass.
 
 ```text
 initial: value=0 secondary=0 matches(value)=false matches(secondary)=false
 didSet:  value=1 secondary=0 matches(value)=true  matches(secondary)=false
 ```
 
-Follow-up target: ObservationBridge should follow the native continuous callback
-cadence, not the lower-level one-shot SPI cadence.
+ObservationBridge follows the native continuous callback cadence, not the
+lower-level one-shot SPI cadence.
 
 ## Synchronous Consecutive Mutations
 
@@ -175,8 +176,8 @@ initial: value=0 secondary=0 matches(value)=false matches(secondary)=false
 didSet:  value=1 secondary=2 matches(value)=true  matches(secondary)=false
 ```
 
-Follow-up target: ObservationBridge should coalesce synchronous consecutive
-mutations into the native continuous event shape.
+ObservationBridge coalesces synchronous consecutive mutations into the native
+continuous event shape.
 
 ## Callback-Internal Mutations
 
@@ -202,9 +203,8 @@ initial: value=0 secondary=0
 didSet:  value=1 secondary=0 matches(value)=true
 ```
 
-Follow-up target: ObservationBridge should not keep previous tracking armed
-through the callback body in a way that makes callback-internal mutations
-produce another pass.
+ObservationBridge does not keep previous tracking armed through the callback
+body in a way that makes callback-internal mutations produce another pass.
 
 ## Event Cancellation
 
@@ -220,12 +220,12 @@ didSet:  value=1  // event.cancel() called here
 // later value=2 mutation is not delivered
 ```
 
-Follow-up target: ObservationBridge mutation events should cancel the portable
-continuous observation when `event.cancel()` is invoked.
+ObservationBridge mutation events cancel the portable continuous observation
+when `event.cancel()` is invoked.
 
 ## Compatibility Targets
 
-| Scenario | Native continuous behavior | ObservationBridge follow-up target |
+| Scenario | Native continuous behavior | ObservationBridge behavior |
 | --- | --- | --- |
 | `.initial` timing | Native scheduled initial pass | Synchronous initial pass before return |
 | `.initial` dependency reads | Reads in initial arm later tracking | Same |

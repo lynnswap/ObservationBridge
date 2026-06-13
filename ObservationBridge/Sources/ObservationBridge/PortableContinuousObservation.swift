@@ -400,8 +400,6 @@ private func trackRuntimeScopedObservationInCurrentContext(
         return ScopedObservationTrackResult(shouldContinue: false, completion: nil)
     }
 
-    slot.cancelTrackingsDeferredUntilNextPass()
-
     let event = makeScopedObservationEvent(pendingEvent, slot: slot)
 
     let delivery = slot.delivery
@@ -434,23 +432,11 @@ private func trackRuntimeScopedObservationInCurrentContext(
     case .didSet:
         didApply = _withObservationTrackingDidSet({
             pipeline.apply(event: event)
-        }, didSet: makeRuntimeTrackingHandler(kind: .didSet, slot: slot, cancelsTracking: true))
+        }, didSet: makeRuntimeTrackingHandler(kind: .didSet, slot: slot))
     case .willSet:
         didApply = _withObservationTrackingWillSet({
             pipeline.apply(event: event)
-        }, willSet: makeRuntimeTrackingHandler(kind: .willSet, slot: slot, cancelsTracking: true))
-    case .willSetAndDidSet:
-        didApply = _withObservationTrackingWillSetDidSet({
-            pipeline.apply(event: event)
-        }, willSet: makeRuntimeTrackingHandler(
-            kind: .willSet,
-            slot: slot,
-            cancelsTracking: false
-        ), didSet: makeRuntimeTrackingHandler(
-            kind: .didSet,
-            slot: slot,
-            cancelsTracking: true
-        ))
+        }, willSet: makeRuntimeTrackingHandler(kind: .willSet, slot: slot))
     }
 
     return complete(shouldContinue: slot.isActive, didApply: didApply)
@@ -459,24 +445,15 @@ private func trackRuntimeScopedObservationInCurrentContext(
 private enum RuntimeScopedTrackingMode: Equatable {
     case willSet
     case didSet
-    case willSetAndDidSet
 }
 
 private func runtimeTrackingMode(for options: PortableObservationTracking.Options) -> RuntimeScopedTrackingMode? {
-    if options.contains(.willSet), options.contains(.didSet) {
-        // Both mutation options require the combined SPI so the pass sequence stays
-        // willSet then didSet. Do not downgrade to a single-kind SPI here; OS 27+
-        // liveness fallback is selected before slot creation, and older runtimes
-        // are covered by the development symbol-availability test.
-        return canUseCombinedObservationTrackingSPI ? .willSetAndDidSet : nil
+    if options.contains(.didSet) {
+        return canUseDidSetObservationTrackingSPI ? .didSet : nil
     }
 
     if options.contains(.willSet) {
         return canUseWillSetObservationTrackingSPI ? .willSet : nil
-    }
-
-    if options.contains(.didSet) {
-        return canUseDidSetObservationTrackingSPI ? .didSet : nil
     }
 
     return nil
@@ -484,8 +461,7 @@ private func runtimeTrackingMode(for options: PortableObservationTracking.Option
 
 private func makeRuntimeTrackingHandler(
     kind: PortableObservationTracking.Event.Kind,
-    slot: ObservationScopeSlot,
-    cancelsTracking: Bool
+    slot: ObservationScopeSlot
 ) -> @Sendable (OpaqueObservationTracking) -> Void {
     { [weak slot] tracking in
         guard let slot else {
@@ -493,22 +469,11 @@ private func makeRuntimeTrackingHandler(
             return
         }
 
-        let deferredCancellation: (@Sendable () -> Void)?
-        if cancelsTracking {
-            let cancellation = DeferredObservationTrackingCancellation(tracking)
-            deferredCancellation = { cancellation.cancel() }
-        } else {
-            deferredCancellation = nil
-        }
-
-        let didEmit = slot.emitChange(
+        slot.emitChange(
             kind: kind,
-            triggers: ObservationEventTriggers.keyPath(observationTrackingChangedKeyPath(tracking)),
-            cancelTrackingAfterNextPass: deferredCancellation
+            triggers: ObservationEventTriggers.keyPath(observationTrackingChangedKeyPath(tracking))
         )
-        if !didEmit {
-            cancelObservationTrackingIfAvailable(tracking)
-        }
+        cancelObservationTrackingIfAvailable(tracking)
     }
 }
 
@@ -516,13 +481,14 @@ private func makeScopedObservationEvent(
     _ pendingEvent: ObservationScopePendingEvent,
     slot: ObservationScopeSlot
 ) -> PortableObservationTracking.Event {
-    guard pendingEvent.kind == .initial else {
-        return PortableObservationTracking.Event(kind: pendingEvent.kind, triggers: pendingEvent.triggers)
-    }
-
-    return PortableObservationTracking.Event(kind: pendingEvent.kind) { [weak slot] in
+    let cancellation: @Sendable () -> Void = { [weak slot] in
         slot?.cancel()
     }
+    return PortableObservationTracking.Event(
+        kind: pendingEvent.kind,
+        triggers: pendingEvent.triggers,
+        cancellation: cancellation
+    )
 }
 
 private func withObservationIsolation<T: Sendable>(
@@ -545,18 +511,6 @@ private func withObservationIsolation<T: Sendable>(
 // forwards the hidden value with the same indirect convention.
 private typealias OpaqueObservationTracking = URL
 
-private final class DeferredObservationTrackingCancellation: @unchecked Sendable {
-    private let tracking: OpaqueObservationTracking
-
-    init(_ tracking: OpaqueObservationTracking) {
-        self.tracking = tracking
-    }
-
-    func cancel() {
-        cancelObservationTrackingIfAvailable(tracking)
-    }
-}
-
 @_weakLinked
 @_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
 private func _withObservationTrackingDidSet<T>(
@@ -571,24 +525,12 @@ private func _withObservationTrackingWillSet<T>(
     willSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
 ) -> T
 
-@_weakLinked
-@_silgen_name("$s11Observation04withA8Tracking_7willSet03didE0xxyXE_yAA0aC0VYbcyAFYbctlF")
-private func _withObservationTrackingWillSetDidSet<T>(
-    _ apply: () -> T,
-    willSet: @escaping @Sendable (OpaqueObservationTracking) -> Void,
-    didSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
-) -> T
-
 private let observationTrackingDidSetAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
         .map { UInt(bitPattern: $0) }
 
 private let observationTrackingWillSetAddress: UInt? =
     unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_7willSetxxyXE_yAA0aC0VYbctlF")
-        .map { UInt(bitPattern: $0) }
-
-private let observationTrackingWillSetDidSetAddress: UInt? =
-    unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_7willSet03didE0xxyXE_yAA0aC0VYbcyAFYbctlF")
         .map { UInt(bitPattern: $0) }
 
 private let observationTrackingCancelAddress: UInt? =
@@ -617,20 +559,21 @@ private var canUseObservationTrackingSupportSPIIgnoringTestOverride: Bool {
 }
 
 private var canUseDidSetObservationTrackingSPI: Bool {
-    canUseObservationTrackingSupportSPI && observationTrackingDidSetAddress != nil
+    if _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock({ $0 }) {
+        return false
+    }
+
+    return canUseObservationTrackingSupportSPI && observationTrackingDidSetAddress != nil
 }
 
 private var canUseWillSetObservationTrackingSPI: Bool {
     canUseObservationTrackingSupportSPI && observationTrackingWillSetAddress != nil
 }
 
-private var canUseCombinedObservationTrackingSPI: Bool {
-    canUseObservationTrackingSupportSPI && observationTrackingWillSetDidSetAddress != nil
-}
-
 enum _ObservationScopeTesting {
     /// Simulates missing Observation runtime SPI symbols.
     static let forceObservationTrackingSPIUnavailable = Mutex(false)
+    static let forceDidSetObservationTrackingSPIUnavailable = Mutex(false)
 
     static var missingRequiredObservationTrackingSPISymbols: [String] {
         missingRequiredRuntimeSPISymbols()
@@ -649,9 +592,6 @@ private func missingRequiredRuntimeSPISymbols() -> [String] {
     }
     if observationTrackingWillSetAddress == nil {
         missing.append("withObservationTracking(_:willSet:)")
-    }
-    if observationTrackingWillSetDidSetAddress == nil {
-        missing.append("withObservationTracking(_:willSet:didSet:)")
     }
     if observationTrackingCancelAddress == nil {
         missing.append("ObservationTracking.cancel")

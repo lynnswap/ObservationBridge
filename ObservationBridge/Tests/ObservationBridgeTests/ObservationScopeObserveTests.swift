@@ -395,7 +395,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func mutationOptionsDeliverWillSetThenDidSet() async {
+    func mutationOptionsPreferDidSetContinuousPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
@@ -414,10 +414,9 @@ final class ObservationScopeObserveTests {
 
         model.value = 1
 
-        #expect(await cursor.next() == "willSet:true")
         #expect(await cursor.next() == "didSet:true")
         #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
-        #expect(passes.snapshot() == ["initial:false", "willSet:true", "didSet:true"])
+        #expect(passes.snapshot() == ["initial:false", "didSet:true"])
     }
 
     @Test
@@ -482,8 +481,42 @@ final class ObservationScopeObserveTests {
         model.value = 1
 
         if usesNativeContinuousFallbackForTesting() {
-            let mutationKind = await cursor.next()
-            #expect(mutationKind == .willSet || mutationKind == .didSet)
+            #expect(await cursor.next() == .didSet)
+            #expect(delivery.isActive == true)
+        } else {
+            #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
+            #expect(delivery.isActive == false)
+            #expect(kinds.snapshot() == [.initial])
+        }
+    }
+
+    @Test
+    func bothOptionsDoNotDowngradeToWillSetWhenDidSetSPIIsUnavailable() async {
+        _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = true }
+        defer {
+            _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = false }
+        }
+
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
+            _ = model.value
+            rendered.set(event.kind)
+        }
+        let kinds = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(kinds)
+
+        #expect(await cursor.next() == .initial)
+
+        model.value = 1
+
+        if usesNativeContinuousFallbackForTesting() {
+            #expect(await cursor.next() == .didSet)
             #expect(delivery.isActive == true)
         } else {
             #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
@@ -616,7 +649,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func pendingMutationSequencePreservesWillSetThenDidSetWhenNoWaiterIsRegistered() async {
+    func pendingMutationStoresLatestEventWhenNoWaiterIsRegistered() async {
         let slot = ObservationScopeSlot(
             options: [.willSet, .didSet],
             observationIsolation: nil,
@@ -628,13 +661,10 @@ final class ObservationScopeObserveTests {
         slot.emitChange(kind: .willSet, triggers: .keyPath(\CounterModel.value))
         slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value))
 
-        let willSet = await slot.waitForChange()
-        let didSet = await slot.waitForChange()
+        let event = await slot.waitForChange()
 
-        #expect(willSet?.kind == .willSet)
-        #expect(willSet?.triggers.contains(\CounterModel.value) == true)
-        #expect(didSet?.kind == .didSet)
-        #expect(didSet?.triggers.contains(\CounterModel.value) == true)
+        #expect(event?.kind == .didSet)
+        #expect(event?.triggers.contains(\CounterModel.value) == true)
     }
 
     @Test
@@ -793,7 +823,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func synchronousExternalMutationsDuringRearmKeepLatestTrigger() async {
+    func synchronousExternalMutationsDuringRearmCoalesceToOneStoredTrigger() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
@@ -816,12 +846,64 @@ final class ObservationScopeObserveTests {
         model.value = 1
         model.secondaryValue = 2
 
-        let firstMutationPass = await cursor.next()
-        let secondMutationPass = await cursor.next(timeout: .milliseconds(250))
-        #expect(
-            firstMutationPass == "didSet:value:false:secondary:true"
-                || secondMutationPass == "didSet:value:false:secondary:true"
-        )
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        #expect(await cursor.next(timeout: .milliseconds(250)) == nil)
+    }
+
+    @Test
+    func synchronousExternalWillSetMutationsDuringRearmCoalesceToOneStoredTrigger() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: .willSet) { event, model in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        model.secondaryValue = 2
+
+        #expect(await cursor.next() == "willSet:value:true:secondary:false")
+        #expect(await cursor.next(timeout: .milliseconds(250)) == nil)
+    }
+
+    @Test
+    func synchronousExternalBothOptionMutationsDuringRearmUseDidSetContinuousPass() async {
+        let model = CounterModel()
+        let observations = ObservationScope()
+        let rendered = RenderedValue("")
+        defer { observations.cancelAll() }
+
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
+            _ = model.value
+            _ = model.secondaryValue
+            rendered.set(
+                "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
+            )
+        }
+        let passes = await delivery.values {
+            rendered.value
+        }
+        var cursor = ObservedValuesCursor(passes)
+
+        #expect(await cursor.next() == "initial:value:false:secondary:false")
+
+        model.value = 1
+        model.secondaryValue = 2
+
+        #expect(await cursor.next() == "didSet:value:true:secondary:false")
+        #expect(await cursor.next(timeout: .milliseconds(250)) == nil)
     }
 
     @Test
@@ -879,8 +961,7 @@ final class ObservationScopeObserveTests {
         if usesNativeContinuousFallbackForTesting() {
             let mutationPass = await cursor.next()
             #expect(
-                mutationPass == "willSet:value:true:secondary:true"
-                    || mutationPass == "didSet:value:true:secondary:true"
+                mutationPass == "didSet:value:true:secondary:true"
             )
             #expect(delivery.isActive == true)
         } else {
@@ -1339,7 +1420,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelDoesNotStopDidSetObservation() async {
+    func eventCancelStopsDidSetObservationAfterSamplingCurrentPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
@@ -1367,15 +1448,14 @@ final class ObservationScopeObserveTests {
         model.value = 1
 
         #expect(await cursor.next() == ScopePass(kind: .didSet, value: 1, isEnabled: false))
-        #expect(delivery.isActive == true)
+        #expect(delivery.isActive == false)
 
         model.value = 2
 
-        #expect(await cursor.next() == ScopePass(kind: .didSet, value: 2, isEnabled: false))
+        #expect(await cursor.next(timeout: .milliseconds(100)) == nil)
         #expect(passes.snapshot() == [
             ScopePass(kind: .initial, value: 0, isEnabled: false),
             ScopePass(kind: .didSet, value: 1, isEnabled: false),
-            ScopePass(kind: .didSet, value: 2, isEnabled: false),
         ])
     }
 
