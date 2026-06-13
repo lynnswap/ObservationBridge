@@ -61,6 +61,9 @@ synchronously when the observation starts. That pass is still the first tracking
 pass. Observable values read during `.initial` become the dependencies that
 allow later `.willSet` and `.didSet` passes to fire.
 
+For the native behavior used as the compatibility reference, see
+[Continuous Observation Compatibility Investigation](Docs/ContinuousObservationCompatibility.md).
+
 Do not return from `.initial` before reading the values you want to keep
 tracking:
 
@@ -111,19 +114,10 @@ reason for the pass.
 Call `PortableObservationTracking.Token.cancel()` to stop an observation. The token also
 cancels when it deinitializes.
 
-`PortableObservationTracking.Event.matches(_:)` mirrors Swift's
-`withContinuousObservation` matching behavior: mutation passes compare the
-event's `ObservationTracking.changed` key path with the supplied key path, and
-`.initial` matches nothing. Exact matching relies on weak-linked Observation
-runtime SPI. When the required symbols are unavailable on Swift 6.4 / OS 27+
-runtimes, ObservationBridge falls back to public `withContinuousObservation` so
-updates keep flowing in the callback's inherited actor context. In that fallback
-only, `.initial` and mutation event cadence follow native continuous timing, and
-mutation `matches(_:)` answers conservatively. On older supported runtimes, the
-required SPI symbols are part of the development test contract; ObservationBridge
-does not partially downgrade
-`[.willSet, .didSet]` to a single mutation kind because that would change the
-requested event sequence.
+`PortableObservationTracking.Event.matches(_:)` filters the current pass by key
+path on the exact runtime path. In the iOS 27+ liveness fallback, mutation
+matching is conservative and may match unrelated key paths so updates keep
+flowing. Treat it as a work filter, not a dependency declaration.
 
 ## Testing
 
