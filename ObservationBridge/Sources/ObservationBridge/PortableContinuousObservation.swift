@@ -540,9 +540,9 @@ private func withObservationIsolation<T: Sendable>(
     operation(isolation)
 }
 
-// `ObservationTracking` is hidden from the Swift 6.2 public interface even though the
-// willSet/didSet SPIs pass it to these closures. Use a resilient imported value as the
-// opaque ABI carrier so Swift forwards the hidden value with the same indirect convention.
+// The SPI overloads pass a runtime `ObservationTracking` value whose public shape differs
+// across Swift releases. Use a resilient imported value as the opaque ABI carrier so Swift
+// forwards the hidden value with the same indirect convention.
 private typealias OpaqueObservationTracking = URL
 
 private final class DeferredObservationTrackingCancellation: @unchecked Sendable {

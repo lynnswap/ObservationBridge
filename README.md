@@ -5,7 +5,7 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 
 ## Requirements
 
-- Swift 6.2
+- Swift 6.3
 - iOS 18+
 - Mac Catalyst 18+
 - macOS 15+
