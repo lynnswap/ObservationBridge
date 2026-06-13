@@ -22,25 +22,43 @@ concurrency:
 
 jobs:
   macos-tests:
-    name: Package Tests (${{ matrix.runner }})
+    name: Package Tests (Swift ${{ matrix.swift }})
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          - macos-15
-          - macos-26
+        include:
+          - swift: '6.3'
+            runner: macos-26
+            xcode_major: '26'
+            xcode_minimum: '26.5'
+            allow_prerelease: 'false'
+            allow_unavailable: 'false'
+          - swift: '6.4+'
+            runner: macos-26
+            xcode_major: '27'
+            xcode_minimum: '27.0'
+            allow_prerelease: 'true'
+            allow_unavailable: 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
-      XCODE_MAJOR: '26'
+      SWIFT_LANE: ${{ matrix.swift }}
+      XCODE_MAJOR: ${{ matrix.xcode_major }}
+      XCODE_MINIMUM: ${{ matrix.xcode_minimum }}
+      ALLOW_XCODE_PRERELEASE: ${{ matrix.allow_prerelease }}
+      ALLOW_XCODE_UNAVAILABLE: ${{ matrix.allow_unavailable }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Resolve latest stable Xcode
+      - name: Resolve Xcode
+        id: resolve-xcode
         run: |
           xcode_app="$(ruby <<'RUBY'
           xcode_major = ENV.fetch("XCODE_MAJOR")
+          minimum = ENV.fetch("XCODE_MINIMUM").split(".").map(&:to_i)
+          allow_prerelease = ENV.fetch("ALLOW_XCODE_PRERELEASE") == "true"
+          allow_unavailable = ENV.fetch("ALLOW_XCODE_UNAVAILABLE") == "true"
           candidates = Dir["/Applications/Xcode_#{xcode_major}*.app"].select { |path| File.directory?(path) }
 
           def pre_release_xcode_path?(path)
@@ -51,6 +69,7 @@ jobs:
           end
 
           candidates = candidates.reject do |path|
+            next false if allow_prerelease
             pre_release_xcode_path?(path)
           end
 
@@ -59,19 +78,42 @@ jobs:
             version.to_s.split(".").map(&:to_i)
           end
 
+          def version_at_least?(version, minimum)
+            length = [version.length, minimum.length].max
+            version = version + Array.new(length - version.length, 0)
+            minimum = minimum + Array.new(length - minimum.length, 0)
+            (version <=> minimum) >= 0
+          end
+
+          candidates = candidates.select { |path| version_at_least?(version_components(path), minimum) }
           selected = candidates.max_by { |path| version_components(path) }
-          abort("No stable Xcode #{xcode_major} installation found") unless selected
+          unless selected
+            message = "No Xcode #{xcode_major} installation >= #{ENV.fetch("XCODE_MINIMUM")} found"
+            if allow_unavailable
+              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") { |file| file.puts("found=false") }
+              warn("#{message}; skipping optional Swift #{ENV.fetch("SWIFT_LANE")} lane")
+              exit 0
+            end
+            abort(message)
+          end
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") { |file| file.puts("found=true") }
           puts selected
           RUBY
           )"
+          if [ -z "${xcode_app}" ]; then
+            exit 0
+          fi
           echo "DEVELOPER_DIR=${xcode_app}/Contents/Developer" >> "$GITHUB_ENV"
           echo "Resolved Xcode: ${xcode_app}"
 
       - name: Show Xcode environment
+        if: steps.resolve-xcode.outputs.found == 'true'
         run: |
           xcodebuild -version
+          swift --version
           xcodebuild -showsdks
 
       - name: Run Swift package tests
+        if: steps.resolve-xcode.outputs.found == 'true'
         run: |
           swift test

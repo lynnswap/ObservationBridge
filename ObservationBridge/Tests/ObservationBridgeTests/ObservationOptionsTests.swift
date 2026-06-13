@@ -13,14 +13,5 @@ final class ObservationOptionsTests {
         let willSetOptions: PortableObservationTracking.Options = [.willSet, .didSet]
         #expect(willSetOptions.contains(.willSet))
         #expect(willSetOptions.contains(.didSet))
-
-        #if compiler(>=6.4)
-        if #available(anyAppleOS 27.0, *) {
-            let deinitOptions: PortableObservationTracking.Options = [.willSet, .didSet, .deinit]
-            #expect(deinitOptions.contains(.willSet))
-            #expect(deinitOptions.contains(.didSet))
-            #expect(deinitOptions.contains(.deinit))
-        }
-        #endif
     }
 }

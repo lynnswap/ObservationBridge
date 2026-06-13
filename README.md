@@ -5,7 +5,7 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 
 ## Requirements
 
-- Swift 6.2
+- Swift 6.3
 - iOS 18+
 - Mac Catalyst 18+
 - macOS 15+
@@ -15,7 +15,9 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 ## Portable Continuous Observation
 
 Create an observation with `withPortableContinuousObservation(options:apply:)`.
-The returned `PortableObservationTracking.Token` keeps the observation alive.
+The callback inherits the caller's actor context like Swift's native
+`withContinuousObservation`. The returned `PortableObservationTracking.Token`
+keeps the observation alive.
 
 ```swift
 import ObservationBridge
@@ -49,19 +51,50 @@ deinit {
 
 Read the observable values that should keep triggering the callback on every
 pass. Use `matches(_:)` to decide whether to perform additional work for a
-changed key path.
+changed key path, not as the only guard for correctness.
 
 ### Events
 
-`withPortableContinuousObservation` runs its `.initial` pass synchronously when
-the observation starts. Later passes are controlled by `PortableObservationTracking.Options`.
+`withPortableContinuousObservation` intentionally differs from Swift's native
+`withContinuousObservation` in one place: it runs its `.initial` pass
+synchronously when the observation starts. That pass is still the first tracking
+pass. Observable values read during `.initial` become the dependencies that
+allow later `.willSet` and `.didSet` passes to fire.
+
+If the iOS 27+ liveness fallback is selected because exact Observation runtime
+SPI is unavailable, `.initial` follows native timing and may run after the token
+is returned.
+
+For the native behavior used as the compatibility reference, see
+[Continuous Observation Compatibility Investigation](Docs/ContinuousObservationCompatibility.md).
+
+Do not return from `.initial` before reading the values you want to keep
+tracking:
+
+```swift
+let token = withPortableContinuousObservation { event in
+    let title = model.title
+    let rows = model.rows
+
+    guard event.kind != .initial else {
+        return
+    }
+
+    titleLabel.text = title
+
+    if event.matches(\Model.rows) {
+        applySnapshot(rows)
+    }
+}
+```
+
+Later passes are controlled by `PortableObservationTracking.Options`.
 
 `PortableObservationTracking.Event.kind` describes why the callback is running:
 
-- `.initial`: the first pass
+- `.initial`: the first tracking pass, delivered synchronously by ObservationBridge
 - `.willSet`: a tracked dependency is about to change
 - `.didSet`: a tracked dependency changed
-- `.deinit`: a tracked dependency deinitialized
 
 `PortableObservationTracking.Options` controls which later events are delivered. The default is
 `.didSet`:
@@ -77,7 +110,9 @@ let initialOnlyObservation = withPortableContinuousObservation(options: []) { ev
 ```
 
 `[]` delivers only `.initial`. `.didSet` and `.willSet` are available on all
-supported versions. `.deinit` is delivered on Swift 6.4 and OS 27+.
+supported versions. When both `.willSet` and `.didSet` are requested,
+ObservationBridge follows native continuous observation cadence and delivers one
+`.didSet` pass for a normal mutation.
 
 Do not store `PortableObservationTracking.Event`. Save `event.kind` if later code needs the
 reason for the pass.
@@ -85,10 +120,10 @@ reason for the pass.
 Call `PortableObservationTracking.Token.cancel()` to stop an observation. The token also
 cancels when it deinitializes.
 
-`PortableObservationTracking.Event.matches(_:)` reports whether the current pass can be treated as
-triggered by a mutation of the supplied key path. `.initial` and `.deinit` passes
-match nothing. When trigger details are unavailable, `matches(_:)` returns
-`true` so callers do not skip work for a possible mutation.
+`PortableObservationTracking.Event.matches(_:)` filters the current pass by key
+path on the exact runtime path. In the iOS 27+ liveness fallback, mutation
+matching is conservative and may match unrelated key paths so updates keep
+flowing. Treat it as a work filter, not a dependency declaration.
 
 ## Testing
 
@@ -149,6 +184,9 @@ These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.
 - The callback now matches Swift's `withContinuousObservation` shape. Read
   observable values directly from the callback body instead of receiving a
   `model` argument.
+- Explicit actor override is not part of the public API. Call
+  `withPortableContinuousObservation` from the actor context that should own the
+  callback.
 - `ObservationDelivery` has been replaced by `PortableObservationTracking.Token`.
   Attach test samplers with `token.values { ... }`.
 
@@ -227,6 +265,7 @@ deinit {
   follow `withContinuousObservation`; use `[]` for initial-only callbacks.
 - `PortableObservationTracking.Event` is now noncopyable and borrowed by the callback. Save
   `event.kind` instead of storing the event itself.
-- `PortableObservationTracking.Event.matches(_:)` reports the key paths that triggered a pass.
-  The explicit `tracking:` observe overload has been removed: read the needed
-  properties in the callback and filter passes with `matches(_:)` instead.
+- `PortableObservationTracking.Event.matches(_:)` filters the current pass by
+  trigger key path when trigger details are available. The explicit `tracking:`
+  observe overload has been removed: read the needed properties in the callback
+  and use `matches(_:)` only to gate optional extra work for that pass.

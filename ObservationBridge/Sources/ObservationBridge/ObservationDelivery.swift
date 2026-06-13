@@ -1,3 +1,5 @@
+import Foundation
+import Observation
 import Synchronization
 
 extension PortableObservationTracking {
@@ -7,13 +9,16 @@ extension PortableObservationTracking {
     /// Tests can attach value samplers with ``values(_:)`` to wait for state
     /// rendered by the production callback after each delivery completes.
     public struct Token: Sendable {
-        private final class Storage: Sendable {
-            let slot: ObservationScopeSlot
+        private final class Storage: @unchecked Sendable {
+            private let cancelOperation: @Sendable () -> Void
             let delivery: ObservationDelivery
 
-            init(slot: ObservationScopeSlot, delivery: ObservationDelivery) {
-                self.slot = slot
+            init(
+                delivery: ObservationDelivery,
+                cancelOperation: @escaping @Sendable () -> Void
+            ) {
                 self.delivery = delivery
+                self.cancelOperation = cancelOperation
             }
 
             deinit {
@@ -21,7 +26,7 @@ extension PortableObservationTracking {
             }
 
             func cancel() {
-                slot.cancel()
+                cancelOperation()
             }
         }
 
@@ -37,8 +42,23 @@ extension PortableObservationTracking {
         }
 
         init(slot: ObservationScopeSlot, delivery: ObservationDelivery) {
-            storage = Storage(slot: slot, delivery: delivery)
+            storage = Storage(delivery: delivery) {
+                slot.cancel()
+            }
         }
+
+        #if compiler(>=6.4)
+        @available(anyAppleOS 27.0, *)
+        init(
+            nativeContinuousCancellation: NativeContinuousObservationCancellation,
+            delivery: ObservationDelivery
+        ) {
+            storage = Storage(delivery: delivery) {
+                nativeContinuousCancellation.cancel()
+                delivery.finish()
+            }
+        }
+        #endif
 
         /// Cancels the backing observation.
         public func cancel() {
@@ -65,6 +85,98 @@ extension PortableObservationTracking {
         }
     }
 }
+
+#if compiler(>=6.4)
+@available(anyAppleOS 27.0, *)
+private struct NativeContinuousObservationTokenStorage: ~Copyable {
+    var token: ObservationTracking.Token
+
+    init(_ token: consuming ObservationTracking.Token) {
+        self.token = token
+    }
+}
+
+@safe
+@available(anyAppleOS 27.0, *)
+private struct NativeContinuousObservationTokenHandle {
+    private var rawPointer: UnsafeMutableRawPointer
+
+    private init(rawPointer: UnsafeMutableRawPointer) {
+        unsafe self.rawPointer = unsafe rawPointer
+    }
+
+    static func allocate(_ token: consuming ObservationTracking.Token) -> Self {
+        let pointer = UnsafeMutablePointer<NativeContinuousObservationTokenStorage>.allocate(capacity: 1)
+        unsafe pointer.initialize(to: NativeContinuousObservationTokenStorage(token))
+        return unsafe Self(rawPointer: UnsafeMutableRawPointer(pointer))
+    }
+
+    func release() {
+        let pointer = unsafe rawPointer.assumingMemoryBound(to: NativeContinuousObservationTokenStorage.self)
+        unsafe pointer.deinitialize(count: 1)
+        unsafe pointer.deallocate()
+    }
+}
+
+@available(anyAppleOS 27.0, *)
+final class NativeContinuousObservationCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokenStorage: NativeContinuousObservationTokenHandle?
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
+
+    deinit {
+        cancel()
+    }
+
+    func install(_ token: consuming ObservationTracking.Token) {
+        let tokenStorage = NativeContinuousObservationTokenHandle.allocate(token)
+
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            tokenStorage.release()
+            return
+        }
+
+        let oldTokenStorage = self.tokenStorage
+        self.tokenStorage = tokenStorage
+        task = nil
+        lock.unlock()
+        if let oldTokenStorage {
+            oldTokenStorage.release()
+        }
+    }
+
+    func installTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            task.cancel()
+            return
+        }
+
+        let taskToCancel = self.task
+        self.task = task
+        lock.unlock()
+        taskToCancel?.cancel()
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let tokenStorageToRelease = tokenStorage
+        tokenStorage = nil
+        let taskToCancel = task
+        task = nil
+        lock.unlock()
+        if let tokenStorageToRelease {
+            tokenStorageToRelease.release()
+        }
+        taskToCancel?.cancel()
+    }
+}
+#endif
 
 final class ObservationDelivery: Sendable {
     private struct State: Sendable {
@@ -393,8 +505,52 @@ final class ObservationDelivery: Sendable {
     }
 }
 
+final class ObservationDeliveryCompletionQueue: Sendable {
+    private struct State: Sendable {
+        var completions: [ObservationDeliveryCompletion] = []
+        var isDraining = false
+    }
+
+    private let state = Mutex(State())
+
+    func enqueue(_ completion: ObservationDeliveryCompletion) {
+        let shouldStartDrain = state.withLock { state in
+            state.completions.append(completion)
+            guard !state.isDraining else {
+                return false
+            }
+
+            state.isDraining = true
+            return true
+        }
+
+        if shouldStartDrain {
+            Task {
+                await drain()
+            }
+        }
+    }
+
+    private func nextCompletion() -> ObservationDeliveryCompletion? {
+        state.withLock { state in
+            guard !state.completions.isEmpty else {
+                state.isDraining = false
+                return nil
+            }
+
+            return state.completions.removeFirst()
+        }
+    }
+
+    private func drain() async {
+        while let completion = nextCompletion() {
+            await completion.sampleAndFinish()
+        }
+    }
+}
+
 struct ObservationDeliveryCompletion: Sendable {
-    private weak var delivery: ObservationDelivery?
+    private let delivery: ObservationDelivery
     private let isActive: Bool
     private let generation: UInt64
     private let needsSampling: Bool
@@ -416,7 +572,7 @@ struct ObservationDeliveryCompletion: Sendable {
             return
         }
 
-        await delivery?.sampleActiveDeliveryAndFinish(generation: generation)
+        await delivery.sampleActiveDeliveryAndFinish(generation: generation)
     }
 
     func finishWithoutSampling() {
@@ -424,7 +580,7 @@ struct ObservationDeliveryCompletion: Sendable {
             return
         }
 
-        delivery?.finishActiveDelivery()
+        delivery.finishActiveDelivery()
     }
 }
 

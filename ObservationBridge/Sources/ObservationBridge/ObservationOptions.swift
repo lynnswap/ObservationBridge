@@ -12,12 +12,6 @@ extension PortableObservationTracking {
         /// Re-runs the observation callback after observed state changes.
         public static let didSet = Options(rawValue: 1 << 1)
 
-        #if compiler(>=6.4)
-        /// Re-runs the observation callback after a tracked observable dependency is deinitialized.
-        @available(anyAppleOS 27.0, *)
-        public static let `deinit` = Options(rawValue: 1 << 2)
-        #endif
-
         /// Creates observation options from a raw value.
         ///
         /// An empty option set delivers only the initial observation callback.

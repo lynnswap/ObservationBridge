@@ -1,70 +1,37 @@
 import Observation
 
-/// The trigger key paths captured for a single portable observation pass.
+/// The trigger key path captured for a single portable observation pass.
 ///
 /// `AnyKeyPath` instances are immutable reference types, so sharing them across
 /// isolation domains is safe even though the type predates `Sendable`.
 struct ObservationEventTriggers: @unchecked Sendable {
     private enum Storage {
         case none
-        case unknown
-        case single(AnyKeyPath)
-        case many(Set<AnyKeyPath>)
+        case exact(AnyKeyPath?)
+        case conservative
     }
 
     private var storage: Storage
 
-    /// No mutation triggered the pass (`.initial` and `.deinit` passes).
+    /// No mutation triggered the pass (`.initial` passes).
     static let none = ObservationEventTriggers(storage: .none)
 
-    /// A mutation triggered the pass but its key path could not be captured.
-    static let unknown = ObservationEventTriggers(storage: .unknown)
+    /// A mutation triggered the pass, but its key path could not be preserved.
+    static let conservative = ObservationEventTriggers(storage: .conservative)
 
-    /// A mutation of `keyPath` triggered the pass; `nil` degrades to ``unknown``.
+    /// A mutation of `keyPath` triggered the pass.
     static func keyPath(_ keyPath: AnyKeyPath?) -> ObservationEventTriggers {
-        guard let keyPath else {
-            return .unknown
-        }
-        return ObservationEventTriggers(storage: .single(keyPath))
-    }
-
-    private init(storage: Storage) {
-        self.storage = storage
+        ObservationEventTriggers(storage: .exact(keyPath))
     }
 
     func contains(_ keyPath: AnyKeyPath) -> Bool {
         switch storage {
         case .none:
             false
-        case .unknown:
-            true
-        case .single(let trigger):
+        case .exact(let trigger):
             trigger == keyPath
-        case .many(let triggers):
-            triggers.contains(keyPath)
-        }
-    }
-
-    mutating func formUnion(_ other: ObservationEventTriggers) {
-        switch (storage, other.storage) {
-        case (_, .none):
-            break
-        case (.none, _):
-            storage = other.storage
-        case (.unknown, _), (_, .unknown):
-            storage = .unknown
-        case (.single(let trigger), .single(let otherTrigger)):
-            if trigger != otherTrigger {
-                storage = .many([trigger, otherTrigger])
-            }
-        case (.single(let trigger), .many(let otherTriggers)):
-            storage = .many(otherTriggers.union([trigger]))
-        case (.many(var triggers), .single(let otherTrigger)):
-            triggers.insert(otherTrigger)
-            storage = .many(triggers)
-        case (.many(var triggers), .many(let otherTriggers)):
-            triggers.formUnion(otherTriggers)
-            storage = .many(triggers)
+        case .conservative:
+            true
         }
     }
 }
@@ -78,9 +45,6 @@ extension PortableObservationTracking {
                 case initial
                 case willSet
                 case didSet
-                #if compiler(>=6.4)
-                case `deinit`
-                #endif
             }
 
             private let rawValue: RawValue
@@ -100,14 +64,6 @@ extension PortableObservationTracking {
                 Kind(rawValue: .didSet)
             }
 
-            #if compiler(>=6.4)
-            /// A pass triggered after a tracked observable dependency is deinitialized.
-            @available(anyAppleOS 27.0, *)
-            public static var `deinit`: Kind {
-                Kind(rawValue: .deinit)
-            }
-            #endif
-
             public var description: String {
                 switch rawValue {
                 case .initial:
@@ -116,10 +72,6 @@ extension PortableObservationTracking {
                     "willSet"
                 case .didSet:
                     "didSet"
-                #if compiler(>=6.4)
-                case .deinit:
-                    "deinit"
-                #endif
                 }
             }
 
@@ -147,11 +99,9 @@ extension PortableObservationTracking {
 
         /// Returns whether this pass was triggered by a mutation of the supplied key path.
         ///
-        /// A coalesced pass can stand for multiple mutations; this returns `true` when any of
-        /// them used `keyPath`. `.initial` and `.deinit` passes return `false`. When trigger
-        /// key paths cannot be captured (the public-API fallback backend, or `.deinit`-enabled
-        /// native observations), this conservatively returns `true` for every key path so
-        /// callers never skip work for a mutation that did happen.
+        /// This mirrors Swift's `withContinuousObservation`: mutation passes compare the
+        /// event's `ObservationTracking.changed` key path to `keyPath`, and `.initial`
+        /// passes return `false`.
         ///
         /// Key paths carry no instance identity: two tracked objects of the same type are
         /// indistinguishable, and the comparison is exact, so a subclass-rooted key path does
