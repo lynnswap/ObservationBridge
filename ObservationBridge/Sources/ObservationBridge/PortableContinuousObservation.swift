@@ -464,16 +464,17 @@ private func makeRuntimeTrackingHandler(
     slot: ObservationScopeSlot
 ) -> @Sendable (OpaqueObservationTracking) -> Void {
     { [weak slot] tracking in
+        let triggers = ObservationEventTriggers.keyPath(observationTrackingChangedKeyPath(tracking))
+        cancelObservationTrackingIfAvailable(tracking)
+
         guard let slot else {
-            cancelObservationTrackingIfAvailable(tracking)
             return
         }
 
         slot.emitChange(
             kind: kind,
-            triggers: ObservationEventTriggers.keyPath(observationTrackingChangedKeyPath(tracking))
+            triggers: triggers
         )
-        cancelObservationTrackingIfAvailable(tracking)
     }
 }
 
