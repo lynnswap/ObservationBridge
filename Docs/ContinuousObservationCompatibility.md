@@ -244,5 +244,6 @@ The implementation should preserve exact `matches(_:)` for the stored mutation
 event on the runtime SPI path.
 
 Fallback behavior for missing SPI is a liveness strategy, not the primary
-compatibility model. A fallback may use conservative `matches(_:)` if preserving
-UI updates is more important than exact filtering on that runtime.
+compatibility model. A fallback may follow native `.initial` timing instead of
+the synchronous portable timing, and may use conservative `matches(_:)` if
+preserving UI updates is more important than exact filtering on that runtime.

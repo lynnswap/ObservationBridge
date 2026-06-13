@@ -61,6 +61,10 @@ synchronously when the observation starts. That pass is still the first tracking
 pass. Observable values read during `.initial` become the dependencies that
 allow later `.willSet` and `.didSet` passes to fire.
 
+If the iOS 27+ liveness fallback is selected because exact Observation runtime
+SPI is unavailable, `.initial` follows native timing and may run after the token
+is returned.
+
 For the native behavior used as the compatibility reference, see
 [Continuous Observation Compatibility Investigation](Docs/ContinuousObservationCompatibility.md).
 
