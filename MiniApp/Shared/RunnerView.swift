@@ -82,7 +82,7 @@ struct RunnerView: View {
         } else {
             ProgressView()
 #if os(macOS)
-                .controlSize(.small)
+                .controlSize(.mini)
 #endif
         }
     }
