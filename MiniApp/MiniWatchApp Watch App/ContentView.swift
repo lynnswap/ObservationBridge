@@ -1,10 +1,3 @@
-//
-//  ContentView.swift
-//  MiniApp
-//
-//  Created by Kazuki Nakashima on 2026/02/25.
-//
-
 import SwiftUI
 
 struct ContentView: View {

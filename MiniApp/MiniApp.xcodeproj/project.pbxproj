@@ -7,14 +7,53 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB31DBF12FE4F5F7009797E5 /* MiniWatchApp Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = AB31DBF02FE4F5F7009797E5 /* MiniWatchApp Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AB31DC112FE4F90E009797E5 /* Runner.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB31DC0F2FE4F8FE009797E5 /* Runner.swift */; };
+		AB31DC122FE4F90E009797E5 /* RunnerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB31DC102FE4F90E009797E5 /* RunnerView.swift */; };
+		AB31DC132FE4F90E009797E5 /* Runner.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB31DC0F2FE4F8FE009797E5 /* Runner.swift */; };
+		AB31DC142FE4F90E009797E5 /* RunnerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB31DC102FE4F90E009797E5 /* RunnerView.swift */; };
 		F0A100000000000000000001 /* ObservationBridge in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* ObservationBridge */; };
+		F0A100000000000000000004 /* ObservationBridge in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* ObservationBridge */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AB31DBF22FE4F5F7009797E5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AB9693292F4F379B00DA34DE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AB31DBEF2FE4F5F7009797E5;
+			remoteInfo = "MiniWatchApp Watch App";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AB31DBFD2FE4F5F8009797E5 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				AB31DBF12FE4F5F7009797E5 /* MiniWatchApp Watch App.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		AB31DBEB2FE4F5F7009797E5 /* MiniWatchApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MiniWatchApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB31DBF02FE4F5F7009797E5 /* MiniWatchApp Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MiniWatchApp Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB31DC0F2FE4F8FE009797E5 /* Runner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Runner.swift; sourceTree = "<group>"; };
+		AB31DC102FE4F90E009797E5 /* RunnerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerView.swift; sourceTree = "<group>"; };
 		AB9693312F4F379B00DA34DE /* MiniApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MiniApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		AB31DBF42FE4F5F7009797E5 /* MiniWatchApp Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "MiniWatchApp Watch App";
+			sourceTree = "<group>";
+		};
 		AB9693332F4F379B00DA34DE /* MiniApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = MiniApp;
@@ -23,6 +62,14 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AB31DBED2FE4F5F7009797E5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F0A100000000000000000004 /* ObservationBridge in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AB96932E2F4F379B00DA34DE /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -34,11 +81,22 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		AB31DC0E2FE4F8A9009797E5 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				AB31DC0F2FE4F8FE009797E5 /* Runner.swift */,
+				AB31DC102FE4F90E009797E5 /* RunnerView.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
 		AB9693282F4F379B00DA34DE = {
 			isa = PBXGroup;
 			children = (
 				AB9693332F4F379B00DA34DE /* MiniApp */,
+				AB31DBF42FE4F5F7009797E5 /* MiniWatchApp Watch App */,
 				AB9693322F4F379B00DA34DE /* Products */,
+				AB31DC0E2FE4F8A9009797E5 /* Shared */,
 			);
 			sourceTree = "<group>";
 		};
@@ -46,6 +104,8 @@
 			isa = PBXGroup;
 			children = (
 				AB9693312F4F379B00DA34DE /* MiniApp.app */,
+				AB31DBEB2FE4F5F7009797E5 /* MiniWatchApp.app */,
+				AB31DBF02FE4F5F7009797E5 /* MiniWatchApp Watch App.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -53,6 +113,48 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AB31DBEA2FE4F5F7009797E5 /* MiniWatchApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB31DC012FE4F5F8009797E5 /* Build configuration list for PBXNativeTarget "MiniWatchApp" */;
+			buildPhases = (
+				AB31DBE92FE4F5F7009797E5 /* Resources */,
+				AB31DBFD2FE4F5F8009797E5 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AB31DBF32FE4F5F7009797E5 /* PBXTargetDependency */,
+			);
+			name = MiniWatchApp;
+			packageProductDependencies = (
+			);
+			productName = MiniWatchApp;
+			productReference = AB31DBEB2FE4F5F7009797E5 /* MiniWatchApp.app */;
+			productType = "com.apple.product-type.application.watchapp2-container";
+		};
+		AB31DBEF2FE4F5F7009797E5 /* MiniWatchApp Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB31DC002FE4F5F8009797E5 /* Build configuration list for PBXNativeTarget "MiniWatchApp Watch App" */;
+			buildPhases = (
+				AB31DBEC2FE4F5F7009797E5 /* Sources */,
+				AB31DBED2FE4F5F7009797E5 /* Frameworks */,
+				AB31DBEE2FE4F5F7009797E5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AB31DBF42FE4F5F7009797E5 /* MiniWatchApp Watch App */,
+			);
+			name = "MiniWatchApp Watch App";
+			packageProductDependencies = (
+				F0A100000000000000000003 /* ObservationBridge */,
+			);
+			productName = "MiniWatchApp Watch App";
+			productReference = AB31DBF02FE4F5F7009797E5 /* MiniWatchApp Watch App.app */;
+			productType = "com.apple.product-type.application";
+		};
 		AB9693302F4F379B00DA34DE /* MiniApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AB96933C2F4F379D00DA34DE /* Build configuration list for PBXNativeTarget "MiniApp" */;
@@ -83,9 +185,15 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2630;
+				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
+					AB31DBEA2FE4F5F7009797E5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					AB31DBEF2FE4F5F7009797E5 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 					AB9693302F4F379B00DA34DE = {
 						CreatedOnToolsVersion = 26.3;
 					};
@@ -109,11 +217,27 @@
 			projectRoot = "";
 			targets = (
 				AB9693302F4F379B00DA34DE /* MiniApp */,
+				AB31DBEA2FE4F5F7009797E5 /* MiniWatchApp */,
+				AB31DBEF2FE4F5F7009797E5 /* MiniWatchApp Watch App */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		AB31DBE92FE4F5F7009797E5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB31DBEE2FE4F5F7009797E5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AB96932F2F4F379B00DA34DE /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -124,16 +248,137 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AB31DBEC2FE4F5F7009797E5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB31DC132FE4F90E009797E5 /* Runner.swift in Sources */,
+				AB31DC142FE4F90E009797E5 /* RunnerView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AB96932D2F4F379B00DA34DE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AB31DC112FE4F90E009797E5 /* Runner.swift in Sources */,
+				AB31DC122FE4F90E009797E5 /* RunnerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		AB31DBF32FE4F5F7009797E5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AB31DBEF2FE4F5F7009797E5 /* MiniWatchApp Watch App */;
+			targetProxy = AB31DBF22FE4F5F7009797E5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		AB31DBFB2FE4F5F8009797E5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58KPFKMJJW;
+				INFOPLIST_KEY_CFBundleDisplayName = MiniWatchApp;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lynnpd.MiniWatchApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AB31DBFC2FE4F5F8009797E5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58KPFKMJJW;
+				INFOPLIST_KEY_CFBundleDisplayName = MiniWatchApp;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lynnpd.MiniWatchApp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AB31DBFE2FE4F5F8009797E5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58KPFKMJJW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MiniWatchApp;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKWatchOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lynnpd.MiniWatchApp.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Debug;
+		};
+		AB31DBFF2FE4F5F8009797E5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 58KPFKMJJW;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MiniWatchApp;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKWatchOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lynnpd.MiniWatchApp.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
 		AB96933A2F4F379D00DA34DE /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -341,6 +586,24 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AB31DC002FE4F5F8009797E5 /* Build configuration list for PBXNativeTarget "MiniWatchApp Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB31DBFE2FE4F5F8009797E5 /* Debug */,
+				AB31DBFF2FE4F5F8009797E5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AB31DC012FE4F5F8009797E5 /* Build configuration list for PBXNativeTarget "MiniWatchApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB31DBFB2FE4F5F8009797E5 /* Debug */,
+				AB31DBFC2FE4F5F8009797E5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		AB96932C2F4F379B00DA34DE /* Build configuration list for PBXProject "MiniApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
