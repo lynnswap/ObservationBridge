@@ -8,7 +8,7 @@ ObservationBridge intentionally differs from native `withContinuousObservation`
 only for the `.initial` pass timing: ObservationBridge delivers `.initial`
 synchronously before `withPortableContinuousObservation` returns. Mutation
 delivery otherwise follows the native continuous API, except for the documented
-iOS 27+ liveness fallback.
+OS 27+ liveness fallback.
 
 ## Investigation Scope
 
