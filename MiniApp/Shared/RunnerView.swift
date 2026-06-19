@@ -70,6 +70,7 @@ struct RunnerView: View {
                     }
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("Runner")
         }
     }
@@ -80,6 +81,9 @@ struct RunnerView: View {
             Text(statusText)
         } else {
             ProgressView()
+#if os(macOS)
+                .controlSize(.small)
+#endif
         }
     }
 
