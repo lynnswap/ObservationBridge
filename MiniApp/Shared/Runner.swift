@@ -19,6 +19,83 @@ struct RunnerResult: Sendable {
     let elapsedSeconds: Double
 }
 
+enum RunnerStatus: Equatable {
+    case idle
+    case running
+    case passed
+    case failed
+
+    var text: String? {
+        switch self {
+        case .idle:
+            return "Idle"
+        case .running:
+            return nil
+        case .passed:
+            return "Passed"
+        case .failed:
+            return "Failed"
+        }
+    }
+}
+
+@MainActor
+@Observable
+final class RunnerModel {
+    private(set) var isRunning = false
+    private(set) var latestResult: RunnerResult?
+
+    @ObservationIgnored
+    private var runningTask: Task<Void, Never>?
+
+    var status: RunnerStatus {
+        if isRunning {
+            return .running
+        }
+
+        guard let latestResult else {
+            return .idle
+        }
+
+        if latestResult.firstFailure == nil, latestResult.completed {
+            return .passed
+        }
+
+        return .failed
+    }
+
+    func startRun() {
+        guard !isRunning else {
+            return
+        }
+
+        isRunning = true
+        latestResult = nil
+
+        runningTask = Task { [weak self] in
+            let result = await Runner.run()
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            self?.finishRun(result)
+        }
+    }
+
+    func cancelRun() {
+        runningTask?.cancel()
+        runningTask = nil
+        isRunning = false
+    }
+
+    private func finishRun(_ result: RunnerResult) {
+        latestResult = result
+        isRunning = false
+        runningTask = nil
+    }
+}
+
 @Observable
 private final class LockedCounterModel: Sendable {
     @ObservationIgnored
