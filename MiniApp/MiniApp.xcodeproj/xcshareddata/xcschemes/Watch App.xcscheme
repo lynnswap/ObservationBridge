@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2630"
+   LastUpgradeVersion = "2660"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -15,9 +15,23 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AB9693302F4F379B00DA34DE"
-               BuildableName = "MiniApp.app"
-               BlueprintName = "MiniApp"
+               BlueprintIdentifier = "AB31DBEF2FE4F5F7009797E5"
+               BuildableName = "MiniWatchApp Watch App.app"
+               BlueprintName = "MiniWatchApp Watch App"
+               ReferencedContainer = "container:MiniApp.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB31DBEA2FE4F5F7009797E5"
+               BuildableName = "MiniWatchApp.app"
+               BlueprintName = "MiniWatchApp"
                ReferencedContainer = "container:MiniApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -39,34 +53,18 @@
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
-      allowLocationSimulation = "YES">
+      allowLocationSimulation = "YES"
+      queueDebuggingEnableBacktraceRecording = "Yes">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "AB9693302F4F379B00DA34DE"
-            BuildableName = "MiniApp.app"
-            BlueprintName = "MiniApp"
+            BlueprintIdentifier = "AB31DBEF2FE4F5F7009797E5"
+            BuildableName = "MiniWatchApp Watch App.app"
+            BlueprintName = "MiniWatchApp Watch App"
             ReferencedContainer = "container:MiniApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <AdditionalOptions>
-         <AdditionalOption
-            key = "MallocScribble"
-            value = ""
-            isEnabled = "YES">
-         </AdditionalOption>
-         <AdditionalOption
-            key = "PrefersMallocStackLoggingLite"
-            value = ""
-            isEnabled = "YES">
-         </AdditionalOption>
-         <AdditionalOption
-            key = "MallocStackLogging"
-            value = ""
-            isEnabled = "YES">
-         </AdditionalOption>
-      </AdditionalOptions>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -78,9 +76,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "AB9693302F4F379B00DA34DE"
-            BuildableName = "MiniApp.app"
-            BlueprintName = "MiniApp"
+            BlueprintIdentifier = "AB31DBEF2FE4F5F7009797E5"
+            BuildableName = "MiniWatchApp Watch App.app"
+            BlueprintName = "MiniWatchApp Watch App"
             ReferencedContainer = "container:MiniApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

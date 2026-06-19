@@ -4,7 +4,7 @@
 #define __has_attribute(attribute) 0
 #endif
 
-#if (defined(__arm64__) || defined(__x86_64__)) && \
+#if (defined(__arm64__) || defined(__arm64_32__) || defined(__x86_64__)) && \
     __has_attribute(swiftcall) && __has_attribute(swift_context)
 #define OB_HAS_SWIFT_CONTEXT_CALL 1
 #else

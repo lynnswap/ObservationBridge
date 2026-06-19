@@ -551,7 +551,7 @@ private var canUseObservationTrackingSupportSPI: Bool {
 }
 
 private var canUseObservationTrackingSupportSPIIgnoringTestOverride: Bool {
-    #if arch(arm64) || arch(x86_64)
+    #if arch(arm64) || arch(arm64_32) || arch(x86_64)
     return observationTrackingChangedAddress != nil
         && observationTrackingCancelAddress != nil
     #else
@@ -586,7 +586,7 @@ enum _ObservationScopeTesting {
 }
 
 private func missingRequiredRuntimeSPISymbols() -> [String] {
-    #if arch(arm64) || arch(x86_64)
+    #if arch(arm64) || arch(arm64_32) || arch(x86_64)
     var missing: [String] = []
     if observationTrackingDidSetAddress == nil {
         missing.append("withObservationTracking(_:didSet:)")

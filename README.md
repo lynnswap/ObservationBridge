@@ -10,6 +10,7 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 - Mac Catalyst 18+
 - macOS 15+
 - tvOS 18+
+- watchOS 11+
 - visionOS 2+
 
 ## Portable Continuous Observation
@@ -61,7 +62,7 @@ synchronously when the observation starts. That pass is still the first tracking
 pass. Observable values read during `.initial` become the dependencies that
 allow later `.willSet` and `.didSet` passes to fire.
 
-If the iOS 27+ liveness fallback is selected because exact Observation runtime
+If the OS 27+ liveness fallback is selected because exact Observation runtime
 SPI is unavailable, `.initial` follows native timing and may run after the token
 is returned.
 
@@ -121,7 +122,7 @@ Call `PortableObservationTracking.Token.cancel()` to stop an observation. The to
 cancels when it deinitializes.
 
 `PortableObservationTracking.Event.matches(_:)` filters the current pass by key
-path on the exact runtime path. In the iOS 27+ liveness fallback, mutation
+path on the exact runtime path. In the OS 27+ liveness fallback, mutation
 matching is conservative and may match unrelated key paths so updates keep
 flowing. Treat it as a work filter, not a dependency declaration.
 
