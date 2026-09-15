@@ -34,11 +34,11 @@ jobs:
             allow_prerelease: 'false'
             allow_unavailable: 'false'
           - swift: '6.4+'
-            runner: macos-26
+            runner: xcode-27
             xcode_major: '27'
             xcode_minimum: '27.0'
             allow_prerelease: 'true'
-            allow_unavailable: 'true'
+            allow_unavailable: 'false'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
