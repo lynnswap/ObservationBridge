@@ -121,6 +121,10 @@ func runRandomizedObservationStress(
                     let token = register(model) { _ in
                         observedFlag.withLock { $0 = true }
                     }
+                    if let error = token.error {
+                        await failureRecorder.record(String(describing: error))
+                        return
+                    }
                     defer { token.cancel() }
 
                     for iteration in 0..<workerIterations {

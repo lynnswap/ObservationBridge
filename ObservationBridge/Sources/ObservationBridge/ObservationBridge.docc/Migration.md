@@ -4,6 +4,25 @@ Update existing integrations when upgrading ObservationBridge.
 
 Use the notes for the version you are upgrading to.
 
+## Unreleased
+
+- Call `try await PortableObservationTracking.prepare()` during application setup
+  and await completion before starting observations that track mutations.
+- The start function remains nonthrowing. Inspect `token.error` if startup or
+  subsequent tracking fails; a failed observation is inactive.
+- The minimum OS versions now match ABIBridge 0.8.0: iOS and Mac Catalyst 18.4,
+  macOS 15.4, tvOS 18.4, watchOS 11.4, and visionOS 2.4.
+
+```swift
+try await PortableObservationTracking.prepare()
+let token = withPortableContinuousObservation { event in
+    render(model, reason: event.kind)
+}
+```
+
+Initial-only observations using `options: []` do not require preparation. See
+<doc:ContinuousObservation> for callback timing and failure behavior.
+
 ## v0.12.0
 
 These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.

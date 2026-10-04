@@ -1,8 +1,7 @@
-import Darwin
+internal import ABIBridge
 import Foundation
 import Observation
 import Synchronization
-import _ObservationBridgeRuntimeABI
 
 /// Starts a portable continuous observation.
 ///
@@ -27,7 +26,10 @@ import _ObservationBridgeRuntimeABI
 ///     for the pass.
 ///   - currentIsolation: The caller's actor isolation, inferred by default.
 /// - Returns: A token that keeps the observation alive until it is cancelled or
-///   its last copy is released.
+///   its last copy is released. If startup fails, the token is inactive and its
+///   `error` contains the failure. Call `PortableObservationTracking.prepare()`
+///   before starting mutation observations.
+
 public func withPortableContinuousObservation(
     options: PortableObservationTracking.Options = .didSet,
     @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
@@ -45,12 +47,14 @@ private func startPortableContinuousObservation(
     apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
     currentIsolation: isolated (any Actor)?
 ) -> PortableObservationTracking.Token {
+    let preparation = ObservationRuntimePreparation.cached.withLock { $0 }
     let delivery = ObservationDelivery()
     let observationIsolation = apply.isolation ?? currentIsolation
     let pipeline = ObservationScopeImplicitTrackingPipeline(apply)
 
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
+        preparation != nil,
         runtimeTrackingMode(for: options) == nil,
         let nativeOptions = nativeContinuousObservationOptions(for: options)
     {
@@ -72,6 +76,22 @@ private func startPortableContinuousObservation(
     )
     delivery.bind(to: slot)
     let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
+    do {
+        if !options.intersection([.didSet, .willSet]).isEmpty {
+            guard let preparation else {
+                throw PortableObservationTracking.Error.notPrepared
+            }
+            let runtime = try preparation.get()
+            if options.contains(.didSet) {
+                _ = try runtime.didSet.get()
+            } else {
+                _ = try runtime.willSet.get()
+            }
+        }
+    } catch {
+        slot.fail(error)
+        return token
+    }
     slot.start(isolation: currentIsolation)
     return token
 }
@@ -441,19 +461,27 @@ private func trackRuntimeScopedObservationInCurrentContext(
         return complete(shouldContinue: slot.isActive, didApply: didApply)
     }
 
-    var didApply = false
-    switch mode {
-    case .didSet:
-        didApply = _withObservationTrackingDidSet({
+    do {
+        guard let preparation = ObservationRuntimePreparation.cached.withLock({ $0 }) else {
+            throw PortableObservationTracking.Error.notPrepared
+        }
+        let runtime = try preparation.get()
+        guard let handler = try slot.runtimeTrackingHandler({
+            try runtime.handler(kind: mode == .didSet ? .didSet : .willSet, slot: slot)
+        }) else {
+            return complete(shouldContinue: false, didApply: false)
+        }
+        let function = try (mode == .didSet ? runtime.didSet : runtime.willSet).get()
+        let didApply = try unsafe NativeSwiftClosure<() -> Bool>.withUnsafeNonescaping({
             pipeline.apply(event: event)
-        }, didSet: makeRuntimeTrackingHandler(kind: .didSet, slot: slot))
-    case .willSet:
-        didApply = _withObservationTrackingWillSet({
-            pipeline.apply(event: event)
-        }, willSet: makeRuntimeTrackingHandler(kind: .willSet, slot: slot))
+        }) { apply in
+            try unsafe function.unsafeInvoke(apply, handler)
+        }
+        return complete(shouldContinue: slot.isActive, didApply: didApply)
+    } catch {
+        slot.fail(error)
+        return complete(shouldContinue: false, didApply: false)
     }
-
-    return complete(shouldContinue: slot.isActive, didApply: didApply)
 }
 
 private enum RuntimeScopedTrackingMode: Equatable {
@@ -471,25 +499,6 @@ private func runtimeTrackingMode(for options: PortableObservationTracking.Option
     }
 
     return nil
-}
-
-private func makeRuntimeTrackingHandler(
-    kind: PortableObservationTracking.Event.Kind,
-    slot: ObservationScopeSlot
-) -> @Sendable (OpaqueObservationTracking) -> Void {
-    { [weak slot] tracking in
-        let triggers = ObservationEventTriggers.keyPath(observationTrackingChangedKeyPath(tracking))
-        cancelObservationTrackingIfAvailable(tracking)
-
-        guard let slot else {
-            return
-        }
-
-        slot.emitChange(
-            kind: kind,
-            triggers: triggers
-        )
-    }
 }
 
 private func makeScopedObservationEvent(
@@ -521,162 +530,170 @@ private func withObservationIsolation<T: Sendable>(
     operation(isolation)
 }
 
-// The SPI overloads pass a runtime `ObservationTracking` value whose public shape differs
-// across Swift releases. Use a resilient imported value as the opaque ABI carrier so Swift
-// forwards the hidden value with the same indirect convention.
-private typealias OpaqueObservationTracking = URL
-
-@_weakLinked
-@_silgen_name("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
-private func _withObservationTrackingDidSet<T>(
-    _ apply: () -> T,
-    didSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
-) -> T
-
-@_weakLinked
-@_silgen_name("$s11Observation04withA8Tracking_7willSetxxyXE_yAA0aC0VYbctlF")
-private func _withObservationTrackingWillSet<T>(
-    _ apply: () -> T,
-    willSet: @escaping @Sendable (OpaqueObservationTracking) -> Void
-) -> T
-
-private let observationTrackingDidSetAddress: UInt? =
-    unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_6didSetxxyXE_yAA0aC0VYbctlF")
-        .map { UInt(bitPattern: $0) }
-
-private let observationTrackingWillSetAddress: UInt? =
-    unsafe lookupObservationSymbol("$s11Observation04withA8Tracking_7willSetxxyXE_yAA0aC0VYbctlF")
-        .map { UInt(bitPattern: $0) }
-
-private let observationTrackingCancelAddress: UInt? =
-    unsafe lookupObservationSymbol("$s11Observation0A8TrackingV6cancelyyF")
-        .map { UInt(bitPattern: $0) }
-
-private let observationTrackingChangedAddress: UInt? =
-    unsafe lookupObservationSymbol("$s11Observation0A8TrackingV7changeds10AnyKeyPathCSgvg")
-        .map { UInt(bitPattern: $0) }
-
-private var canUseObservationTrackingSupportSPI: Bool {
-    if _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 }) {
-        return false
+extension PortableObservationTracking {
+    /// A failure starting or running a portable observation.
+    public enum Error: Swift.Error, Sendable {
+        /// Call `prepare()` before starting an observation that tracks mutations.
+        case notPrepared
+        /// Reading the triggering key path and cancelling its tracking both failed.
+        case cancellationFailed(operation: any Swift.Error, cancellation: any Swift.Error)
     }
 
-    return canUseObservationTrackingSupportSPIIgnoringTestOverride
+    /// Prepares the Observation runtime before synchronous observation starts.
+    ///
+    /// Call once during application setup and await completion before creating
+    /// mutation observations. Repeated successful calls reuse the prepared handles.
+    /// On OS 27+, unavailable exact SPI selects the native liveness fallback.
+    /// On earlier versions, both mutation event implementations must be available;
+    /// preparation throws if either cannot be resolved. Tracking failures after
+    /// preparation stop the observation and are available through `Token.error`.
+    public static func prepare() async throws {
+        try await ObservationRuntimePreparation.shared.prepare()
+    }
 }
 
-private var canUseObservationTrackingSupportSPIIgnoringTestOverride: Bool {
-    #if arch(arm64) || arch(arm64_32) || arch(x86_64)
-    return observationTrackingChangedAddress != nil
-        && observationTrackingCancelAddress != nil
-    #else
-    return false
-    #endif
+typealias ObservationRuntimeTrackingHandler = NativeSwiftClosure<@Sendable (NativeSwiftBorrowedValue) -> Void>
+
+private struct ObservationRuntime: Sendable {
+    typealias TrackingFunction = NativeSwiftFunction<(NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool>
+
+    let type: NativeSwiftType
+    let didSet: Result<TrackingFunction, any Swift.Error>
+    let willSet: Result<TrackingFunction, any Swift.Error>
+    let changed: NativeSwiftMethod<() -> AnyKeyPath?>
+    let cancel: NativeSwiftMethod<() -> Void>
+
+    func handler(
+        kind: PortableObservationTracking.Event.Kind,
+        slot: ObservationScopeSlot
+    ) throws -> ObservationRuntimeTrackingHandler {
+        try ObservationRuntimeTrackingHandler { [weak slot, changed, cancel] tracking in
+            let keyPath: AnyKeyPath?
+            do {
+                keyPath = try unsafe changed.unsafeInvoke(on: tracking)
+            } catch {
+                let operationError = error
+                do {
+                    try unsafe cancel.unsafeInvoke(on: tracking)
+                    slot?.fail(operationError)
+                } catch {
+                    slot?.fail(PortableObservationTracking.Error.cancellationFailed(
+                        operation: operationError, cancellation: error
+                    ))
+                }
+                return
+            }
+            do {
+                try unsafe cancel.unsafeInvoke(on: tracking)
+                slot?.emitChange(kind: kind, triggers: .keyPath(keyPath))
+            } catch {
+                slot?.fail(error)
+            }
+        }
+    }
+}
+
+private actor ObservationRuntimePreparation {
+    static let shared = ObservationRuntimePreparation()
+    static let cached = Mutex<Result<ObservationRuntime, any Swift.Error>?>(nil)
+
+    func prepare() async throws {
+        guard Self.cached.withLock({ $0 }) == nil else { return }
+        do {
+            let runtime = ABIRuntime.shared
+            let type = try await runtime.swiftType(named: "Observation.ObservationTracking")
+            let changed = try await type.getter(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
+            let cancel = try await type.method(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
+            func resolve(_ label: String) async -> Result<ObservationRuntime.TrackingFunction, any Swift.Error> {
+                do {
+                    return .success(try await runtime.swiftFunction(
+                        named: "Observation.withObservationTracking<A>(_: () -> A, \(label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
+                        as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
+                        genericArguments: [.type(Bool.self)],
+                        valueABIs: [type: .opaque(named: type.name)]
+                    ))
+                } catch {
+                    return .failure(error)
+                }
+            }
+            let didSet = await resolve("didSet")
+            let willSet = await resolve("willSet")
+            #if compiler(>=6.4)
+            let hasNativeFallback: Bool
+            if #available(anyAppleOS 27.0, *) {
+                hasNativeFallback = true
+            } else {
+                hasNativeFallback = false
+            }
+            #else
+            let hasNativeFallback = false
+            #endif
+            if !hasNativeFallback {
+                _ = try didSet.get()
+                _ = try willSet.get()
+            }
+            Self.cached.withLock { $0 = .success(ObservationRuntime(
+                type: type, didSet: didSet, willSet: willSet, changed: changed, cancel: cancel
+            )) }
+        } catch {
+            #if compiler(>=6.4)
+            if #available(anyAppleOS 27.0, *) {
+                Self.cached.withLock { $0 = .failure(error) }
+                return
+            }
+            #endif
+            throw error
+        }
+    }
+}
+
+private var preparedObservationRuntime: ObservationRuntime? {
+    try? ObservationRuntimePreparation.cached.withLock { $0 }?.get()
 }
 
 private var canUseDidSetObservationTrackingSPI: Bool {
-    if _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock({ $0 }) {
-        return false
-    }
-
-    return canUseObservationTrackingSupportSPI && observationTrackingDidSetAddress != nil
+    !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
+        && !_ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock({ $0 })
+        && preparedObservationRuntime.map { if case .success = $0.didSet { true } else { false } } == true
 }
 
 private var canUseWillSetObservationTrackingSPI: Bool {
-    canUseObservationTrackingSupportSPI && observationTrackingWillSetAddress != nil
+    !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
+        && preparedObservationRuntime.map { if case .success = $0.willSet { true } else { false } } == true
 }
 
 enum _ObservationScopeTesting {
-    /// Simulates missing Observation runtime SPI symbols.
     static let forceObservationTrackingSPIUnavailable = Mutex(false)
     static let forceDidSetObservationTrackingSPIUnavailable = Mutex(false)
 
-    static var missingRequiredObservationTrackingSPISymbols: [String] {
-        missingRequiredRuntimeSPISymbols()
-    }
-
     static var hasRequiredObservationTrackingSPISymbols: Bool {
-        missingRequiredRuntimeSPISymbols().isEmpty
-    }
-}
-
-private func missingRequiredRuntimeSPISymbols() -> [String] {
-    #if arch(arm64) || arch(arm64_32) || arch(x86_64)
-    var missing: [String] = []
-    if observationTrackingDidSetAddress == nil {
-        missing.append("withObservationTracking(_:didSet:)")
-    }
-    if observationTrackingWillSetAddress == nil {
-        missing.append("withObservationTracking(_:willSet:)")
-    }
-    if observationTrackingCancelAddress == nil {
-        missing.append("ObservationTracking.cancel")
-    }
-    if observationTrackingChangedAddress == nil {
-        missing.append("ObservationTracking.changed")
-    }
-    return missing
-    #else
-    return ["unsupported architecture"]
-    #endif
-}
-
-private func observationTrackingChangedKeyPath(
-    _ tracking: OpaqueObservationTracking
-) -> AnyKeyPath? {
-    guard
-        let observationTrackingChangedAddress,
-        let observationTrackingChangedFunction = unsafe UnsafeMutableRawPointer(
-            bitPattern: observationTrackingChangedAddress
-        )
-    else {
-        return nil
+        guard let runtime = preparedObservationRuntime else { return false }
+        if case .success = runtime.didSet, case .success = runtime.willSet { return true }
+        return false
     }
 
-    // The getter returns the Optional<AnyKeyPath> payload as a single owned (+1) pointer.
-    #if compiler(>=6.4)
-    return withUnsafePointer(to: tracking) { trackingPointer in
-        guard let rawKeyPath = unsafe OBObservationTrackingChanged(
-            observationTrackingChangedFunction,
-            trackingPointer
-        ) else {
-            return nil
+    static var missingRequiredObservationTrackingSPISymbols: [String] {
+        guard let preparation = ObservationRuntimePreparation.cached.withLock({ $0 }) else {
+            return ["Observation runtime has not been prepared"]
         }
-        return unsafe Unmanaged<AnyKeyPath>.fromOpaque(rawKeyPath).takeRetainedValue()
-    }
-    #else
-    return unsafe withUnsafePointer(to: tracking) { trackingPointer in
-        guard let rawKeyPath = unsafe OBObservationTrackingChanged(
-            observationTrackingChangedFunction,
-            trackingPointer
-        ) else {
-            return nil
+        switch preparation {
+        case .failure(let error):
+            return [String(describing: error)]
+        case .success(let runtime):
+            var missing: [String] = []
+            if case .failure = runtime.didSet { missing.append("withObservationTracking(_:didSet:)") }
+            if case .failure = runtime.willSet { missing.append("withObservationTracking(_:willSet:)") }
+            return missing
         }
-        return unsafe Unmanaged<AnyKeyPath>.fromOpaque(rawKeyPath).takeRetainedValue()
-    }
-    #endif
-}
-
-private func cancelObservationTrackingIfAvailable(_ tracking: OpaqueObservationTracking) {
-    guard
-        let observationTrackingCancelAddress,
-        let observationTrackingCancelFunction = unsafe UnsafeMutableRawPointer(
-            bitPattern: observationTrackingCancelAddress
-        )
-    else {
-        return
     }
 
-    #if compiler(>=6.4)
-    withUnsafePointer(to: tracking) { trackingPointer in
-        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
+    static func withoutPreparedRuntime<Result>(_ operation: () throws -> Result) rethrows -> Result {
+        let runtime = ObservationRuntimePreparation.cached.withLock { stored in
+            let runtime = stored
+            stored = nil
+            return runtime
+        }
+        defer { ObservationRuntimePreparation.cached.withLock { $0 = runtime } }
+        return try operation()
     }
-    #else
-    unsafe withUnsafePointer(to: tracking) { trackingPointer in
-        unsafe OBObservationTrackingCancel(observationTrackingCancelFunction, trackingPointer)
-    }
-    #endif
-}
-
-private func lookupObservationSymbol(_ name: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
-    unsafe dlsym(unsafe UnsafeMutableRawPointer(bitPattern: -2), name)
 }

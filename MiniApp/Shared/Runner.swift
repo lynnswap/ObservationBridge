@@ -263,6 +263,11 @@ enum Runner {
         firstFailure: String?
     ) {
         let workers = max(2, min(ProcessInfo.processInfo.activeProcessorCount, 8))
+        do {
+            try await PortableObservationTracking.prepare()
+        } catch {
+            return (false, workers, 0, 0, String(describing: error))
+        }
         let totalObservedCallbacks = Mutex<Int>(0)
         let totalMatchedMutations = Mutex<Int>(0)
 
@@ -290,6 +295,10 @@ enum Runner {
                             totalObservedCallbacks.withLock { $0 += 1 }
                             observedFlag.withLock { $0 = true }
                             _ = model.value
+                        }
+                        if let error = observation.error {
+                            await failureRecorder.record(String(describing: error))
+                            return
                         }
                         defer { observation.cancel() }
 

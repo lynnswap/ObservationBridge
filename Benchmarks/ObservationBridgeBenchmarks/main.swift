@@ -201,6 +201,7 @@ enum BenchmarkError: Error, CustomStringConvertible {
 enum ObservationBridgeBenchmarks {
     static func main() async throws {
         let configuration = try parseArguments(CommandLine.arguments.dropFirst())
+        try await PortableObservationTracking.prepare()
         var outputHandle: FileHandle?
         if let outputPath = configuration.outputPath {
             let url = URL(fileURLWithPath: outputPath)
@@ -316,6 +317,7 @@ enum ObservationBridgeBenchmarks {
         defer {
             token.cancel()
         }
+        if let error = token.error { throw error }
         try recorder.waitForCallbackDeliveryCount(1)
         try WaiterRegistrationHooks.waitForCount(1)
 

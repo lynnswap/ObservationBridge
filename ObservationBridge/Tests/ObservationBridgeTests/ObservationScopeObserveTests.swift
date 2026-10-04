@@ -15,6 +15,73 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
 
 @Suite(.serialized)
 final class ObservationScopeObserveTests {
+    init() async throws {
+        try await PortableObservationTracking.prepare()
+    }
+
+    @Test
+    func unpreparedMutationObservationReturnsFailedToken() async {
+        let applied = RenderedValue(false)
+        let token = _ObservationScopeTesting.withoutPreparedRuntime {
+            withPortableContinuousObservation { _ in
+                applied.set(true)
+            }
+        }
+        #expect(!applied.value)
+        #expect(!token.isActive)
+        guard case .notPrepared? = token.error as? PortableObservationTracking.Error else {
+            Issue.record("Expected an unprepared runtime error")
+            return
+        }
+
+        let values = await token.values { applied.value }
+        #expect(!values.isActive)
+        #expect(values.snapshot().isEmpty)
+        #expect(await values.waitUntil { _ in true } == nil)
+        token.cancel()
+        #expect(token.error != nil)
+    }
+
+    @Test
+    func initialOnlyObservationDoesNotRequireRuntimePreparation() {
+        _ObservationScopeTesting.withoutPreparedRuntime {
+            let rendered = RenderedValue(false)
+            let token = withPortableContinuousObservation(options: []) { _ in
+                rendered.set(true)
+            }
+            #expect(rendered.value)
+            #expect(token.error == nil)
+            #expect(!token.isActive)
+        }
+    }
+
+    @Test
+    func preparationCanBeRepeated() async throws {
+        try await PortableObservationTracking.prepare()
+        try await PortableObservationTracking.prepare()
+        #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
+    }
+
+    @Test
+    func trackingFailureStopsWaitersAndSamplers() async {
+        enum Failure: Error { case first, second }
+        let delivery = ObservationDelivery()
+        let slot = ObservationScopeSlot(
+            options: [], observationIsolation: nil, delivery: delivery,
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
+        )
+        delivery.bind(to: slot)
+        let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
+        let values = await token.values { true }
+        let waiter = Task { await slot.waitForChange() }
+        slot.fail(Failure.first)
+        slot.fail(Failure.second)
+        #expect(await waiter.value == nil)
+        #expect(!token.isActive)
+        #expect(!values.isActive)
+        #expect(token.error as? Failure == .first)
+    }
+
     @Test
     func observationEventKindStaticValuesAreEquatable() {
         #expect(PortableObservationTracking.Event.Kind.initial == .initial)
@@ -455,6 +522,7 @@ final class ObservationScopeObserveTests {
         }
     }
 
+    @MainActor
     @Test
     func spiUnavailableBothOptionsUseNativeContinuousFallbackMutationWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
@@ -490,6 +558,7 @@ final class ObservationScopeObserveTests {
         }
     }
 
+    @MainActor
     @Test
     func bothOptionsDoNotDowngradeToWillSetWhenDidSetSPIIsUnavailable() async {
         _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = true }
@@ -913,23 +982,20 @@ final class ObservationScopeObserveTests {
         let passes = RenderedValue<[String]>([])
         defer { observations.cancelAll() }
 
-        observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             passes.set(passes.value + ["\(event.kind):\(model.value)"])
             if event.kind == .didSet, model.value == 1 {
                 model.value = 2
             }
         }
 
+        let completedPasses = await delivery.values { passes.value }
         model.value = 1
 
-        #expect(await waitUntilCondition {
-            passes.value == ["initial:0", "didSet:1"]
-        })
+        #expect(await completedPasses.waitUntilValue(["initial:0", "didSet:1"]))
 
         model.value = 3
-        #expect(await waitUntilCondition {
-            passes.value == ["initial:0", "didSet:1", "didSet:3"]
-        })
+        #expect(await completedPasses.waitUntilValue(["initial:0", "didSet:1", "didSet:3"]))
     }
 
     @Test

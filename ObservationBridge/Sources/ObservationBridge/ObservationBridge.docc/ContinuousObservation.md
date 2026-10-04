@@ -2,6 +2,11 @@
 
 Track observable values and choose which changes trigger your callback.
 
+Call `try await PortableObservationTracking.prepare()` once during application
+setup and await completion before starting mutation observations. Repeated
+successful calls reuse the prepared state. Initial-only observations with
+`options: []` do not require preparation.
+
 Create an observation with `withPortableContinuousObservation(options:apply:)`.
 The callback inherits the caller's actor context like Swift's native
 `withContinuousObservation`. The returned `PortableObservationTracking.Token`
@@ -115,3 +120,19 @@ also stops when the last token copy is released.
 path on the exact runtime path. In the OS 27+ liveness fallback, mutation
 matching is conservative and may match unrelated key paths so updates keep
 flowing. Treat it as a work filter, not a dependency declaration.
+
+## Failures
+
+`prepare()` throws if the required SPI cannot be resolved and no native fallback
+is available. On OS 27+ with Swift 6.4 or later, unavailable exact SPI selects the
+native liveness fallback described above. On earlier versions, preparation
+requires both `.didSet` and `.willSet` implementations.
+
+The start call is nonthrowing. Starting a mutation observation before preparation
+returns an inactive token with `PortableObservationTracking.Error.notPrepared`
+in `token.error`, without running the callback.
+
+Startup and later tracking failures stop the observation and finish its value
+recorders. Inspect `token.error` for the first failure. Normal cancellation does
+not set an error. Initial-only observations using `options: []` do not require
+preparation.

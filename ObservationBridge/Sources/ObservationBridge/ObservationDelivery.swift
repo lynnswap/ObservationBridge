@@ -33,6 +33,12 @@ extension PortableObservationTracking {
 
         private let storage: Storage
 
+        /// The first startup or runtime tracking failure, or nil if none has occurred.
+        /// A failure stops the observation. Normal cancellation does not set an error.
+        public var error: (any Swift.Error)? {
+            storage.delivery.error
+        }
+
         /// Whether the backing observation is still active.
         public var isActive: Bool {
             storage.delivery.isActive
@@ -198,6 +204,7 @@ final class NativeContinuousObservationCancellation: @unchecked Sendable {
 
 final class ObservationDelivery: Sendable {
     private struct State: Sendable {
+        var error: (any Error)?
         var isActive = true
         var hasDelivered = false
         var activeDeliveries = 0
@@ -235,6 +242,16 @@ final class ObservationDelivery: Sendable {
             state.hasDelivered
                 && state.activeDeliveries == 0
                 && state.completedDeliveriesAwaitingSampling == 0
+        }
+    }
+
+    var error: (any Error)? {
+        state.withLock { $0.error }
+    }
+
+    func record(error: any Error) {
+        state.withLock { state in
+            if state.error == nil { state.error = error }
         }
     }
 
