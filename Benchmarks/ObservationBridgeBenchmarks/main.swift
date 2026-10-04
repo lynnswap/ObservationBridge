@@ -201,6 +201,7 @@ enum BenchmarkError: Error, CustomStringConvertible {
 enum ObservationBridgeBenchmarks {
     static func main() async throws {
         let configuration = try parseArguments(CommandLine.arguments.dropFirst())
+        try await PortableObservationTracking.prepare()
         var outputHandle: FileHandle?
         if let outputPath = configuration.outputPath {
             let url = URL(fileURLWithPath: outputPath)
@@ -272,7 +273,7 @@ enum ObservationBridgeBenchmarks {
     ) async throws -> BenchmarkExecutionResult {
         switch benchmarkCase {
         case .portableSetupTeardown:
-            return BenchmarkExecutionResult(checksum: runPortableSetupTeardown(iterations: iterations))
+            return BenchmarkExecutionResult(checksum: try runPortableSetupTeardown(iterations: iterations))
         #if canImport(_ObservationBridgeBenchmarkSupport)
         case .portableChangeRuntimeActivity:
             return try await runPortableChangeRuntimeActivity(iterations: iterations)
@@ -281,13 +282,13 @@ enum ObservationBridgeBenchmarks {
     }
 
     @inline(never)
-    private static func runPortableSetupTeardown(iterations: Int) -> Int {
+    private static func runPortableSetupTeardown(iterations: Int) throws -> Int {
         let sink = BenchmarkSink()
 
         for index in 0..<iterations {
             let model = BenchmarkCounterModel()
             model.value = index
-            let token = withPortableContinuousObservation(options: []) { _ in
+            let token = try withPortableContinuousObservation(options: []) { _ in
                 sink.record(model.value)
             }
             token.cancel()
@@ -310,7 +311,7 @@ enum ObservationBridgeBenchmarks {
             WaiterRegistrationHooks.deactivate()
         }
 
-        let token = withPortableContinuousObservation { _ in
+        let token = try withPortableContinuousObservation { _ in
             recorder.recordCallback(model.value)
         }
         defer {

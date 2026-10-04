@@ -5,12 +5,12 @@ import PackageDescription
 let package = Package(
     name: "ObservationBridge",
     platforms: [
-        .iOS(.v18),
-        .macCatalyst(.v18),
-        .macOS(.v15),
-        .tvOS(.v18),
-        .watchOS(.v11),
-        .visionOS(.v2)
+        .iOS("18.4"),
+        .macCatalyst("18.4"),
+        .macOS("15.4"),
+        .tvOS("18.4"),
+        .watchOS("11.4"),
+        .visionOS("2.4")
     ],
     products: [
         .library(
@@ -29,13 +29,10 @@ let package = Package(
         )
     ],
     dependencies: [
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.8.0"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0")
     ],
     targets: [
-        .target(
-            name: "_ObservationBridgeRuntimeABI",
-            path: "ObservationBridge/Sources/_ObservationBridgeRuntimeABI"
-        ),
         .target(
             name: "ObservationBridge",
             dependencies: [
@@ -43,7 +40,7 @@ let package = Package(
                     name: "_ObservationBridgeBenchmarkSupport",
                     condition: .when(traits: ["BenchmarkSupport"])
                 ),
-                "_ObservationBridgeRuntimeABI",
+                .product(name: "ABIBridge", package: "ABIBridge"),
             ],
             path: "ObservationBridge/Sources/ObservationBridge",
             swiftSettings: [

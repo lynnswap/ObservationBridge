@@ -6,16 +6,29 @@ Use ObservationBridge to write continuous Observation callbacks with a portable
 ## Requirements
 
 - Swift 6.3
-- iOS 18+
-- Mac Catalyst 18+
-- macOS 15+
-- tvOS 18+
-- watchOS 11+
-- visionOS 2+
+- iOS 18.4+
+- Mac Catalyst 18.4+
+- macOS 15.4+
+- tvOS 18.4+
+- watchOS 11.4+
+- visionOS 2.4+
 
 ## Portable Continuous Observation
 
-Create an observation with `withPortableContinuousObservation(options:apply:)`.
+Prepare the Observation runtime once during application setup and await completion
+before starting observations that track mutations:
+
+```swift
+try await PortableObservationTracking.prepare()
+```
+
+Preparation resolves the runtime type and callable handles. It throws if no
+mutation implementation is available; on OS 27+, unavailable exact SPI selects
+the native liveness fallback. Later successful calls reuse the prepared state.
+An unavailable individual event option is reported by the start call.
+Initial-only observations with `options: []` do not require preparation.
+
+Create an observation with `try withPortableContinuousObservation(options:apply:)`.
 The callback inherits the caller's actor context like Swift's native
 `withContinuousObservation`. The returned `PortableObservationTracking.Token`
 keeps the observation alive.
@@ -25,8 +38,8 @@ import ObservationBridge
 
 private var observation: PortableObservationTracking.Token?
 
-func bindModel() {
-    observation = withPortableContinuousObservation { [weak self] event in
+func bindModel() throws {
+    observation = try withPortableContinuousObservation { [weak self] event in
         guard let self else { return }
 
         titleLabel.text = model.title
@@ -73,7 +86,7 @@ Do not return from `.initial` before reading the values you want to keep
 tracking:
 
 ```swift
-let token = withPortableContinuousObservation { event in
+let token = try withPortableContinuousObservation { event in
     let title = model.title
     let rows = model.rows
 
@@ -101,11 +114,11 @@ Later passes are controlled by `PortableObservationTracking.Options`.
 `.didSet`:
 
 ```swift
-let didSetObservation = withPortableContinuousObservation(options: .didSet) { event in
+let didSetObservation = try withPortableContinuousObservation(options: .didSet) { event in
     render(model)
 }
 
-let initialOnlyObservation = withPortableContinuousObservation(options: []) { event in
+let initialOnlyObservation = try withPortableContinuousObservation(options: []) { event in
     renderOnce(model)
 }
 ```
@@ -119,7 +132,10 @@ Do not store `PortableObservationTracking.Event`. Save `event.kind` if later cod
 reason for the pass.
 
 Call `PortableObservationTracking.Token.cancel()` to stop an observation. The token also
-cancels when it deinitializes.
+cancels when it deinitializes. Starting a mutation observation before preparation
+throws `PortableObservationTracking.Error.notPrepared`. Initial tracking failures
+are thrown by the start call; later tracking failures stop the observation and
+are available through `token.error`. Normal cancellation does not set an error.
 
 `PortableObservationTracking.Event.matches(_:)` filters the current pass by key
 path on the exact runtime path. In the OS 27+ liveness fallback, mutation
@@ -137,7 +153,7 @@ struct RenderedState: Sendable, Equatable {
     var canSave: Bool
 }
 
-let token = withPortableContinuousObservation { _ in
+let token = try withPortableContinuousObservation { _ in
     titleLabel.text = model.title
     saveButton.isEnabled = model.canSave
 }
@@ -170,6 +186,16 @@ test guards only; they do not change observation delivery.
 
 Use the notes for the version you are upgrading to.
 
+### Unreleased
+
+- The minimum OS versions now match ABIBridge: iOS and Mac Catalyst 18.4,
+  macOS 15.4, tvOS 18.4, watchOS 11.4, and visionOS 2.4.
+- Call `try await PortableObservationTracking.prepare()` during setup before
+  starting mutation observations. The start function now throws, so add `try`
+  and handle startup failures.
+- Inspect `token.error` if a running observation stops because runtime invocation
+  failed.
+
 ### v0.12.0
 
 These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.
@@ -192,7 +218,7 @@ These notes apply when upgrading from `v0.11.x` or earlier to `v0.12.0`.
   Attach test samplers with `token.values { ... }`.
 
 ```swift
-let token = withPortableContinuousObservation { event in
+let token = try withPortableContinuousObservation { event in
     titleLabel.text = model.title
 
     let rows = model.rows
@@ -226,8 +252,8 @@ After:
 ```swift
 private var countObservation: PortableObservationTracking.Token?
 
-func bindCount() {
-    countObservation = withPortableContinuousObservation { _ in
+func bindCount() throws {
+    countObservation = try withPortableContinuousObservation { _ in
         countLabel.text = "\(model.count)"
     }
 }
@@ -245,8 +271,8 @@ deinit {
 ```swift
 private var countObservation: PortableObservationTracking.Token?
 
-func bindCountTracking() {
-    countObservation = withPortableContinuousObservation { _ in
+func bindCountTracking() throws {
+    countObservation = try withPortableContinuousObservation { _ in
         let count = model.count
         Task {
             await analytics.trackCount(count)

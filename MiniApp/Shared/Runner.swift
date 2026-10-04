@@ -263,6 +263,11 @@ enum Runner {
         firstFailure: String?
     ) {
         let workers = max(2, min(ProcessInfo.processInfo.activeProcessorCount, 8))
+        do {
+            try await PortableObservationTracking.prepare()
+        } catch {
+            return (false, workers, 0, 0, String(describing: error))
+        }
         let totalObservedCallbacks = Mutex<Int>(0)
         let totalMatchedMutations = Mutex<Int>(0)
 
@@ -281,15 +286,21 @@ enum Runner {
                         let model = LockedCounterModel()
                         let observedFlag = Mutex(false)
                         let matchedFlag = Mutex(false)
-                        let observation = withPortableContinuousObservation { event in
-                            if event.matches(\LockedCounterModel.value) {
-                                matchedFlag.withLock { $0 = true }
-                                totalMatchedMutations.withLock { $0 += 1 }
-                            }
+                        let observation: PortableObservationTracking.Token
+                        do {
+                            observation = try withPortableContinuousObservation { event in
+                                if event.matches(\LockedCounterModel.value) {
+                                    matchedFlag.withLock { $0 = true }
+                                    totalMatchedMutations.withLock { $0 += 1 }
+                                }
 
-                            totalObservedCallbacks.withLock { $0 += 1 }
-                            observedFlag.withLock { $0 = true }
-                            _ = model.value
+                                totalObservedCallbacks.withLock { $0 += 1 }
+                                observedFlag.withLock { $0 = true }
+                                _ = model.value
+                            }
+                        } catch {
+                            await failureRecorder.record(String(describing: error))
+                            return
                         }
                         defer { observation.cancel() }
 

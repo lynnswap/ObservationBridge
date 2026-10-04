@@ -108,6 +108,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
+        var runtimeTrackingHandler: ObservationRuntimeTrackingHandler?
 
         mutating func storePendingEvent(_ event: ObservationScopePendingEvent) {
             pendingEvent = event
@@ -233,6 +234,23 @@ final class ObservationScopeSlot: @unchecked Sendable {
         start(isolation: nil)
     }
 
+    func runtimeTrackingHandler(
+        _ create: () throws -> ObservationRuntimeTrackingHandler
+    ) rethrows -> ObservationRuntimeTrackingHandler? {
+        try state.withLock { state in
+            guard !state.isCancelled else { return nil }
+            if let handler = state.runtimeTrackingHandler { return handler }
+            let handler = try create()
+            state.runtimeTrackingHandler = handler
+            return handler
+        }
+    }
+
+    func fail(_ error: any Error) {
+        delivery.record(error: error)
+        cancel()
+    }
+
     func cancel() {
         let cancellation = state.withLock { state -> Cancellation in
             guard !state.isCancelled else {
@@ -242,6 +260,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
             state.isCancelled = true
             state.pendingEvent = nil
             state.pipeline = nil
+            state.runtimeTrackingHandler = nil
             let waiters = state.waiters.takeAll()
             let task = state.task
             state.task = nil
