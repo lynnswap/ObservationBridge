@@ -508,6 +508,7 @@ final class ObservationScopeObserveTests {
         }
     }
 
+    @MainActor
     @Test
     func spiUnavailableBothOptionsUseNativeContinuousFallbackMutationWhenAvailable() async throws {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
@@ -543,6 +544,7 @@ final class ObservationScopeObserveTests {
         }
     }
 
+    @MainActor
     @Test
     func bothOptionsDoNotDowngradeToWillSetWhenDidSetSPIIsUnavailable() async throws {
         _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = true }
