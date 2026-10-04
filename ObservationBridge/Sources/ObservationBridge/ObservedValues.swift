@@ -4,8 +4,11 @@ import Synchronization
 /// Records values sampled after portable observation delivery.
 ///
 /// `ObservedValues` is intended for tests that need to synchronize with
-/// `withPortableContinuousObservation` delivery without sleeping. Instances are
-/// produced by ``PortableObservationTracking/Token/values(_:)``.
+/// ``withPortableContinuousObservation(options:apply:_:)`` delivery without
+/// sleeping. Instances are produced by
+/// ``PortableObservationTracking/Token/values(_:)`` or
+/// ``PortableObservationTracking/Token/values(isolation:_:)``. Keep the observation
+/// token alive while recording values. See <doc:TestingObservation> for examples.
 public final class ObservedValues<Value: Sendable>: Sendable {
     private struct Waiter: Sendable {
         let predicate: @Sendable (Value) -> Bool
@@ -58,6 +61,9 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     }
 
     /// Returns all values recorded so far.
+    ///
+    /// - Returns: A snapshot in sampling order, including values recorded before
+    ///   the recorder finished or was cancelled.
     public func snapshot() -> [Value] {
         state.withLock { state in
             state.values
@@ -67,7 +73,13 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     /// Waits until `expected` has been recorded.
     ///
     /// The timeout is only a test guard. It does not affect observation delivery
-    /// or stream rate limiting.
+    /// timing. If the expected value was already recorded, this returns immediately.
+    ///
+    /// - Parameters:
+    ///   - expected: The value to find among recorded samples.
+    ///   - timeout: The maximum time to wait for a matching sample. Defaults to five seconds.
+    /// - Returns: `true` if the expected value was recorded, or `false` if the
+    ///   timeout elapses or the recorder finishes before a match is recorded.
     public func waitUntilValue(
         _ expected: Value,
         timeout: Duration = .seconds(5)
@@ -80,7 +92,12 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     /// Waits until a recorded value satisfies `predicate`.
     ///
     /// If a matching value was already recorded, this returns it immediately.
-    /// Returns `nil` when the timeout elapses or the observation finishes first.
+    ///
+    /// - Parameters:
+    ///   - timeout: The maximum time to wait for a matching sample. Defaults to five seconds.
+    ///   - predicate: The condition to evaluate against recorded samples.
+    /// - Returns: The first recorded value satisfying the predicate, or `nil`
+    ///   when the timeout elapses or the recorder finishes before a match is recorded.
     public func waitUntil(
         timeout: Duration = .seconds(5),
         _ predicate: @escaping @Sendable (Value) -> Bool
@@ -142,6 +159,10 @@ public final class ObservedValues<Value: Sendable>: Sendable {
     }
 
     /// Stops this value recorder and wakes any pending waiters.
+    ///
+    /// Previously recorded values remain available through ``latestValue`` and
+    /// ``snapshot()``. Cancel the observation's token to stop observation delivery
+    /// as well.
     public func cancel() {
         let result = deactivate(takeCancelOperation: true, finishInFlightDeliveries: false)
         result.cancelOperation?()
