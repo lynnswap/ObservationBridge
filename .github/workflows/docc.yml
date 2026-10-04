@@ -1,11 +1,17 @@
 name: DocC
 
 on:
+  push:
+    branches: [main]
   workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -16,7 +22,9 @@ jobs:
       XCODE_MAJOR: '26'
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Resolve latest stable Xcode
         run: |
@@ -60,8 +68,18 @@ jobs:
             --disable-indexing \
             --transform-for-static-hosting \
             --hosting-base-path ObservationBridge \
+            --warnings-as-errors \
             --output-path .build/docs
           touch .build/docs/.nojekyll
+          cat > .build/docs/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <meta charset="utf-8">
+          <title>ObservationBridge Documentation</title>
+          <meta http-equiv="refresh" content="0;url=./documentation/observationbridge/">
+          <a href="./documentation/observationbridge/">ObservationBridge Documentation</a>
+          </html>
+          HTML
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
@@ -82,4 +100,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

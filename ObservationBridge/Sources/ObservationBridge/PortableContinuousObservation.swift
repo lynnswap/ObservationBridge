@@ -5,18 +5,32 @@ import Synchronization
 
 /// Starts a portable continuous observation.
 ///
-/// The callback body is the tracking body: every observable property read inside
-/// `apply` becomes part of the observation. The `.initial` pass runs synchronously
-/// when observation starts in the caller's current actor context.
+/// Every observable property read inside `apply` becomes a dependency for the
+/// next pass. Read the values you want to keep observing on every pass, including
+/// ``PortableObservationTracking/Event/Kind/initial``. The callback inherits the
+/// caller's actor context.
+///
+/// The initial pass normally runs synchronously before this function returns.
+/// When the native OS 27+ fallback is selected because exact Observation runtime
+/// SPI is unavailable, the initial pass follows native scheduling and may run
+/// after the token is returned. See <doc:ContinuousObservation> for event timing
+/// and key-path matching.
 ///
 /// - Parameters:
-///   - options: Event delivery options. Defaults to ``PortableObservationTracking/Options/didSet``.
-///   - apply: The callback to run for the initial pass and selected subsequent events.
-///   - currentIsolation: The caller's isolation, captured automatically by `#isolation`.
-/// - Returns: A token that keeps the observation alive until cancelled or deinitialized.
+///   - options: The subsequent events to deliver. Defaults to
+///     ``PortableObservationTracking/Options/didSet``. An empty set delivers only
+///     the initial pass.
+///   - apply: The tracking callback for the initial pass and selected subsequent
+///     events. Its event is borrowed for the duration of the callback; copy
+///     ``PortableObservationTracking/Event/kind`` if you need to retain the reason
+///     for the pass.
+///   - currentIsolation: The caller's actor isolation, inferred by default.
+/// - Returns: A token that keeps the observation alive until it is cancelled or
+///   its last copy is released.
 /// - Throws: `PortableObservationTracking.Error.notPrepared` if preparation has not
 ///   completed, or an error from the initial tracking pass. Call
 ///   `PortableObservationTracking.prepare()` before starting mutation observations.
+
 public func withPortableContinuousObservation(
     options: PortableObservationTracking.Options = .didSet,
     @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
