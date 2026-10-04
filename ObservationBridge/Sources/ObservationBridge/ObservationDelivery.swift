@@ -5,7 +5,8 @@ import Synchronization
 extension PortableObservationTracking {
     /// A token that keeps a portable continuous observation alive.
     ///
-    /// Cancel the token, or let it deinitialize, to stop the observation.
+    /// Copies share the same observation. Call ``cancel()`` on any copy, or
+    /// release the last copy, to stop the observation.
     /// Tests can attach value samplers with ``values(_:)`` to wait for state
     /// rendered by the production callback after each delivery completes.
     public struct Token: Sendable {
@@ -68,8 +69,14 @@ extension PortableObservationTracking {
         /// Samples a value after each completed observation delivery.
         ///
         /// If the observation has already delivered at least once, this samples the
-        /// current rendered state before returning. Previously delivered values are
-        /// not replayed.
+        /// current rendered state before returning, unless another callback is
+        /// still running. Previously delivered values are not replayed.
+        /// Keep the token alive while recording values. See <doc:TestingObservation>.
+        ///
+        /// - Parameter sample: The sampler, which inherits the caller's actor
+        ///   context and returns a `Sendable` value describing rendered output.
+        /// - Returns: A recorder for sampled values. Cancelling the recorder
+        ///   detaches its sampler; cancelling the token stops the observation.
         public func values<Value: Sendable>(
             @_inheritActorContext _ sample: @escaping @isolated(any) @Sendable () -> Value
         ) async -> ObservedValues<Value> {
@@ -77,6 +84,17 @@ extension PortableObservationTracking {
         }
 
         /// Samples a value on an explicit actor after each completed observation delivery.
+        ///
+        /// This overload records values with the same timing as ``values(_:)``
+        /// and runs the sampler on `actor`. Keep the token alive while recording
+        /// values.
+        ///
+        /// - Parameters:
+        ///   - actor: The actor on which to sample rendered output.
+        ///   - sample: The sampler, which receives the isolated actor and returns
+        ///     a `Sendable` value describing rendered output.
+        /// - Returns: A recorder for sampled values. Cancelling the recorder
+        ///   detaches its sampler; cancelling the token stops the observation.
         public func values<SampleIsolation: Actor, Value: Sendable>(
             isolation actor: isolated SampleIsolation,
             _ sample: @escaping @Sendable (isolated SampleIsolation) -> Value

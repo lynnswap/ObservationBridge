@@ -38,6 +38,10 @@ struct ObservationEventTriggers: @unchecked Sendable {
 
 extension PortableObservationTracking {
     /// Information about a single portable observation pass.
+    ///
+    /// The callback borrows this noncopyable value. Save ``kind`` if later code
+    /// needs the reason for the pass, and use ``matches(_:)`` to filter optional
+    /// work within the current pass.
     public struct Event: ~Copyable {
         /// The reason the observation callback is running.
         public struct Kind: Sendable, Equatable, Hashable, CustomStringConvertible {
@@ -55,6 +59,9 @@ extension PortableObservationTracking {
             }
 
             /// A pass triggered by a will-set event.
+            ///
+            /// Callback reads may already include the new value; this kind
+            /// identifies the trigger and does not provide a pre-mutation snapshot.
             public static var willSet: Kind {
                 Kind(rawValue: .willSet)
             }
@@ -64,6 +71,7 @@ extension PortableObservationTracking {
                 Kind(rawValue: .didSet)
             }
 
+            /// The event name: `initial`, `willSet`, or `didSet`.
             public var description: String {
                 switch rawValue {
                 case .initial:
@@ -99,18 +107,26 @@ extension PortableObservationTracking {
 
         /// Returns whether this pass was triggered by a mutation of the supplied key path.
         ///
-        /// This mirrors Swift's `withContinuousObservation`: mutation passes compare the
-        /// event's `ObservationTracking.changed` key path to `keyPath`, and `.initial`
-        /// passes return `false`.
+        /// On the exact runtime path, mutation passes compare the captured trigger
+        /// key path to `keyPath`. Initial passes return `false`.
         ///
         /// Key paths carry no instance identity: two tracked objects of the same type are
         /// indistinguishable, and the comparison is exact, so a subclass-rooted key path does
         /// not match its superclass storage.
+        ///
+        /// In the native OS 27+ fallback, mutation passes conservatively return
+        /// `true`, including for unrelated key paths. This method filters work in
+        /// the current pass; read observable values on every pass to keep tracking
+        /// them. See <doc:ContinuousObservation> for examples.
+        ///
+        /// - Parameter keyPath: The observable property to compare with this pass's trigger.
+        /// - Returns: Whether the key path matches the trigger, or `true` for any
+        ///   key path during a fallback mutation pass. Initial passes return `false`.
         public func matches(_ keyPath: PartialKeyPath<some Observable>) -> Bool {
             triggers.contains(keyPath)
         }
 
-        /// Cancels the event's backing tracking when one is available.
+        /// Cancels the continuous observation associated with this event.
         public func cancel() {
             cancellation?()
         }
