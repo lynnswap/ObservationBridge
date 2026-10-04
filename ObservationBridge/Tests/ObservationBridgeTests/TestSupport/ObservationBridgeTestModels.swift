@@ -26,12 +26,12 @@ final class ObservationScope: @unchecked Sendable {
         _fileID: StaticString = #fileID,
         _line: UInt = #line,
         _column: UInt = #column
-    ) throws -> PortableObservationTracking.Token {
+    ) -> PortableObservationTracking.Token {
         let pipeline = TestObservationScopePipeline(owner: owner, apply: apply)
         let cancellationGeneration = storage.withLock { state in
             state.cancellationGeneration
         }
-        let token = try withPortableContinuousObservation(
+        let token = withPortableContinuousObservation(
             options: options,
             apply: { event in
                 pipeline.apply(event: event)

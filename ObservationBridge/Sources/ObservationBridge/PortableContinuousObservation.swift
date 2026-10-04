@@ -26,17 +26,16 @@ import Synchronization
 ///     for the pass.
 ///   - currentIsolation: The caller's actor isolation, inferred by default.
 /// - Returns: A token that keeps the observation alive until it is cancelled or
-///   its last copy is released.
-/// - Throws: `PortableObservationTracking.Error.notPrepared` if preparation has not
-///   completed, or an error from the initial tracking pass. Call
-///   `PortableObservationTracking.prepare()` before starting mutation observations.
+///   its last copy is released. If startup fails, the token is inactive and its
+///   `error` contains the failure. Call `PortableObservationTracking.prepare()`
+///   before starting mutation observations.
 
 public func withPortableContinuousObservation(
     options: PortableObservationTracking.Options = .didSet,
     @_inheritActorContext apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
     _ currentIsolation: isolated (any Actor)? = #isolation
-) throws -> PortableObservationTracking.Token {
-    try startPortableContinuousObservation(
+) -> PortableObservationTracking.Token {
+    startPortableContinuousObservation(
         options: options,
         apply: apply,
         currentIsolation: currentIsolation
@@ -47,17 +46,15 @@ private func startPortableContinuousObservation(
     options: PortableObservationTracking.Options,
     apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
     currentIsolation: isolated (any Actor)?
-) throws -> PortableObservationTracking.Token {
-    if !options.intersection([.didSet, .willSet]).isEmpty,
-        ObservationRuntimePreparation.cached.withLock({ $0 }) == nil {
-        throw PortableObservationTracking.Error.notPrepared
-    }
+) -> PortableObservationTracking.Token {
+    let preparation = ObservationRuntimePreparation.cached.withLock { $0 }
     let delivery = ObservationDelivery()
     let observationIsolation = apply.isolation ?? currentIsolation
     let pipeline = ObservationScopeImplicitTrackingPipeline(apply)
 
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
+        preparation != nil,
         runtimeTrackingMode(for: options) == nil,
         let nativeOptions = nativeContinuousObservationOptions(for: options)
     {
@@ -71,12 +68,6 @@ private func startPortableContinuousObservation(
     }
     #endif
 
-    if options.contains(.didSet) {
-        _ = try ObservationRuntimePreparation.cached.withLock { $0 }?.get().didSet.get()
-    } else if options.contains(.willSet) {
-        _ = try ObservationRuntimePreparation.cached.withLock { $0 }?.get().willSet.get()
-    }
-
     let slot = ObservationScopeSlot(
         options: options,
         observationIsolation: observationIsolation,
@@ -85,10 +76,23 @@ private func startPortableContinuousObservation(
     )
     delivery.bind(to: slot)
     let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
-    slot.start(isolation: currentIsolation)
-    if let error = token.error {
-        throw error
+    do {
+        if !options.intersection([.didSet, .willSet]).isEmpty {
+            guard let preparation else {
+                throw PortableObservationTracking.Error.notPrepared
+            }
+            let runtime = try preparation.get()
+            if options.contains(.didSet) {
+                _ = try runtime.didSet.get()
+            } else {
+                _ = try runtime.willSet.get()
+            }
+        }
+    } catch {
+        slot.fail(error)
+        return token
     }
+    slot.start(isolation: currentIsolation)
     return token
 }
 
@@ -540,8 +544,9 @@ extension PortableObservationTracking {
     /// Call once during application setup and await completion before creating
     /// mutation observations. Repeated successful calls reuse the prepared handles.
     /// On OS 27+, unavailable exact SPI selects the native liveness fallback.
-    /// Other preparation failures are returned to the caller; an unavailable
-    /// individual event option is reported when starting that observation.
+    /// On earlier versions, both mutation event implementations must be available;
+    /// preparation throws if either cannot be resolved. Tracking failures after
+    /// preparation stop the observation and are available through `Token.error`.
     public static func prepare() async throws {
         try await ObservationRuntimePreparation.shared.prepare()
     }
@@ -623,8 +628,9 @@ private actor ObservationRuntimePreparation {
             #else
             let hasNativeFallback = false
             #endif
-            if !hasNativeFallback, case .failure = didSet, case .failure = willSet {
+            if !hasNativeFallback {
                 _ = try didSet.get()
+                _ = try willSet.get()
             }
             Self.cached.withLock { $0 = .success(ObservationRuntime(
                 type: type, didSet: didSet, willSet: willSet, changed: changed, cancel: cancel

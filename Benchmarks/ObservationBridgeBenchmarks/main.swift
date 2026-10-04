@@ -273,7 +273,7 @@ enum ObservationBridgeBenchmarks {
     ) async throws -> BenchmarkExecutionResult {
         switch benchmarkCase {
         case .portableSetupTeardown:
-            return BenchmarkExecutionResult(checksum: try runPortableSetupTeardown(iterations: iterations))
+            return BenchmarkExecutionResult(checksum: runPortableSetupTeardown(iterations: iterations))
         #if canImport(_ObservationBridgeBenchmarkSupport)
         case .portableChangeRuntimeActivity:
             return try await runPortableChangeRuntimeActivity(iterations: iterations)
@@ -282,13 +282,13 @@ enum ObservationBridgeBenchmarks {
     }
 
     @inline(never)
-    private static func runPortableSetupTeardown(iterations: Int) throws -> Int {
+    private static func runPortableSetupTeardown(iterations: Int) -> Int {
         let sink = BenchmarkSink()
 
         for index in 0..<iterations {
             let model = BenchmarkCounterModel()
             model.value = index
-            let token = try withPortableContinuousObservation(options: []) { _ in
+            let token = withPortableContinuousObservation(options: []) { _ in
                 sink.record(model.value)
             }
             token.cancel()
@@ -311,12 +311,13 @@ enum ObservationBridgeBenchmarks {
             WaiterRegistrationHooks.deactivate()
         }
 
-        let token = try withPortableContinuousObservation { _ in
+        let token = withPortableContinuousObservation { _ in
             recorder.recordCallback(model.value)
         }
         defer {
             token.cancel()
         }
+        if let error = token.error { throw error }
         try recorder.waitForCallbackDeliveryCount(1)
         try WaiterRegistrationHooks.waitForCount(1)
 

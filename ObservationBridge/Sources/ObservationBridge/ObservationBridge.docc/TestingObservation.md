@@ -12,7 +12,7 @@ struct RenderedState: Sendable, Equatable {
 }
 
 try await PortableObservationTracking.prepare()
-let token = try withPortableContinuousObservation { _ in
+let token = withPortableContinuousObservation { _ in
     titleLabel.text = model.title
     saveButton.isEnabled = model.canSave
 }

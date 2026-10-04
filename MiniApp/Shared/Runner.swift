@@ -286,19 +286,17 @@ enum Runner {
                         let model = LockedCounterModel()
                         let observedFlag = Mutex(false)
                         let matchedFlag = Mutex(false)
-                        let observation: PortableObservationTracking.Token
-                        do {
-                            observation = try withPortableContinuousObservation { event in
-                                if event.matches(\LockedCounterModel.value) {
-                                    matchedFlag.withLock { $0 = true }
-                                    totalMatchedMutations.withLock { $0 += 1 }
-                                }
-
-                                totalObservedCallbacks.withLock { $0 += 1 }
-                                observedFlag.withLock { $0 = true }
-                                _ = model.value
+                        let observation = withPortableContinuousObservation { event in
+                            if event.matches(\LockedCounterModel.value) {
+                                matchedFlag.withLock { $0 = true }
+                                totalMatchedMutations.withLock { $0 += 1 }
                             }
-                        } catch {
+
+                            totalObservedCallbacks.withLock { $0 += 1 }
+                            observedFlag.withLock { $0 = true }
+                            _ = model.value
+                        }
+                        if let error = observation.error {
                             await failureRecorder.record(String(describing: error))
                             return
                         }

@@ -33,7 +33,8 @@ extension PortableObservationTracking {
 
         private let storage: Storage
 
-        /// The first runtime tracking failure, or nil if none has occurred.
+        /// The first startup or runtime tracking failure, or nil if none has occurred.
+        /// A failure stops the observation. Normal cancellation does not set an error.
         public var error: (any Swift.Error)? {
             storage.delivery.error
         }

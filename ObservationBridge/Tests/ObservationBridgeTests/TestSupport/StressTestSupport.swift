@@ -58,7 +58,7 @@ struct StressRunOutcome: Sendable {
 typealias NativeStressRegistrar = @Sendable (
     LockedCounterModel,
     @escaping @Sendable (Int) -> Void
-) throws -> PortableObservationTracking.Token
+) -> PortableObservationTracking.Token
 
 func runTwoThreadWriteAndReadRound(
     model: LockedCounterModel,
@@ -118,12 +118,10 @@ func runRandomizedObservationStress(
                     var rng = StressRNG(seed: workerSeed)
                     let model = LockedCounterModel()
                     let observedFlag = Mutex(false)
-                    let token: PortableObservationTracking.Token
-                    do {
-                        token = try register(model) { _ in
-                            observedFlag.withLock { $0 = true }
-                        }
-                    } catch {
+                    let token = register(model) { _ in
+                        observedFlag.withLock { $0 = true }
+                    }
+                    if let error = token.error {
                         await failureRecorder.record(String(describing: error))
                         return
                     }

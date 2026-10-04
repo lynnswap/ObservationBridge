@@ -20,19 +20,33 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func mutationObservationRequiresPreparation() throws {
-        _ = _ObservationScopeTesting.withoutPreparedRuntime {
-            #expect(throws: PortableObservationTracking.Error.self) {
-                try withPortableContinuousObservation { _ in }
+    func unpreparedMutationObservationReturnsFailedToken() async {
+        let applied = RenderedValue(false)
+        let token = _ObservationScopeTesting.withoutPreparedRuntime {
+            withPortableContinuousObservation { _ in
+                applied.set(true)
             }
         }
+        #expect(!applied.value)
+        #expect(!token.isActive)
+        guard case .notPrepared? = token.error as? PortableObservationTracking.Error else {
+            Issue.record("Expected an unprepared runtime error")
+            return
+        }
+
+        let values = await token.values { applied.value }
+        #expect(!values.isActive)
+        #expect(values.snapshot().isEmpty)
+        #expect(await values.waitUntil { _ in true } == nil)
+        token.cancel()
+        #expect(token.error != nil)
     }
 
     @Test
-    func initialOnlyObservationDoesNotRequireRuntimePreparation() throws {
-        try _ObservationScopeTesting.withoutPreparedRuntime {
+    func initialOnlyObservationDoesNotRequireRuntimePreparation() {
+        _ObservationScopeTesting.withoutPreparedRuntime {
             let rendered = RenderedValue(false)
-            let token = try withPortableContinuousObservation(options: []) { _ in
+            let token = withPortableContinuousObservation(options: []) { _ in
                 rendered.set(true)
             }
             #expect(rendered.value)
@@ -49,7 +63,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func trackingFailureStopsWaitersAndSamplers() async throws {
+    func trackingFailureStopsWaitersAndSamplers() async {
         enum Failure: Error { case first, second }
         let delivery = ObservationDelivery()
         let slot = ObservationScopeSlot(
@@ -69,7 +83,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observationEventKindStaticValuesAreEquatable() throws {
+    func observationEventKindStaticValuesAreEquatable() {
         #expect(PortableObservationTracking.Event.Kind.initial == .initial)
         #expect(PortableObservationTracking.Event.Kind.didSet == .didSet)
         #expect(PortableObservationTracking.Event.Kind.initial != .didSet)
@@ -81,7 +95,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func requiredObservationTrackingSPISymbolsAreAvailableInDevelopmentRuntime() throws {
+    func requiredObservationTrackingSPISymbolsAreAvailableInDevelopmentRuntime() {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -92,11 +106,11 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func portableObservationStartsSynchronouslyAndTracksCallbackReads() async throws {
+    func portableObservationStartsSynchronouslyAndTracksCallbackReads() async {
         let model = CounterModel()
         let rendered = RenderedValue(ScopePass(kind: .didSet, value: -1, isEnabled: false))
 
-        let token = try withPortableContinuousObservation { event in
+        let token = withPortableContinuousObservation { event in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -119,11 +133,11 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func discardedPortableObservationTokenDoesNotKeepObserving() async throws {
+    func discardedPortableObservationTokenDoesNotKeepObserving() async {
         let model = CounterModel()
         let rendered = RenderedValue(-1)
 
-        _ = try withPortableContinuousObservation { _ in
+        _ = withPortableContinuousObservation { _ in
             rendered.set(model.value)
         }
 
@@ -135,11 +149,11 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func portableObservationMatchesReportsTriggerKeyPaths() async throws {
+    func portableObservationMatchesReportsTriggerKeyPaths() async {
         let model = CounterModel()
         let rendered = RenderedValue("")
 
-        let token = try withPortableContinuousObservation { event in
+        let token = withPortableContinuousObservation { event in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -162,13 +176,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observeReturnCanBeIgnoredWithoutCancellingObservation() async throws {
+    func observeReturnCanBeIgnoredWithoutCancellingObservation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        try observations.observe(model) { _, model in
+        observations.observe(model) { _, model in
             rendered.set(model.value)
         }
 
@@ -180,11 +194,11 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func observeStartsImmediatelyAndTracksPropertiesReadByCallback() async throws {
+    func observeStartsImmediatelyAndTracksPropertiesReadByCallback() async {
         let model = MainActorCounterModel()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
 
-        let token = try withPortableContinuousObservation { event in
+        let token = withPortableContinuousObservation { event in
             MainActor.assertIsolated()
             rendered.set(
                 ScopePass(
@@ -216,13 +230,13 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func observationScopeObservePreservesCallerIsolationThroughForwardingWrapper() async throws {
+    func observationScopeObservePreservesCallerIsolationThroughForwardingWrapper() async {
         let model = MainActorCounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             MainActor.assertIsolated()
             rendered.set(model.value)
         }
@@ -242,14 +256,14 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesWaitForRenderedState() async throws {
+    func deliveryValuesWaitForRenderedState() async {
         let model = CounterModel()
         model.name = "Loading"
         let observations = ObservationScope()
         let renderedTitle = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             renderedTitle.set(model.name)
         }
         let titles = await delivery.values {
@@ -264,13 +278,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesSampleInitialRenderBeforeReturning() async throws {
+    func deliveryValuesSampleInitialRenderBeforeReturning() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
         let values = await delivery.values {
@@ -281,13 +295,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesHonorClosureIsolationForImmediateAndLaterSamples() async throws {
+    func deliveryValuesHonorClosureIsolationForImmediateAndLaterSamples() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let sampleProbe = MainActorSampleProbe()
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             _ = model.value
         }
         let samples = await delivery.values { @MainActor in
@@ -301,13 +315,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesRegisteredAfterCompletedDeliverySampleBeforeLaterMutation() async throws {
+    func deliveryValuesRegisteredAfterCompletedDeliverySampleBeforeLaterMutation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
 
@@ -323,13 +337,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func didSetPassReadsValueAfterMutationBody() async throws {
+    func didSetPassReadsValueAfterMutationBody() async {
         let model = DelayedMutationCounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -351,13 +365,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func samplerlessDeliveryRegisteredAfterDidSetSamplesLatestRender() async throws {
+    func samplerlessDeliveryRegisteredAfterDidSetSamplesLatestRender() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -383,7 +397,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func didSetUnavailableUsesNativeContinuousFallbackWhenAvailable() async throws {
+    func didSetUnavailableUsesNativeContinuousFallbackWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -394,7 +408,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -424,13 +438,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func willSetOptionDeliversWillSetPass() async throws {
+    func willSetOptionDeliversWillSetPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: .willSet) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
             _ = model.value
             rendered.set(event.kind)
         }
@@ -448,13 +462,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func mutationOptionsPreferDidSetContinuousPass() async throws {
+    func mutationOptionsPreferDidSetContinuousPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: [.willSet, .didSet]) { event, model in
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
             _ = model.value
             rendered.set("\(event.kind):\(event.matches(\CounterModel.value))")
         }
@@ -473,7 +487,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func spiUnavailableDeliversNativeContinuousFallbackWillSetWhenAvailable() async throws {
+    func spiUnavailableDeliversNativeContinuousFallbackWillSetWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -484,7 +498,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: .willSet) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
             _ = model.value
             rendered.set(event.kind)
         }
@@ -510,7 +524,7 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func spiUnavailableBothOptionsUseNativeContinuousFallbackMutationWhenAvailable() async throws {
+    func spiUnavailableBothOptionsUseNativeContinuousFallbackMutationWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -521,7 +535,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: [.willSet, .didSet]) { event, model in
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
             _ = model.value
             rendered.set(event.kind)
         }
@@ -546,7 +560,7 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func bothOptionsDoNotDowngradeToWillSetWhenDidSetSPIIsUnavailable() async throws {
+    func bothOptionsDoNotDowngradeToWillSetWhenDidSetSPIIsUnavailable() async {
         _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -557,7 +571,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: [.willSet, .didSet]) { event, model in
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
             _ = model.value
             rendered.set(event.kind)
         }
@@ -582,11 +596,11 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func didSetTrackingIsCancelledAfterEachChange() async throws {
+    func didSetTrackingIsCancelledAfterEachChange() async {
         let model = MainActorCounterModel()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
 
-        let token = try withPortableContinuousObservation { event in
+        let token = withPortableContinuousObservation { event in
             MainActor.assertIsolated()
             rendered.set(
                 ScopePass(
@@ -623,13 +637,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func emptyOptionsDeliverOnlyInitialEvent() async throws {
+    func emptyOptionsDeliverOnlyInitialEvent() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: []) { event, model in
+        let delivery = observations.observe(model, options: []) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -652,7 +666,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func rawDeinitOptionDoesNotSynthesizeLegacyEvent() async throws {
+    func rawDeinitOptionDoesNotSynthesizeLegacyEvent() async {
         let model = ChildContainerModel()
         let weakChild = WeakChildProbeModelBox()
         do {
@@ -665,7 +679,7 @@ final class ObservationScopeObserveTests {
         defer { observations.cancelAll() }
 
         let rawDeinitOptions = PortableObservationTracking.Options(rawValue: 1 << 2)
-        let delivery = try observations.observe(model, options: rawDeinitOptions) { event, model in
+        let delivery = observations.observe(model, options: rawDeinitOptions) { event, model in
             if let child = model.child {
                 _ = child.value
             }
@@ -685,7 +699,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func pendingDidSetKeepsLatestEventWhenNoWaiterIsRegistered() async throws {
+    func pendingDidSetKeepsLatestEventWhenNoWaiterIsRegistered() async {
         let slot = ObservationScopeSlot(
             options: [.willSet, .didSet],
             observationIsolation: nil,
@@ -704,7 +718,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func pendingMutationStoresLatestEventWhenNoWaiterIsRegistered() async throws {
+    func pendingMutationStoresLatestEventWhenNoWaiterIsRegistered() async {
         let slot = ObservationScopeSlot(
             options: [.willSet, .didSet],
             observationIsolation: nil,
@@ -723,7 +737,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryCompletionRetainsDeliveryUntilQueuedSamplingFinishes() async throws {
+    func deliveryCompletionRetainsDeliveryUntilQueuedSamplingFinishes() async {
         var delivery: ObservationDelivery? = ObservationDelivery()
         let weakDelivery = WeakBox<ObservationDelivery>()
         weakDelivery.value = delivery
@@ -746,13 +760,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func sameValueReassignmentDoesNotRecordAnotherObservedValue() async throws {
+    func sameValueReassignmentDoesNotRecordAnotherObservedValue() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
         let values = await delivery.values {
@@ -767,13 +781,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func samplerReadsDoNotBecomeObservationDependencies() async throws {
+    func samplerReadsDoNotBecomeObservationDependencies() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
         let sampledEnabledValues = await delivery.values {
@@ -793,13 +807,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func matchesReportsTriggerKeyPaths() async throws {
+    func matchesReportsTriggerKeyPaths() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -821,13 +835,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func matchesReportsTriggerKeyPathOnWillSetPass() async throws {
+    func matchesReportsTriggerKeyPathOnWillSetPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: .willSet) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -846,13 +860,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func mutationsDuringApplyPassAreNotObservedByCurrentTracking() async throws {
+    func mutationsDuringApplyPassAreNotObservedByCurrentTracking() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -878,13 +892,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func synchronousExternalMutationsDuringRearmCoalesceToOneStoredTrigger() async throws {
+    func synchronousExternalMutationsDuringRearmCoalesceToOneStoredTrigger() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -906,13 +920,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func synchronousExternalWillSetMutationsDuringRearmCoalesceToOneStoredTrigger() async throws {
+    func synchronousExternalWillSetMutationsDuringRearmCoalesceToOneStoredTrigger() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: .willSet) { event, model in
+        let delivery = observations.observe(model, options: .willSet) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -934,13 +948,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func synchronousExternalBothOptionMutationsDuringRearmUseDidSetContinuousPass() async throws {
+    func synchronousExternalBothOptionMutationsDuringRearmUseDidSetContinuousPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: [.willSet, .didSet]) { event, model in
+        let delivery = observations.observe(model, options: [.willSet, .didSet]) { event, model in
             _ = model.value
             _ = model.secondaryValue
             rendered.set(
@@ -962,13 +976,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func nextExternalMutationRetracksAfterApplyPassMutation() async throws {
+    func nextExternalMutationRetracksAfterApplyPassMutation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let passes = RenderedValue<[String]>([])
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             passes.set(passes.value + ["\(event.kind):\(model.value)"])
             if event.kind == .didSet, model.value == 1 {
                 model.value = 2
@@ -985,7 +999,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func spiUnavailableFallbackReportsConservativeMatchesWhenAvailable() async throws {
+    func spiUnavailableFallbackReportsConservativeMatchesWhenAvailable() async {
         _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = true }
         defer {
             _ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock { $0 = false }
@@ -996,7 +1010,7 @@ final class ObservationScopeObserveTests {
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model, options: [.didSet, .willSet]) { event, model in
+        let delivery = observations.observe(model, options: [.didSet, .willSet]) { event, model in
             _ = model.value
             rendered.set(
                 "\(event.kind):value:\(event.matches(\CounterModel.value)):secondary:\(event.matches(\CounterModel.secondaryValue))"
@@ -1024,7 +1038,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func nativeContinuousFallbackCancelStopsMutationDeliveryAndFinishesSamplers() async throws {
+    func nativeContinuousFallbackCancelStopsMutationDeliveryAndFinishesSamplers() async {
         guard usesNativeContinuousFallbackForTesting() else {
             return
         }
@@ -1037,7 +1051,7 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let rendered = RenderedValue("")
 
-        let token = try withPortableContinuousObservation { event in
+        let token = withPortableContinuousObservation { event in
             rendered.set("\(event.kind):\(model.value)")
         }
         let passes = await token.values {
@@ -1060,13 +1074,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func implicitTrackingRefreshesConditionalDependenciesAfterEachPass() async throws {
+    func implicitTrackingRefreshesConditionalDependenciesAfterEachPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue("")
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             let loadedValue = model.isEnabled ? model.secondaryValue : model.value
             rendered.set("\(event.kind):enabled:\(model.isEnabled):loaded:\(loadedValue)")
         }
@@ -1094,12 +1108,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func repeatedObserveFromSameCallSiteReplacesCallbackWithoutDuplicatingPipeline() async throws {
+    func repeatedObserveFromSameCallSiteReplacesCallbackWithoutDuplicatingPipeline() async {
         let model = CounterModel()
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let first = try await installReplacingObservation(
+        let first = await installReplacingObservation(
             observations: observations,
             model: model,
             label: "first"
@@ -1107,7 +1121,7 @@ final class ObservationScopeObserveTests {
         var firstCursor = ObservedValuesCursor(first.values)
         #expect(await firstCursor.next() == "first:initial:0")
 
-        let second = try await installReplacingObservation(
+        let second = await installReplacingObservation(
             observations: observations,
             model: model,
             label: "second"
@@ -1125,12 +1139,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func repeatedObserveFromSameCallSiteRetracksReplacementCallbackBody() async throws {
+    func repeatedObserveFromSameCallSiteRetracksReplacementCallbackBody() async {
         let model = CounterModel()
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let valuePasses = try await installReplacingObservation(
+        let valuePasses = await installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .value,
@@ -1139,7 +1153,7 @@ final class ObservationScopeObserveTests {
         var valueCursor = ObservedValuesCursor(valuePasses.values)
         #expect(await valueCursor.next() == "value:initial:value:0")
 
-        let enabledPasses = try await installReplacingObservation(
+        let enabledPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             readTarget: .isEnabled,
@@ -1164,12 +1178,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func repeatedObserveFromSameCallSiteWithDifferentOptionsReplacesPipeline() async throws {
+    func repeatedObserveFromSameCallSiteWithDifferentOptionsReplacesPipeline() async {
         let model = CounterModel()
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let initialOnlyPasses = try await installReplacingObservation(
+        let initialOnlyPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             options: [],
@@ -1180,7 +1194,7 @@ final class ObservationScopeObserveTests {
         #expect(initialOnlyPasses.delivery.isActive == false)
         #expect(initialOnlyPasses.values.isActive == false)
 
-        let didSetPasses = try await installReplacingObservation(
+        let didSetPasses = await installReplacingObservation(
             observations: observations,
             model: model,
             options: .didSet,
@@ -1195,13 +1209,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func repeatedObserveFromSameCallSiteWithDifferentOwnerReplacesPipeline() async throws {
+    func repeatedObserveFromSameCallSiteWithDifferentOwnerReplacesPipeline() async {
         let firstModel = CounterModel()
         let secondModel = CounterModel()
         let observations = ObservationScope()
         defer { observations.cancelAll() }
 
-        let firstPasses = try await installReplacingObservation(
+        let firstPasses = await installReplacingObservation(
             observations: observations,
             model: firstModel,
             label: "first"
@@ -1209,7 +1223,7 @@ final class ObservationScopeObserveTests {
         var firstCursor = ObservedValuesCursor(firstPasses.values)
         #expect(await firstCursor.next() == "first:initial:0")
 
-        let secondPasses = try await installReplacingObservation(
+        let secondPasses = await installReplacingObservation(
             observations: observations,
             model: secondModel,
             label: "second"
@@ -1230,12 +1244,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observationsFromDifferentCallSitesCoexistAfterStoragePromotion() async throws {
+    func observationsFromDifferentCallSitesCoexistAfterStoragePromotion() async {
         let model = CounterModel()
         let observations = ObservationScope()
 
         let renderedValue = RenderedValue("")
-        let valueDelivery = try observations.observe(model) { event, model in
+        let valueDelivery = observations.observe(model) { event, model in
             renderedValue.set("value:\(event.kind):\(model.value)")
         }
         let valuePasses = await valueDelivery.values {
@@ -1244,7 +1258,7 @@ final class ObservationScopeObserveTests {
         var valueCursor = ObservedValuesCursor(valuePasses)
 
         let renderedEnabled = RenderedValue("")
-        let enabledDelivery = try observations.observe(model) { event, model in
+        let enabledDelivery = observations.observe(model) { event, model in
             renderedEnabled.set("enabled:\(event.kind):\(model.isEnabled)")
         }
         let enabledPasses = await enabledDelivery.values {
@@ -1271,12 +1285,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func cancelAllStopsLaterEventsAndFinishesSamplers() async throws {
+    func cancelAllStopsLaterEventsAndFinishesSamplers() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -1300,13 +1314,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryCancelStopsObservationAndFinishesSamplers() async throws {
+    func deliveryCancelStopsObservationAndFinishesSamplers() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
         let values = await delivery.values {
@@ -1325,13 +1339,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observedValuesCancelStopsSamplerOnly() async throws {
+    func observedValuesCancelStopsSamplerOnly() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(-1)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { _, model in
+        let delivery = observations.observe(model) { _, model in
             rendered.set(model.value)
         }
         let firstValues = await delivery.values {
@@ -1357,7 +1371,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryFinishAfterCallbackStillSamplesCompletedRender() async throws {
+    func deliveryFinishAfterCallbackStillSamplesCompletedRender() async {
         let delivery = ObservationDelivery()
         let rendered = RenderedValue(0)
         let values = await delivery.values {
@@ -1377,7 +1391,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesRegisteredDuringCompletedActiveDeliverySampleOnce() async throws {
+    func deliveryValuesRegisteredDuringCompletedActiveDeliverySampleOnce() async {
         let delivery = ObservationDelivery()
         let rendered = RenderedValue(0)
 
@@ -1398,7 +1412,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func samplerlessLateValuesSampleSurvivesFinishBeforeImmediateSample() async throws {
+    func samplerlessLateValuesSampleSurvivesFinishBeforeImmediateSample() async {
         let delivery = ObservationDelivery()
         let rendered = RenderedValue(0)
 
@@ -1421,7 +1435,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observedValuesCancelRejectsInFlightRecord() throws {
+    func observedValuesCancelRejectsInFlightRecord() {
         let values = ObservedValues<Int>()
 
         #expect(values.beginDelivery())
@@ -1434,7 +1448,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observedValuesFinishAllowsInFlightRecordBeforeFinishing() throws {
+    func observedValuesFinishAllowsInFlightRecordBeforeFinishing() {
         let values = ObservedValues<Int>()
 
         #expect(values.beginDelivery())
@@ -1447,13 +1461,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelCanStopInitialObservationBeforeObserveReturns() async throws {
+    func eventCancelCanStopInitialObservationBeforeObserveReturns() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             event.cancel()
             rendered.set(event.kind)
@@ -1472,13 +1486,13 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func eventCancelStopsDidSetObservationAfterSamplingCurrentPass() async throws {
+    func eventCancelStopsDidSetObservationAfterSamplingCurrentPass() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -1512,14 +1526,14 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryCancelStopsDidSetObservation() async throws {
+    func deliveryCancelStopsDidSetObservation() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
         let cancellation = DeliveryCancellationProbe()
         defer { observations.cancelAll() }
 
-        let returnedDelivery = try observations.observe(model) { event, model in
+        let returnedDelivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -1552,7 +1566,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func cancelAllDuringSamplerlessDidSetStillAllowsLateSample() async throws {
+    func cancelAllDuringSamplerlessDidSetStillAllowsLateSample() async {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
@@ -1560,7 +1574,7 @@ final class ObservationScopeObserveTests {
         let cancelled = RenderedValue(false)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             rendered.set(
                 ScopePass(
                     kind: event.kind,
@@ -1593,12 +1607,12 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func nativeScopeSurvivesConcurrentWriteAndReadStress() async throws {
+    func nativeScopeSurvivesConcurrentWriteAndReadStress() async {
         let result = await runRandomizedObservationStress(
             iterations: stressIterationCount(local: 20_000, ci: 200),
             seed: stressSeed(default: 0x26_00_00_00_00_00_00_01)
         ) { model, onObserved in
-            try withPortableContinuousObservation {
+            withPortableContinuousObservation {
                 _ in
                 onObserved(model.value)
             }
@@ -1609,14 +1623,14 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func cancelAllDuringInitialCallbackStillSamplesInitialRender() async throws {
+    func cancelAllDuringInitialCallbackStillSamplesInitialRender() async {
         let model = CounterModel()
         let probe = ObservationScopeCancellationProbe()
         let observations = probe.observations
         let rendered = RenderedValue(PortableObservationTracking.Event.Kind.didSet)
         defer { observations.cancelAll() }
 
-        let delivery = try observations.observe(model) { event, model in
+        let delivery = observations.observe(model) { event, model in
             _ = model.value
             rendered.set(event.kind)
             probe.cancelAll()
@@ -1635,7 +1649,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func cancelledSlotDoesNotStartObservation() async throws {
+    func cancelledSlotDoesNotStartObservation() async {
         let model = CounterModel()
         let delivery = ObservationDelivery()
         let started = RenderedValue(false)
@@ -1657,7 +1671,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func initialOnlyObservationReleasesCallbackAfterNaturalCompletion() async throws {
+    func initialOnlyObservationReleasesCallbackAfterNaturalCompletion() async {
         let model = CounterModel()
         let observations = ObservationScope()
         let didDeinit = DeinitFlag()
@@ -1669,7 +1683,7 @@ final class ObservationScopeObserveTests {
                 }
             }
             let rendered = RenderedValue(-1)
-            let delivery = try observations.observe(model, options: []) { _, model in
+            let delivery = observations.observe(model, options: []) { _, model in
                 probe.record(model.value)
                 rendered.set(model.value)
             }
@@ -1694,7 +1708,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func observeDoesNotRetainOwner() async throws {
+    func observeDoesNotRetainOwner() async {
         let observations = ObservationScope()
         let didDeinit = DeinitFlag()
         let weakModel = WeakDeinitProbeModelBox()
@@ -1706,7 +1720,7 @@ final class ObservationScopeObserveTests {
                 }
             }
             weakModel.model = model
-            try observations.observe(model) { _, model in
+            observations.observe(model) { _, model in
                 _ = model.value
             }
             #expect(await waitUntilCondition { weakModel.model != nil })
@@ -1727,7 +1741,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func ownerDeinitDoesNotCancelScopeOwnedDelivery() async throws {
+    func ownerDeinitDoesNotCancelScopeOwnedDelivery() async {
         let observations = ObservationScope()
         let weakModel = WeakDeinitProbeModelBox()
         var delivery: PortableObservationTracking.Token?
@@ -1735,7 +1749,7 @@ final class ObservationScopeObserveTests {
         do {
             let model = DeinitProbeCounterModel {}
             weakModel.model = model
-            delivery = try observations.observe(model) { _, model in
+            delivery = observations.observe(model) { _, model in
                 _ = model.value
             }
             #expect(delivery?.isActive == true)
@@ -1751,11 +1765,11 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func deliveryValuesSupportMainActorRenderedValues() async throws {
+    func deliveryValuesSupportMainActorRenderedValues() async {
         let model = MainActorNonSendablePayloadModel()
         let rendered = RenderedValue(-1)
 
-        let token = try withPortableContinuousObservation { _ in
+        let token = withPortableContinuousObservation { _ in
             MainActor.assertIsolated()
             rendered.set(model.payload.value)
         }
@@ -1776,11 +1790,11 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesUseCustomActorIsolationForCallbacksAndSamplers() async throws {
+    func deliveryValuesUseCustomActorIsolationForCallbacksAndSamplers() async {
         let model = CounterModel()
         let probe = CustomActorObservationProbe()
 
-        let observation = try await probe.observe(model)
+        let observation = await probe.observe(model)
         var cursor = ObservedValuesCursor(observation.values)
         #expect(await cursor.next() == 0)
 
@@ -1792,7 +1806,7 @@ final class ObservationScopeObserveTests {
 
     @MainActor
     @Test
-    func nativeContinuousFallbackUsesMainActorIsolationForCallbacksAndSamplers() async throws {
+    func nativeContinuousFallbackUsesMainActorIsolationForCallbacksAndSamplers() async {
         guard usesNativeContinuousFallbackForTesting() else {
             return
         }
@@ -1805,7 +1819,7 @@ final class ObservationScopeObserveTests {
         let model = MainActorCounterModel()
         let rendered = RenderedValue(-1)
 
-        let token = try withPortableContinuousObservation { _ in
+        let token = withPortableContinuousObservation { _ in
             MainActor.assertIsolated()
             rendered.set(model.value)
         }
@@ -1824,7 +1838,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func nativeContinuousFallbackUsesCustomActorIsolationForCallbacksAndSamplers() async throws {
+    func nativeContinuousFallbackUsesCustomActorIsolationForCallbacksAndSamplers() async {
         guard usesNativeContinuousFallbackForTesting() else {
             return
         }
@@ -1837,7 +1851,7 @@ final class ObservationScopeObserveTests {
         let model = CounterModel()
         let probe = CustomActorObservationProbe()
 
-        let observation = try await probe.observe(model)
+        let observation = await probe.observe(model)
         var cursor = ObservedValuesCursor(observation.values)
         #expect(await cursor.next() == 0)
 
@@ -1849,10 +1863,10 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func deliveryValuesTrackMultiplePassesOnCustomActorOwnedModel() async throws {
+    func deliveryValuesTrackMultiplePassesOnCustomActorOwnedModel() async {
         let probe = CustomActorOwnedObservationProbe()
 
-        let observation = try await probe.observe()
+        let observation = await probe.observe()
         var cursor = ObservedValuesCursor(observation.values)
         #expect(await cursor.next() == 0)
 
@@ -1938,9 +1952,9 @@ private func installReplacingObservation(
     model: CounterModel,
     options: PortableObservationTracking.Options = .didSet,
     label: String
-) async throws -> RenderedObservation<String> {
+) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
-    let delivery = try observations.observe(model, options: options) { event, model in
+    let delivery = observations.observe(model, options: options) { event, model in
         rendered.set("\(label):\(event.kind):\(model.value)")
     }
     let values = await delivery.values {
@@ -1956,9 +1970,9 @@ private func installReplacingObservation(
     model: MainActorCounterModel,
     options: PortableObservationTracking.Options = .didSet,
     label: String
-) async throws -> RenderedObservation<String> {
+) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
-    let delivery = try observations.observe(model, options: options) { event, model in
+    let delivery = observations.observe(model, options: options) { event, model in
         MainActor.assertIsolated()
         rendered.set("\(label):\(event.kind):\(model.value)")
     }
@@ -1975,9 +1989,9 @@ private func installReplacingObservation(
     model: CounterModel,
     readTarget: ReplacementReadTarget,
     label: String
-) async throws -> RenderedObservation<String> {
+) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
-    let delivery = try observations.observe(model) { event, model in
+    let delivery = observations.observe(model) { event, model in
         switch readTarget {
         case .value:
             rendered.set("\(label):\(event.kind):value:\(model.value)")
@@ -1998,9 +2012,9 @@ private func installReplacingObservation(
     model: MainActorCounterModel,
     readTarget: ReplacementReadTarget,
     label: String
-) async throws -> RenderedObservation<String> {
+) async -> RenderedObservation<String> {
     let rendered = RenderedValue("")
-    let delivery = try observations.observe(model) { event, model in
+    let delivery = observations.observe(model) { event, model in
         MainActor.assertIsolated()
         switch readTarget {
         case .value:
@@ -2020,8 +2034,8 @@ private actor CustomActorObservationProbe {
     private let rendered = RenderedValue(-1)
     private var tokens: [PortableObservationTracking.Token] = []
 
-    func observe(_ model: CounterModel) async throws -> RenderedObservation<Int> {
-        let token = try withPortableContinuousObservation { _ in
+    func observe(_ model: CounterModel) async -> RenderedObservation<Int> {
+        let token = withPortableContinuousObservation { _ in
             self.preconditionIsolated()
             self.rendered.set(model.value)
         }
@@ -2047,8 +2061,8 @@ private actor CustomActorOwnedObservationProbe {
     private let rendered = RenderedValue(-1)
     private var tokens: [PortableObservationTracking.Token] = []
 
-    func observe() async throws -> RenderedObservation<Int> {
-        let token = try withPortableContinuousObservation { _ in
+    func observe() async -> RenderedObservation<Int> {
+        let token = withPortableContinuousObservation { _ in
             self.preconditionIsolated()
             self.rendered.set(self.model.value)
         }

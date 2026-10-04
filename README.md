@@ -41,8 +41,8 @@ final class CounterViewController: UIViewController {
     let model = Counter()
     private var observation: PortableObservationTracking.Token?
 
-    func bindModel() throws {
-        observation = try withPortableContinuousObservation { [weak self] _ in
+    func bindModel() {
+        observation = withPortableContinuousObservation { [weak self] _ in
             guard let self else { return }
             navigationItem.title = "Count: \(model.count)"
         }
@@ -53,9 +53,12 @@ final class CounterViewController: UIViewController {
 The callback inherits the caller's actor context and runs an initial tracking
 pass, then runs again after tracked values change by default. Read the values
 you want to keep observing on every pass. Call `observation?.cancel()` to stop
-updates early; releasing the token also cancels the observation. The start call
-throws for an unprepared runtime or an initial tracking failure. Later tracking
-failures stop the observation and are available through `observation?.error`.
+updates early; releasing the token also cancels the observation. Preparation
+throws if the required SPI cannot be resolved and no native fallback is available.
+The start call is nonthrowing. Starting a mutation observation before preparation
+returns an inactive token with `PortableObservationTracking.Error.notPrepared`.
+Startup and later tracking failures stop the observation and are available through
+`observation?.error`.
 
 ## Documentation
 
