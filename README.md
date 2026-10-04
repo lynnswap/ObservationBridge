@@ -50,15 +50,8 @@ final class CounterViewController: UIViewController {
 }
 ```
 
-The callback inherits the caller's actor context and runs an initial tracking
-pass, then runs again after tracked values change by default. Read the values
-you want to keep observing on every pass. Call `observation?.cancel()` to stop
-updates early; releasing the token also cancels the observation. Preparation
-throws if the required SPI cannot be resolved and no native fallback is available.
-The start call is nonthrowing. Starting a mutation observation before preparation
-returns an inactive token with `PortableObservationTracking.Error.notPrepared`.
-Startup and later tracking failures stop the observation and are available through
-`observation?.error`.
+The callback runs initially, then again after the properties it reads change.
+Call `observation?.cancel()` to stop updates.
 
 ## Documentation
 
