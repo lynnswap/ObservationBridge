@@ -58,7 +58,12 @@ final class ObservationScopeObserveTests {
     @Test
     func preparationCanBeRepeated() async throws {
         try await PortableObservationTracking.prepare()
-        try await PortableObservationTracking.prepare()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { try await PortableObservationTracking.prepare() }
+            }
+            try await group.waitForAll()
+        }
         #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
     }
 
