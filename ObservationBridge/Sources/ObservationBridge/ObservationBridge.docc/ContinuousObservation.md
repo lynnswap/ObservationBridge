@@ -4,7 +4,8 @@ Track observable values and choose which changes trigger your callback.
 
 Call `try await PortableObservationTracking.prepare()` once during application
 setup and await completion before starting mutation observations. Repeated
-successful calls reuse the prepared state. Initial-only observations with
+successful calls reuse the prepared state. Concurrent callers share the same
+in-flight preparation. Initial-only observations with
 `options: []` do not require preparation.
 
 Create an observation with `withPortableContinuousObservation(options:apply:)`.

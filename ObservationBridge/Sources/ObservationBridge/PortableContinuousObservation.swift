@@ -542,7 +542,8 @@ extension PortableObservationTracking {
     /// Prepares the Observation runtime before synchronous observation starts.
     ///
     /// Call once during application setup and await completion before creating
-    /// mutation observations. Repeated successful calls reuse the prepared handles.
+    /// mutation observations. Concurrent callers share the in-flight preparation;
+    /// repeated successful calls reuse the prepared handles.
     /// On OS 27+, unavailable exact SPI selects the native liveness fallback.
     /// On earlier versions, both mutation event implementations must be available;
     /// preparation throws if either cannot be resolved. Tracking failures after
@@ -596,9 +597,21 @@ private struct ObservationRuntime: Sendable {
 private actor ObservationRuntimePreparation {
     static let shared = ObservationRuntimePreparation()
     static let cached = Mutex<Result<ObservationRuntime, any Swift.Error>?>(nil)
+    private var preparationTask: Task<Void, any Swift.Error>?
 
     func prepare() async throws {
         guard Self.cached.withLock({ $0 }) == nil else { return }
+        if let preparationTask {
+            try await preparationTask.value
+            return
+        }
+        let task = Task { try await resolveRuntime() }
+        preparationTask = task
+        defer { preparationTask = nil }
+        try await task.value
+    }
+
+    private func resolveRuntime() async throws {
         do {
             let runtime = ABIRuntime.shared
             let type = try await runtime.swiftType(named: "Observation.ObservationTracking")
@@ -610,7 +623,9 @@ private actor ObservationRuntimePreparation {
                         named: "Observation.withObservationTracking<A>(_: () -> A, \(label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
                         as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
                         genericArguments: [.type(Bool.self)],
-                        valueABIs: [type: .opaque(named: type.name)]
+                        valueABIs: [type: .opaque(named: type.name)],
+                        in: type.image,
+                        loading: .loadedOnly
                     ))
                 } catch {
                     return .failure(error)
