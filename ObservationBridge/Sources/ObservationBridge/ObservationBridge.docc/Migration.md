@@ -6,21 +6,25 @@ Use the notes for the version you are upgrading to.
 
 ## Unreleased
 
-- Call `try await PortableObservationTracking.prepare()` during application setup
-  and await completion before starting observations that track mutations.
+- Runtime preparation is optional. Start observations synchronously; each start
+  resolves the runtime support it needs or joins preparation already in progress.
+  Keep `try await PortableObservationTracking.prepare()` during application setup
+  if you want to warm up both mutation modes.
+- `PortableObservationTracking.Error.notPrepared` has been removed. Startup
+  reports runtime resolution failures through `token.error`.
 - The start function remains nonthrowing. Inspect `token.error` if startup or
   subsequent tracking fails; a failed observation is inactive.
 - The minimum OS versions now match ABIBridge 0.8.0: iOS and Mac Catalyst 18.4,
   macOS 15.4, tvOS 18.4, watchOS 11.4, and visionOS 2.4.
 
 ```swift
-try await PortableObservationTracking.prepare()
 let token = withPortableContinuousObservation { event in
     render(model, reason: event.kind)
 }
 ```
 
-Initial-only observations using `options: []` do not require preparation. See
+Synchronous startup can block the caller while searching or joining preparation.
+Asynchronous `prepare()` performs preparation away from `MainActor`. See
 <doc:ContinuousObservation> for callback timing and failure behavior.
 
 ## v0.12.0

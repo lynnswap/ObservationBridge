@@ -15,36 +15,38 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
 
 @Suite(.serialized)
 final class ObservationScopeObserveTests {
-    init() async throws {
-        try await PortableObservationTracking.prepare()
-    }
-
+    @MainActor
     @Test
-    func unpreparedMutationObservationReturnsFailedToken() async {
-        let applied = RenderedValue(false)
-        let token = _ObservationScopeTesting.withoutPreparedRuntime {
-            withPortableContinuousObservation { _ in
-                applied.set(true)
+    func mutationObservationStartsSynchronouslyWithoutPreparation() async {
+        let model = MainActorCounterModel()
+        let rendered = RenderedValue(-1)
+        await _ObservationScopeTesting.withoutCachedRuntime {
+            let token = withPortableContinuousObservation { _ in
+                MainActor.assertIsolated()
+                rendered.set(model.value)
             }
-        }
-        #expect(!applied.value)
-        #expect(!token.isActive)
-        guard case .notPrepared? = token.error as? PortableObservationTracking.Error else {
-            Issue.record("Expected an unprepared runtime error")
-            return
-        }
+            #expect(rendered.value == 0)
+            #expect(token.isActive)
+            #expect(token.error == nil)
+            defer { token.cancel() }
 
-        let values = await token.values { applied.value }
-        #expect(!values.isActive)
-        #expect(values.snapshot().isEmpty)
-        #expect(await values.waitUntil { _ in true } == nil)
-        token.cancel()
-        #expect(token.error != nil)
+            let values = await token.values { rendered.value }
+            var cursor = ObservedValuesCursor(values)
+            #expect(await cursor.next() == 0)
+
+            model.value = 1
+            #expect(await cursor.next() == 1)
+
+            model.value = 2
+            #expect(await cursor.next() == 2)
+            #expect(token.isActive)
+            #expect(token.error == nil)
+        }
     }
 
     @Test
-    func initialOnlyObservationDoesNotRequireRuntimePreparation() {
-        _ObservationScopeTesting.withoutPreparedRuntime {
+    func initialOnlyObservationDoesNotRequireRuntimePreparation() async {
+        await _ObservationScopeTesting.withoutCachedRuntime {
             let rendered = RenderedValue(false)
             let token = withPortableContinuousObservation(options: []) { _ in
                 rendered.set(true)
@@ -55,16 +57,40 @@ final class ObservationScopeObserveTests {
         }
     }
 
+    @MainActor
     @Test
-    func preparationCanBeRepeated() async throws {
-        try await PortableObservationTracking.prepare()
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<8 {
-                group.addTask { try await PortableObservationTracking.prepare() }
+    func preparationAndSynchronousObservationCanRunConcurrently() async throws {
+        let model = MainActorCounterModel()
+        let rendered = RenderedValue(-1)
+        try await _ObservationScopeTesting.withoutCachedRuntime {
+            let preparation = Task.detached {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for _ in 0..<8 {
+                        group.addTask { try await PortableObservationTracking.prepare() }
+                    }
+                    try await group.waitForAll()
+                }
             }
-            try await group.waitForAll()
+            let token = withPortableContinuousObservation { _ in
+                MainActor.assertIsolated()
+                rendered.set(model.value)
+            }
+            #expect(rendered.value == 0)
+            #expect(token.isActive)
+            #expect(token.error == nil)
+            defer { token.cancel() }
+
+            let values = await token.values { rendered.value }
+            var cursor = ObservedValuesCursor(values)
+            #expect(await cursor.next() == 0)
+
+            model.value = 1
+            #expect(await cursor.next() == 1)
+            #expect(token.isActive)
+            #expect(token.error == nil)
+            try await preparation.value
+            #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
         }
-        #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
     }
 
     @Test
