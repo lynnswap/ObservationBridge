@@ -1,3 +1,4 @@
+import Dispatch
 import Observation
 import Synchronization
 import Testing
@@ -16,31 +17,38 @@ private final class WeakDeinitProbeModelBox: @unchecked Sendable {
 @Suite(.serialized)
 final class ObservationScopeObserveTests {
     @MainActor
-    @Test
-    func mutationObservationStartsSynchronouslyWithoutPreparation() async {
+    @Test(arguments: [PortableObservationTracking.Options.didSet, .willSet])
+    func mutationObservationStartsSynchronouslyWithoutPreparation(
+        options: PortableObservationTracking.Options
+    ) async {
         let model = MainActorCounterModel()
-        let rendered = RenderedValue(-1)
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        let changeKind: PortableObservationTracking.Event.Kind = options == .willSet ? .willSet : .didSet
         await _ObservationScopeTesting.withoutCachedRuntime {
-            let token = withPortableContinuousObservation { _ in
+            let token = withPortableContinuousObservation(options: options) { event in
                 MainActor.assertIsolated()
-                rendered.set(model.value)
+                rendered.set(ScopePass(kind: event.kind, value: model.value, isEnabled: false))
             }
-            #expect(rendered.value == 0)
+            #expect(rendered.value == ScopePass(kind: .initial, value: 0, isEnabled: false))
             #expect(token.isActive)
             #expect(token.error == nil)
             defer { token.cancel() }
 
             let values = await token.values { rendered.value }
             var cursor = ObservedValuesCursor(values)
-            #expect(await cursor.next() == 0)
+            #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
 
             model.value = 1
-            #expect(await cursor.next() == 1)
+            #expect(await cursor.next() == ScopePass(kind: changeKind, value: 1, isEnabled: false))
 
             model.value = 2
-            #expect(await cursor.next() == 2)
+            #expect(await cursor.next() == ScopePass(kind: changeKind, value: 2, isEnabled: false))
             #expect(token.isActive)
             #expect(token.error == nil)
+            token.cancel()
+            #expect(!token.isActive)
+            model.value = 3
+            #expect(rendered.value == ScopePass(kind: changeKind, value: 2, isEnabled: false))
         }
     }
 
@@ -58,37 +66,70 @@ final class ObservationScopeObserveTests {
     }
 
     @MainActor
-    @Test
-    func preparationAndSynchronousObservationCanRunConcurrently() async throws {
+    @Test(arguments: [PortableObservationTracking.Options.didSet, .willSet])
+    func synchronousObservationStartsWhilePreparationIsBetweenMutationModes(
+        options: PortableObservationTracking.Options
+    ) async throws {
         let model = MainActorCounterModel()
-        let rendered = RenderedValue(-1)
+        let rendered = RenderedValue(ScopePass(kind: .initial, value: -1, isEnabled: false))
+        let changeKind: PortableObservationTracking.Event.Kind = options == .willSet ? .willSet : .didSet
         try await _ObservationScopeTesting.withoutCachedRuntime {
-            let preparation = Task.detached {
-                try await withThrowingTaskGroup(of: Void.self) { group in
-                    for _ in 0..<8 {
-                        group.addTask { try await PortableObservationTracking.prepare() }
-                    }
-                    try await group.waitForAll()
+            let entered = Mutex(false)
+            let release = DispatchSemaphore(value: 0)
+            let releasedBeforeTimeout = Mutex<Bool?>(nil)
+            let finished = Mutex(false)
+            _ObservationScopeTesting.beforeWillSetPreparation.withLock { callback in
+                callback = {
+                    entered.withLock { $0 = true }
+                    let released = release.wait(timeout: .now() + 30) == .success
+                    releasedBeforeTimeout.withLock { $0 = released }
                 }
             }
-            let token = withPortableContinuousObservation { _ in
-                MainActor.assertIsolated()
-                rendered.set(model.value)
+            defer {
+                release.signal()
+                _ObservationScopeTesting.beforeWillSetPreparation.withLock { $0 = nil }
             }
-            #expect(rendered.value == 0)
+            let preparation = Task.detached {
+                defer { finished.withLock { $0 = true } }
+                try await PortableObservationTracking.prepare()
+            }
+            guard await waitUntilCondition(nanoseconds: 30_000_000_000, {
+                entered.withLock { $0 }
+            }) else {
+                Issue.record("Preparation did not reach the checkpoint between mutation modes")
+                release.signal()
+                try await preparation.value
+                return
+            }
+            #expect(!finished.withLock { $0 })
+
+            // didSet is prepared; willSet must be resolved on demand while
+            // the preparation operation remains held at its next mode.
+            let token = withPortableContinuousObservation(options: options) { event in
+                MainActor.assertIsolated()
+                rendered.set(ScopePass(kind: event.kind, value: model.value, isEnabled: false))
+            }
+            #expect(rendered.value == ScopePass(kind: .initial, value: 0, isEnabled: false))
             #expect(token.isActive)
             #expect(token.error == nil)
             defer { token.cancel() }
 
             let values = await token.values { rendered.value }
             var cursor = ObservedValuesCursor(values)
-            #expect(await cursor.next() == 0)
+            #expect(await cursor.next() == ScopePass(kind: .initial, value: 0, isEnabled: false))
 
             model.value = 1
-            #expect(await cursor.next() == 1)
+            #expect(await cursor.next() == ScopePass(kind: changeKind, value: 1, isEnabled: false))
             #expect(token.isActive)
             #expect(token.error == nil)
+            #expect(!finished.withLock { $0 })
+
+            token.cancel()
+            #expect(!token.isActive)
+            #expect(!finished.withLock { $0 })
+            release.signal()
             try await preparation.value
+            #expect(releasedBeforeTimeout.withLock { $0 } == true)
             #expect(_ObservationScopeTesting.hasRequiredObservationTrackingSPISymbols)
         }
     }

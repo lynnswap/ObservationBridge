@@ -602,6 +602,7 @@ private enum ObservationRuntimePreparation {
     static func prepare() async throws {
         try await ABIRuntime.shared.prepare { runtime in
             let didSet = Result { try resolve(.didSet, using: runtime) }
+            _ObservationScopeTesting.beforeWillSetPreparation.withLock { $0 }?()
             let willSet = Result { try resolve(.willSet, using: runtime) }
             #if compiler(>=6.4)
             if #available(anyAppleOS 27.0, *) {
@@ -623,10 +624,10 @@ private enum ObservationRuntimePreparation {
 
         // ABIBridge joins its captured index and ABI work. Keep loader and Swift
         // metadata initialization outside our cache lock so they can reenter.
-        let type = try runtime.swiftType(named: "Observation.ObservationTracking")
-        let changed = try type.getter(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
-        let cancel = try type.method(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
-        let function = try runtime.swiftFunction(
+        let type = try runtime.resolveSwiftTypeAndWait(named: "Observation.ObservationTracking")
+        let changed = try type.resolveGetterAndWait(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
+        let cancel = try type.resolveMethodAndWait(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
+        let function = try runtime.resolveSwiftFunctionAndWait(
             named: "Observation.withObservationTracking<A>(_: () -> A, \(mode.label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
             as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
             genericArguments: [.type(Bool.self)],
@@ -661,6 +662,7 @@ private var canUseWillSetObservationTrackingSPI: Bool {
 enum _ObservationScopeTesting {
     static let forceObservationTrackingSPIUnavailable = Mutex(false)
     static let forceDidSetObservationTrackingSPIUnavailable = Mutex(false)
+    static let beforeWillSetPreparation = Mutex<(@Sendable () -> Void)?>(nil)
 
     static var hasRequiredObservationTrackingSPISymbols: Bool {
         missingRequiredObservationTrackingSPISymbols.isEmpty
@@ -686,6 +688,7 @@ enum _ObservationScopeTesting {
             stored = [:]
             return runtime
         }
+        ABIRuntime.shared.removeCachedResults()
         defer {
             let displaced = ObservationRuntimePreparation.cached.withLock { stored in
                 let displaced = stored
