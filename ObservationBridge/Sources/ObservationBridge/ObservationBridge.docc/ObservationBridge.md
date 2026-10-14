@@ -4,12 +4,17 @@ Write continuous Observation callbacks with a portable `withContinuousObservatio
 
 ## Overview
 
-Await ``PortableObservationTracking/prepare()`` once during application setup.
-Then start an observation with ``withPortableContinuousObservation(options:apply:_:)``
+Start an observation with ``withPortableContinuousObservation(options:apply:_:)``
 and read the observable properties you want to track in its callback. Retain the
 returned ``PortableObservationTracking/Token`` for as long as you need updates.
 The callback inherits the caller's actor context and observes subsequent changes
 with the `.didSet` option by default.
+
+Runtime preparation happens automatically when needed. You can optionally call
+``PortableObservationTracking/prepare()`` during asynchronous application setup
+to warm up the runtime. An observation can start before preparation finishes;
+synchronous startup searches for its runtime support or joins the running work
+it needs.
 
 ObservationBridge requires Swift 6.3 or later and supports iOS 18.4+, Mac Catalyst
 18.4+, macOS 15.4+, tvOS 18.4+, watchOS 11.4+, and visionOS 2.4+. Add

@@ -27,8 +27,9 @@ import Synchronization
 ///   - currentIsolation: The caller's actor isolation, inferred by default.
 /// - Returns: A token that keeps the observation alive until it is cancelled or
 ///   its last copy is released. If startup fails, the token is inactive and its
-///   `error` contains the failure. Call `PortableObservationTracking.prepare()`
-///   before starting mutation observations.
+///   `error` contains the failure. Runtime lookup and ABI preparation run on
+///   demand and may block the caller. Use `PortableObservationTracking.prepare()`
+///   to start this work ahead of time on an independent worker.
 
 public func withPortableContinuousObservation(
     options: PortableObservationTracking.Options = .didSet,
@@ -47,14 +48,16 @@ private func startPortableContinuousObservation(
     apply: @escaping @isolated(any) @Sendable (borrowing PortableObservationTracking.Event) -> Void,
     currentIsolation: isolated (any Actor)?
 ) -> PortableObservationTracking.Token {
-    let preparation = ObservationRuntimePreparation.cached.withLock { $0 }
+    let preparation: Result<ObservationRuntime, any Swift.Error>? =
+        requestedRuntimeTrackingMode(for: options).map { mode in
+            Result { try ObservationRuntimePreparation.resolve(mode) }
+        }
     let delivery = ObservationDelivery()
     let observationIsolation = apply.isolation ?? currentIsolation
     let pipeline = ObservationScopeImplicitTrackingPipeline(apply)
 
     #if compiler(>=6.4)
     if #available(anyAppleOS 27.0, *),
-        preparation != nil,
         runtimeTrackingMode(for: options) == nil,
         let nativeOptions = nativeContinuousObservationOptions(for: options)
     {
@@ -77,17 +80,7 @@ private func startPortableContinuousObservation(
     delivery.bind(to: slot)
     let token = PortableObservationTracking.Token(slot: slot, delivery: delivery)
     do {
-        if !options.intersection([.didSet, .willSet]).isEmpty {
-            guard let preparation else {
-                throw PortableObservationTracking.Error.notPrepared
-            }
-            let runtime = try preparation.get()
-            if options.contains(.didSet) {
-                _ = try runtime.didSet.get()
-            } else {
-                _ = try runtime.willSet.get()
-            }
-        }
+        _ = try preparation?.get()
     } catch {
         slot.fail(error)
         return token
@@ -462,20 +455,16 @@ private func trackRuntimeScopedObservationInCurrentContext(
     }
 
     do {
-        guard let preparation = ObservationRuntimePreparation.cached.withLock({ $0 }) else {
-            throw PortableObservationTracking.Error.notPrepared
-        }
-        let runtime = try preparation.get()
+        let runtime = try ObservationRuntimePreparation.resolve(mode)
         guard let handler = try slot.runtimeTrackingHandler({
             try runtime.handler(kind: mode == .didSet ? .didSet : .willSet, slot: slot)
         }) else {
             return complete(shouldContinue: false, didApply: false)
         }
-        let function = try (mode == .didSet ? runtime.didSet : runtime.willSet).get()
         let didApply = try unsafe NativeSwiftClosure<() -> Bool>.withUnsafeNonescaping({
             pipeline.apply(event: event)
         }) { apply in
-            try unsafe function.unsafeInvoke(apply, handler)
+            try unsafe runtime.function.unsafeInvoke(apply, handler)
         }
         return complete(shouldContinue: slot.isActive, didApply: didApply)
     } catch {
@@ -484,21 +473,36 @@ private func trackRuntimeScopedObservationInCurrentContext(
     }
 }
 
-private enum RuntimeScopedTrackingMode: Equatable {
+private enum RuntimeScopedTrackingMode: Hashable, Sendable {
     case willSet
     case didSet
+
+    var label: String {
+        self == .didSet ? "didSet" : "willSet"
+    }
 }
 
-private func runtimeTrackingMode(for options: PortableObservationTracking.Options) -> RuntimeScopedTrackingMode? {
+private func requestedRuntimeTrackingMode(for options: PortableObservationTracking.Options) -> RuntimeScopedTrackingMode? {
     if options.contains(.didSet) {
-        return canUseDidSetObservationTrackingSPI ? .didSet : nil
+        return .didSet
     }
 
     if options.contains(.willSet) {
-        return canUseWillSetObservationTrackingSPI ? .willSet : nil
+        return .willSet
     }
 
     return nil
+}
+
+private func runtimeTrackingMode(for options: PortableObservationTracking.Options) -> RuntimeScopedTrackingMode? {
+    switch requestedRuntimeTrackingMode(for: options) {
+    case .didSet:
+        return canUseDidSetObservationTrackingSPI ? .didSet : nil
+    case .willSet:
+        return canUseWillSetObservationTrackingSPI ? .willSet : nil
+    case nil:
+        return nil
+    }
 }
 
 private func makeScopedObservationEvent(
@@ -533,23 +537,22 @@ private func withObservationIsolation<T: Sendable>(
 extension PortableObservationTracking {
     /// A failure starting or running a portable observation.
     public enum Error: Swift.Error, Sendable {
-        /// Call `prepare()` before starting an observation that tracks mutations.
-        case notPrepared
         /// Reading the triggering key path and cancelling its tracking both failed.
         case cancellationFailed(operation: any Swift.Error, cancellation: any Swift.Error)
     }
 
-    /// Prepares the Observation runtime before synchronous observation starts.
+    /// Prepares the Observation runtime ahead of synchronous observation starts.
     ///
-    /// Call once during application setup and await completion before creating
-    /// mutation observations. Concurrent callers share the in-flight preparation;
-    /// repeated successful calls reuse the prepared handles.
+    /// Preparation is optional and runs on an independent worker. Synchronous
+    /// observations perform missing work or join only the required lookup and ABI
+    /// preparation, without waiting for this entire operation. Repeated successful
+    /// calls reuse the prepared handles.
     /// On OS 27+, unavailable exact SPI selects the native liveness fallback.
     /// On earlier versions, both mutation event implementations must be available;
     /// preparation throws if either cannot be resolved. Tracking failures after
-    /// preparation stop the observation and are available through `Token.error`.
+    /// startup stop the observation and are available through `Token.error`.
     public static func prepare() async throws {
-        try await ObservationRuntimePreparation.shared.prepare()
+        try await ObservationRuntimePreparation.prepare()
     }
 }
 
@@ -559,8 +562,7 @@ private struct ObservationRuntime: Sendable {
     typealias TrackingFunction = NativeSwiftFunction<(NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool>
 
     let type: NativeSwiftType
-    let didSet: Result<TrackingFunction, any Swift.Error>
-    let willSet: Result<TrackingFunction, any Swift.Error>
+    let function: TrackingFunction
     let changed: NativeSwiftMethod<() -> AnyKeyPath?>
     let cancel: NativeSwiftMethod<() -> Void>
 
@@ -594,121 +596,107 @@ private struct ObservationRuntime: Sendable {
     }
 }
 
-private actor ObservationRuntimePreparation {
-    static let shared = ObservationRuntimePreparation()
-    static let cached = Mutex<Result<ObservationRuntime, any Swift.Error>?>(nil)
-    private var preparationTask: Task<Void, any Swift.Error>?
+private enum ObservationRuntimePreparation {
+    static let cached = Mutex<[RuntimeScopedTrackingMode: ObservationRuntime]>([:])
 
-    func prepare() async throws {
-        guard Self.cached.withLock({ $0 }) == nil else { return }
-        if let preparationTask {
-            try await preparationTask.value
-            return
-        }
-        let task = Task { try await resolveRuntime() }
-        preparationTask = task
-        defer { preparationTask = nil }
-        try await task.value
-    }
-
-    private func resolveRuntime() async throws {
-        do {
-            let runtime = ABIRuntime.shared
-            let type = try await runtime.swiftType(named: "Observation.ObservationTracking")
-            let changed = try await type.getter(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
-            let cancel = try await type.method(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
-            func resolve(_ label: String) async -> Result<ObservationRuntime.TrackingFunction, any Swift.Error> {
-                do {
-                    return .success(try await runtime.swiftFunction(
-                        named: "Observation.withObservationTracking<A>(_: () -> A, \(label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
-                        as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
-                        genericArguments: [.type(Bool.self)],
-                        valueABIs: [type: .opaque(named: type.name)],
-                        in: type.image,
-                        loading: .loadedOnly
-                    ))
-                } catch {
-                    return .failure(error)
-                }
-            }
-            let didSet = await resolve("didSet")
-            let willSet = await resolve("willSet")
-            #if compiler(>=6.4)
-            let hasNativeFallback: Bool
-            if #available(anyAppleOS 27.0, *) {
-                hasNativeFallback = true
-            } else {
-                hasNativeFallback = false
-            }
-            #else
-            let hasNativeFallback = false
-            #endif
-            if !hasNativeFallback {
-                _ = try didSet.get()
-                _ = try willSet.get()
-            }
-            Self.cached.withLock { $0 = .success(ObservationRuntime(
-                type: type, didSet: didSet, willSet: willSet, changed: changed, cancel: cancel
-            )) }
-        } catch {
+    static func prepare() async throws {
+        try await ABIRuntime.shared.prepare { runtime in
+            let didSet = Result { try resolve(.didSet, using: runtime) }
+            _ObservationScopeTesting.beforeWillSetPreparation.withLock { $0 }?()
+            let willSet = Result { try resolve(.willSet, using: runtime) }
             #if compiler(>=6.4)
             if #available(anyAppleOS 27.0, *) {
-                Self.cached.withLock { $0 = .failure(error) }
                 return
             }
             #endif
-            throw error
+            _ = try didSet.get()
+            _ = try willSet.get()
         }
     }
-}
 
-private var preparedObservationRuntime: ObservationRuntime? {
-    try? ObservationRuntimePreparation.cached.withLock { $0 }?.get()
+    static func resolve(
+        _ mode: RuntimeScopedTrackingMode,
+        using runtime: ABIRuntime = .shared
+    ) throws -> ObservationRuntime {
+        if let prepared = cached.withLock({ $0[mode] }) {
+            return prepared
+        }
+
+        // ABIBridge joins its captured index and ABI work. Keep loader and Swift
+        // metadata initialization outside our cache lock so they can reenter.
+        let type = try runtime.resolveSwiftTypeAndWait(named: "Observation.ObservationTracking")
+        let changed = try type.resolveGetterAndWait(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
+        let cancel = try type.resolveMethodAndWait(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
+        let function = try runtime.resolveSwiftFunctionAndWait(
+            named: "Observation.withObservationTracking<A>(_: () -> A, \(mode.label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
+            as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
+            genericArguments: [.type(Bool.self)],
+            valueABIs: [type: .opaque(named: type.name)],
+            in: type.image,
+            loading: .loadedOnly
+        )
+        let prepared = ObservationRuntime(type: type, function: function, changed: changed, cancel: cancel)
+        return withExtendedLifetime(prepared) {
+            cached.withLock { stored in
+                if let existing = stored[mode] {
+                    return existing
+                }
+                stored[mode] = prepared
+                return prepared
+            }
+        }
+    }
 }
 
 private var canUseDidSetObservationTrackingSPI: Bool {
     !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
         && !_ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock({ $0 })
-        && preparedObservationRuntime.map { if case .success = $0.didSet { true } else { false } } == true
+        && ObservationRuntimePreparation.cached.withLock { $0[.didSet] != nil }
 }
 
 private var canUseWillSetObservationTrackingSPI: Bool {
     !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
-        && preparedObservationRuntime.map { if case .success = $0.willSet { true } else { false } } == true
+        && ObservationRuntimePreparation.cached.withLock { $0[.willSet] != nil }
 }
 
 enum _ObservationScopeTesting {
     static let forceObservationTrackingSPIUnavailable = Mutex(false)
     static let forceDidSetObservationTrackingSPIUnavailable = Mutex(false)
+    static let beforeWillSetPreparation = Mutex<(@Sendable () -> Void)?>(nil)
 
     static var hasRequiredObservationTrackingSPISymbols: Bool {
-        guard let runtime = preparedObservationRuntime else { return false }
-        if case .success = runtime.didSet, case .success = runtime.willSet { return true }
-        return false
+        missingRequiredObservationTrackingSPISymbols.isEmpty
     }
 
     static var missingRequiredObservationTrackingSPISymbols: [String] {
-        guard let preparation = ObservationRuntimePreparation.cached.withLock({ $0 }) else {
-            return ["Observation runtime has not been prepared"]
-        }
-        switch preparation {
-        case .failure(let error):
-            return [String(describing: error)]
-        case .success(let runtime):
-            var missing: [String] = []
-            if case .failure = runtime.didSet { missing.append("withObservationTracking(_:didSet:)") }
-            if case .failure = runtime.willSet { missing.append("withObservationTracking(_:willSet:)") }
-            return missing
+        [RuntimeScopedTrackingMode.didSet, .willSet].compactMap { mode in
+            do {
+                _ = try ObservationRuntimePreparation.resolve(mode)
+                return nil
+            } catch {
+                return "withObservationTracking(_:\(mode.label):): \(error)"
+            }
         }
     }
 
-    static func withoutPreparedRuntime<Result>(_ operation: () throws -> Result) rethrows -> Result {
+    static func withoutCachedRuntime<Result>(
+        _ operation: () async throws -> Result,
+        isolation: isolated (any Actor)? = #isolation
+    ) async rethrows -> Result {
         let runtime = ObservationRuntimePreparation.cached.withLock { stored in
             let runtime = stored
-            stored = nil
+            stored = [:]
             return runtime
         }
-        defer { ObservationRuntimePreparation.cached.withLock { $0 = runtime } }
-        return try operation()
+        ABIRuntime.shared.removeCachedResults()
+        defer {
+            let displaced = ObservationRuntimePreparation.cached.withLock { stored in
+                let displaced = stored
+                stored = runtime
+                return displaced
+            }
+            withExtendedLifetime(displaced) {}
+        }
+        return try await operation()
     }
 }
