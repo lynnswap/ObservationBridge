@@ -624,14 +624,20 @@ private enum ObservationRuntimePreparation {
 
         // ABIBridge joins its captured index and ABI work. Keep loader and Swift
         // metadata initialization outside our cache lock so they can reenter.
-        let type = try runtime.resolveSwiftTypeAndWait(named: "Observation.ObservationTracking")
-        let changed = try type.resolveGetterAndWait(named: "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name))
-        let cancel = try type.resolveMethodAndWait(named: "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name))
-        let function = try runtime.resolveSwiftFunctionAndWait(
-            named: "Observation.withObservationTracking<A>(_: () -> A, \(mode.label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
-            as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
-            genericArguments: [.type(Bool.self)],
-            valueABIs: [type: .opaque(named: type.name)],
+        let type = try runtime.resolveAndWait(.swift(.type("Observation.ObservationTracking")))
+        let changed = try type.resolveAndWait(.swift(.getter(
+            "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name)
+        )))
+        let cancel = try type.resolveAndWait(.swift(.method(
+            "cancel()", as: (() -> Void).self, receiverABI: .opaque(named: type.name)
+        )))
+        let function = try runtime.resolveAndWait(
+            .swift(.function(
+                "Observation.withObservationTracking<A>(_: () -> A, \(mode.label): @Sendable (Observation.ObservationTracking) -> ()) -> A",
+                as: ((NativeSwiftClosure<() -> Bool>, ObservationRuntimeTrackingHandler) -> Bool).self,
+                genericArguments: [.type(Bool.self)],
+                valueABIs: [type: .opaque(named: type.name)]
+            )),
             in: type.image,
             loading: .loadedOnly
         )
