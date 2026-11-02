@@ -597,7 +597,7 @@ private struct ObservationRuntime: Sendable {
 }
 
 private enum ObservationRuntimePreparation {
-    static let cached = Mutex<[RuntimeScopedTrackingMode: ObservationRuntime]>([:])
+    static let availableModes = Mutex<Set<RuntimeScopedTrackingMode>>([])
 
     static func prepare() async throws {
         try await ABIRuntime.shared.prepare { runtime in
@@ -618,12 +618,7 @@ private enum ObservationRuntimePreparation {
         _ mode: RuntimeScopedTrackingMode,
         using runtime: ABIRuntime = .shared
     ) throws -> ObservationRuntime {
-        if let prepared = cached.withLock({ $0[mode] }) {
-            return prepared
-        }
-
-        // ABIBridge joins its captured index and ABI work. Keep loader and Swift
-        // metadata initialization outside our cache lock so they can reenter.
+        // ABIBridge owns completed resolutions; only SPI availability is kept here.
         let type = try runtime.resolveAndWait(.swift(.type("Observation.ObservationTracking")))
         let changed = try type.resolveAndWait(.swift(.getter(
             "changed", as: (() -> AnyKeyPath?).self, receiverABI: .opaque(named: type.name)
@@ -641,28 +636,20 @@ private enum ObservationRuntimePreparation {
             in: type.image,
             loading: .loadedOnly
         )
-        let prepared = ObservationRuntime(type: type, function: function, changed: changed, cancel: cancel)
-        return withExtendedLifetime(prepared) {
-            cached.withLock { stored in
-                if let existing = stored[mode] {
-                    return existing
-                }
-                stored[mode] = prepared
-                return prepared
-            }
-        }
+        availableModes.withLock { $0.insert(mode) }
+        return ObservationRuntime(type: type, function: function, changed: changed, cancel: cancel)
     }
 }
 
 private var canUseDidSetObservationTrackingSPI: Bool {
     !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
         && !_ObservationScopeTesting.forceDidSetObservationTrackingSPIUnavailable.withLock({ $0 })
-        && ObservationRuntimePreparation.cached.withLock { $0[.didSet] != nil }
+        && ObservationRuntimePreparation.availableModes.withLock { $0.contains(.didSet) }
 }
 
 private var canUseWillSetObservationTrackingSPI: Bool {
     !_ObservationScopeTesting.forceObservationTrackingSPIUnavailable.withLock({ $0 })
-        && ObservationRuntimePreparation.cached.withLock { $0[.willSet] != nil }
+        && ObservationRuntimePreparation.availableModes.withLock { $0.contains(.willSet) }
 }
 
 enum _ObservationScopeTesting {
@@ -689,19 +676,14 @@ enum _ObservationScopeTesting {
         _ operation: () async throws -> Result,
         isolation: isolated (any Actor)? = #isolation
     ) async rethrows -> Result {
-        let runtime = ObservationRuntimePreparation.cached.withLock { stored in
-            let runtime = stored
-            stored = [:]
-            return runtime
+        let availableModes = ObservationRuntimePreparation.availableModes.withLock { modes in
+            let previous = modes
+            modes = []
+            return previous
         }
         ABIRuntime.shared.removeCachedResults()
         defer {
-            let displaced = ObservationRuntimePreparation.cached.withLock { stored in
-                let displaced = stored
-                stored = runtime
-                return displaced
-            }
-            withExtendedLifetime(displaced) {}
+            ObservationRuntimePreparation.availableModes.withLock { $0 = availableModes }
         }
         return try await operation()
     }
