@@ -29,7 +29,7 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.2"),
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.3"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0")
     ],
     targets: [
