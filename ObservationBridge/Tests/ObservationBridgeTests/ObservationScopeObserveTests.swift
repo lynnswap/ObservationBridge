@@ -780,8 +780,13 @@ final class ObservationScopeObserveTests {
         )
         defer { slot.cancel() }
 
-        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value))
-        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.secondaryValue))
+        let tracking = slot.armTracking()!
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
+        slot.emitChange(
+            kind: .didSet,
+            triggers: .keyPath(\CounterModel.secondaryValue),
+            tracking: tracking
+        )
 
         let event = await slot.waitForChange()
         #expect(event?.kind == .didSet)
@@ -799,13 +804,34 @@ final class ObservationScopeObserveTests {
         )
         defer { slot.cancel() }
 
-        slot.emitChange(kind: .willSet, triggers: .keyPath(\CounterModel.value))
-        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value))
+        let tracking = slot.armTracking()!
+        slot.emitChange(kind: .willSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
 
         let event = await slot.waitForChange()
 
         #expect(event?.kind == .didSet)
         #expect(event?.triggers.contains(\CounterModel.value) == true)
+    }
+
+    @Test
+    func onlyTheArmedAndPreviousTrackingsStartAPass() {
+        let slot = ObservationScopeSlot(
+            options: .didSet,
+            observationIsolation: nil,
+            delivery: ObservationDelivery(),
+            pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
+        )
+        defer { slot.cancel() }
+
+        let replacedTwice = slot.armTracking()!
+        let previous = slot.armTracking()!
+        let armed = slot.armTracking()!
+        let triggers = ObservationEventTriggers.keyPath(\CounterModel.value)
+
+        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: replacedTwice) == false)
+        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: previous))
+        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: armed))
     }
 
     @Test

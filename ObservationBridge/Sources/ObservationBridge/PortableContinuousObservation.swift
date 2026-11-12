@@ -456,11 +456,14 @@ private func trackRuntimeScopedObservationInCurrentContext(
 
     do {
         let runtime = try ObservationRuntimePreparation.resolve(mode)
-        guard let handler = try slot.runtimeTrackingHandler({
-            try runtime.handler(kind: mode == .didSet ? .didSet : .willSet, slot: slot)
-        }) else {
+        guard let tracking = slot.armTracking() else {
             return complete(shouldContinue: false, didApply: false)
         }
+        let handler = try runtime.handler(
+            kind: mode == .didSet ? .didSet : .willSet,
+            slot: slot,
+            tracking: tracking
+        )
         let didApply = try unsafe NativeSwiftClosure<() -> Bool>.withUnsafeNonescaping({
             pipeline.apply(event: event)
         }) { apply in
@@ -568,7 +571,8 @@ private struct ObservationRuntime: Sendable {
 
     func handler(
         kind: PortableObservationTracking.Event.Kind,
-        slot: ObservationScopeSlot
+        slot: ObservationScopeSlot,
+        tracking number: UInt64
     ) throws -> ObservationRuntimeTrackingHandler {
         try ObservationRuntimeTrackingHandler { [weak slot, changed, cancel] tracking in
             let keyPath: AnyKeyPath?
@@ -588,7 +592,7 @@ private struct ObservationRuntime: Sendable {
             }
             do {
                 try unsafe cancel.unsafeInvoke(on: tracking)
-                slot?.emitChange(kind: kind, triggers: .keyPath(keyPath))
+                slot?.emitChange(kind: kind, triggers: .keyPath(keyPath), tracking: number)
             } catch {
                 slot?.fail(error)
             }

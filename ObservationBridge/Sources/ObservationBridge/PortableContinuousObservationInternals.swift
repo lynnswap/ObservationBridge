@@ -108,7 +108,8 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var waiters = ObservationScopeWaiters()
         var task: Task<Void, Never>?
         var pipeline: (any ObservationScopePipeline)?
-        var runtimeTrackingHandler: ObservationRuntimeTrackingHandler?
+        // The number of trackings installed so far. The last one is armed.
+        var trackingCount: UInt64 = 0
 
         mutating func storePendingEvent(_ event: ObservationScopePendingEvent) {
             pendingEvent = event
@@ -234,15 +235,13 @@ final class ObservationScopeSlot: @unchecked Sendable {
         start(isolation: nil)
     }
 
-    func runtimeTrackingHandler(
-        _ create: () throws -> ObservationRuntimeTrackingHandler
-    ) rethrows -> ObservationRuntimeTrackingHandler? {
-        try state.withLock { state in
+    /// Counts the tracking about to be installed and returns its number, or
+    /// nil after cancellation.
+    func armTracking() -> UInt64? {
+        state.withLock { state in
             guard !state.isCancelled else { return nil }
-            if let handler = state.runtimeTrackingHandler { return handler }
-            let handler = try create()
-            state.runtimeTrackingHandler = handler
-            return handler
+            state.trackingCount += 1
+            return state.trackingCount
         }
     }
 
@@ -260,7 +259,6 @@ final class ObservationScopeSlot: @unchecked Sendable {
             state.isCancelled = true
             state.pendingEvent = nil
             state.pipeline = nil
-            state.runtimeTrackingHandler = nil
             let waiters = state.waiters.takeAll()
             let task = state.task
             state.task = nil
@@ -280,14 +278,24 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancellation.task?.cancel()
     }
 
+    /// Records a change that the handler of `tracking` reported.
+    ///
+    /// The registrar can call a handler again from an overlapping mutation,
+    /// after the pass it started has installed the next tracking. Such a
+    /// mutation reaches only the tracking installed before that pass, so the
+    /// armed tracking and the one before it start a pass, as every callback
+    /// does in Swift's `withContinuousObservation`. A pass started by an older
+    /// tracking would only leave one more tracking installed, and the number
+    /// of installed trackings would grow with every overlapping mutation.
     @discardableResult
     func emitChange(
         kind: PortableObservationTracking.Event.Kind,
-        triggers: ObservationEventTriggers
+        triggers: ObservationEventTriggers,
+        tracking: UInt64
     ) -> Bool {
         let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
-            guard !state.isCancelled else {
+            guard !state.isCancelled, tracking &+ 1 >= state.trackingCount else {
                 return (false, .empty)
             }
 
