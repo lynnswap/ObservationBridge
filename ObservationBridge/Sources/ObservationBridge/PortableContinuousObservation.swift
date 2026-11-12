@@ -141,7 +141,7 @@ private func runRuntimeScopedObservationLoop(
 
         guard await trackRuntimeScopedObservation(
             event: pendingEvent,
-            mode: mode,
+            mode: pendingEvent.installsTracking ? mode : nil,
             isolation: isolation,
             slot: slot
         ) else {
@@ -203,7 +203,7 @@ func runRuntimeScopedObservationLoopAfterInitialPass(
 
         guard await trackRuntimeScopedObservation(
             event: pendingEvent,
-            mode: mode,
+            mode: pendingEvent.installsTracking ? mode : nil,
             isolation: isolation,
             slot: slot
         ) else {

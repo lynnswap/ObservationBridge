@@ -21,6 +21,8 @@ protocol ObservationScopePipeline: Sendable {
 struct ObservationScopePendingEvent: Sendable {
     let kind: PortableObservationTracking.Event.Kind
     var triggers: ObservationEventTriggers
+    /// Whether the pass that delivers the event installs the next tracking.
+    var installsTracking = true
 
     static let initial = ObservationScopePendingEvent(kind: .initial, triggers: .none)
 }
@@ -112,6 +114,10 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var trackingCount: UInt64 = 0
 
         mutating func storePendingEvent(_ event: ObservationScopePendingEvent) {
+            var event = event
+            if pendingEvent?.installsTracking == true {
+                event.installsTracking = true
+            }
             pendingEvent = event
         }
 
@@ -278,26 +284,28 @@ final class ObservationScopeSlot: @unchecked Sendable {
         cancellation.task?.cancel()
     }
 
-    /// Records a change that the handler of `tracking` reported.
+    /// Records a change that the handler of `tracking` reported. Every
+    /// callback delivers its event, as in Swift's `withContinuousObservation`.
     ///
     /// The registrar can call a handler again from an overlapping mutation,
-    /// after the pass it started has installed the next tracking. Such a
-    /// mutation reaches only the tracking installed before that pass, so the
-    /// armed tracking and the one before it start a pass, as every callback
-    /// does in Swift's `withContinuousObservation`. A pass started by an older
-    /// tracking would only leave one more tracking installed, and the number
-    /// of installed trackings would grow with every overlapping mutation.
+    /// after the pass it started has installed the next tracking. A mutation
+    /// that overlaps a pass reaches only the tracking installed before it, so
+    /// a callback of the armed tracking or of the one before it installs the
+    /// next tracking. A callback of an older tracking keeps the armed one:
+    /// installing another would leave both installed, and overlapping
+    /// mutations would multiply the installed trackings without bound.
     @discardableResult
     func emitChange(
         kind: PortableObservationTracking.Event.Kind,
         triggers: ObservationEventTriggers,
         tracking: UInt64
     ) -> Bool {
-        let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
+        var event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
-            guard !state.isCancelled, tracking &+ 1 >= state.trackingCount else {
+            guard !state.isCancelled else {
                 return (false, .empty)
             }
+            event.installsTracking = tracking &+ 1 >= state.trackingCount
 
             state.storePendingEvent(event)
             return (true, state.waiters.takeAll())

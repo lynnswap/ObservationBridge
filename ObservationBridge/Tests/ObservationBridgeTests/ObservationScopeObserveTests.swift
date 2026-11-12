@@ -815,7 +815,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func onlyTheArmedAndPreviousTrackingsStartAPass() {
+    func trackingReplacedTwiceDeliversItsEventWithoutInstalling() async {
         let slot = ObservationScopeSlot(
             options: .didSet,
             observationIsolation: nil,
@@ -826,12 +826,24 @@ final class ObservationScopeObserveTests {
 
         let replacedTwice = slot.armTracking()!
         let previous = slot.armTracking()!
-        let armed = slot.armTracking()!
-        let triggers = ObservationEventTriggers.keyPath(\CounterModel.value)
+        _ = slot.armTracking()
 
-        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: replacedTwice) == false)
-        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: previous))
-        #expect(slot.emitChange(kind: .didSet, triggers: triggers, tracking: armed))
+        slot.emitChange(
+            kind: .didSet,
+            triggers: .keyPath(\CounterModel.secondaryValue),
+            tracking: replacedTwice
+        )
+        let late = await slot.waitForChange()
+        #expect(late?.triggers.contains(\CounterModel.secondaryValue) == true)
+        #expect(late?.installsTracking == false)
+
+        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: previous)
+        slot.emitChange(
+            kind: .didSet,
+            triggers: .keyPath(\CounterModel.secondaryValue),
+            tracking: replacedTwice
+        )
+        #expect(await slot.waitForChange()?.installsTracking == true)
     }
 
     @Test
