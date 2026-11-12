@@ -1,3 +1,4 @@
+import Observation
 import Synchronization
 
 #if canImport(_ObservationBridgeBenchmarkSupport)
@@ -21,8 +22,6 @@ protocol ObservationScopePipeline: Sendable {
 struct ObservationScopePendingEvent: Sendable {
     let kind: PortableObservationTracking.Event.Kind
     var triggers: ObservationEventTriggers
-    /// Whether the pass that delivers the event installs the next tracking.
-    var installsTracking = true
 
     static let initial = ObservationScopePendingEvent(kind: .initial, triggers: .none)
 }
@@ -101,6 +100,38 @@ struct ObservationScopeImplicitTrackingPipeline: ObservationScopePipeline, @unch
     }
 }
 
+/// A property that every tracking of one observation reads.
+///
+/// The registrar can call a tracking's handler again from an overlapping
+/// mutation, after the pass it started has installed the next tracking. The
+/// pass that the late callback starts replaces a tracking that has not fired,
+/// and the Observation runtime hands out a tracking only in its handler. A
+/// mutation of this property calls the handler of every tracking still
+/// installed, where the replaced ones cancel themselves. Left installed, they
+/// would each start a pass on the next mutation, and overlapping mutations
+/// would multiply them without bound.
+final class ObservationTrackingSweep: Observable, Sendable {
+    /// The tracking that a sweep on the current task keeps.
+    @TaskLocal static var keptTracking: UInt64?
+
+    private let registrar = ObservationRegistrar()
+    private var mark: Void { () }
+
+    static func isMark(_ keyPath: AnyKeyPath?) -> Bool {
+        keyPath == \ObservationTrackingSweep.mark
+    }
+
+    func access() {
+        registrar.access(self, keyPath: \.mark)
+    }
+
+    func cancelTrackings(except number: UInt64) {
+        Self.$keptTracking.withValue(number) {
+            registrar.withMutation(of: self, keyPath: \.mark) {}
+        }
+    }
+}
+
 // Shared by registrar callbacks, observation tasks, and explicit scope cancellation.
 // Mutable lifecycle state is protected by `state`; the typed apply closure is erased above.
 final class ObservationScopeSlot: @unchecked Sendable {
@@ -112,12 +143,10 @@ final class ObservationScopeSlot: @unchecked Sendable {
         var pipeline: (any ObservationScopePipeline)?
         // The number of trackings installed so far. The last one is armed.
         var trackingCount: UInt64 = 0
+        // Whether the armed tracking's handler ran, which cancels it.
+        var armedTrackingFired = true
 
         mutating func storePendingEvent(_ event: ObservationScopePendingEvent) {
-            var event = event
-            if pendingEvent?.installsTracking == true {
-                event.installsTracking = true
-            }
             pendingEvent = event
         }
 
@@ -152,6 +181,7 @@ final class ObservationScopeSlot: @unchecked Sendable {
     let options: PortableObservationTracking.Options
     let observationIsolation: (any Actor)?
     let delivery: ObservationDelivery
+    let trackingSweep = ObservationTrackingSweep()
     private let state: Mutex<State>
 
     var isActive: Bool {
@@ -241,13 +271,23 @@ final class ObservationScopeSlot: @unchecked Sendable {
         start(isolation: nil)
     }
 
-    /// Counts the tracking about to be installed and returns its number, or
-    /// nil after cancellation.
-    func armTracking() -> UInt64? {
+    struct ArmedTracking {
+        let number: UInt64
+        /// Whether the tracking it replaces is still installed.
+        let replacesUnfiredTracking: Bool
+    }
+
+    /// Arms the tracking about to be installed, or returns nil after
+    /// cancellation.
+    func armTracking() -> ArmedTracking? {
         state.withLock { state in
             guard !state.isCancelled else { return nil }
             state.trackingCount += 1
-            return state.trackingCount
+            defer { state.armedTrackingFired = false }
+            return ArmedTracking(
+                number: state.trackingCount,
+                replacesUnfiredTracking: !state.armedTrackingFired
+            )
         }
     }
 
@@ -285,27 +325,21 @@ final class ObservationScopeSlot: @unchecked Sendable {
     }
 
     /// Records a change that the handler of `tracking` reported. Every
-    /// callback delivers its event, as in Swift's `withContinuousObservation`.
-    ///
-    /// The registrar can call a handler again from an overlapping mutation,
-    /// after the pass it started has installed the next tracking. A mutation
-    /// that overlaps a pass reaches only the tracking installed before it, so
-    /// a callback of the armed tracking or of the one before it installs the
-    /// next tracking. A callback of an older tracking keeps the armed one:
-    /// installing another would leave both installed, and overlapping
-    /// mutations would multiply the installed trackings without bound.
+    /// callback starts a pass, as in Swift's `withContinuousObservation`.
     @discardableResult
     func emitChange(
         kind: PortableObservationTracking.Event.Kind,
         triggers: ObservationEventTriggers,
         tracking: UInt64
     ) -> Bool {
-        var event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
+        let event = ObservationScopePendingEvent(kind: kind, triggers: triggers)
         let (accepted, waiters) = state.withLock { state -> (Bool, ObservationScopeWaiterBatch) in
             guard !state.isCancelled else {
                 return (false, .empty)
             }
-            event.installsTracking = tracking &+ 1 >= state.trackingCount
+            if tracking == state.trackingCount {
+                state.armedTrackingFired = true
+            }
 
             state.storePendingEvent(event)
             return (true, state.waiters.takeAll())

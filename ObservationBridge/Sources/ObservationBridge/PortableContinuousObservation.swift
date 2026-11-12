@@ -141,7 +141,7 @@ private func runRuntimeScopedObservationLoop(
 
         guard await trackRuntimeScopedObservation(
             event: pendingEvent,
-            mode: pendingEvent.installsTracking ? mode : nil,
+            mode: mode,
             isolation: isolation,
             slot: slot
         ) else {
@@ -203,7 +203,7 @@ func runRuntimeScopedObservationLoopAfterInitialPass(
 
         guard await trackRuntimeScopedObservation(
             event: pendingEvent,
-            mode: pendingEvent.installsTracking ? mode : nil,
+            mode: mode,
             isolation: isolation,
             slot: slot
         ) else {
@@ -462,12 +462,17 @@ private func trackRuntimeScopedObservationInCurrentContext(
         let handler = try runtime.handler(
             kind: mode == .didSet ? .didSet : .willSet,
             slot: slot,
-            tracking: tracking
+            tracking: tracking.number
         )
+        let sweep = slot.trackingSweep
         let didApply = try unsafe NativeSwiftClosure<() -> Bool>.withUnsafeNonescaping({
-            pipeline.apply(event: event)
+            sweep.access()
+            return pipeline.apply(event: event)
         }) { apply in
             try unsafe runtime.function.unsafeInvoke(apply, handler)
+        }
+        if tracking.replacesUnfiredTracking {
+            sweep.cancelTrackings(except: tracking.number)
         }
         return complete(shouldContinue: slot.isActive, didApply: didApply)
     } catch {
@@ -575,6 +580,15 @@ private struct ObservationRuntime: Sendable {
         tracking number: UInt64
     ) throws -> ObservationRuntimeTrackingHandler {
         try ObservationRuntimeTrackingHandler { [weak slot, changed, cancel] tracking in
+            if let kept = ObservationTrackingSweep.keptTracking {
+                guard number != kept else { return }
+                do {
+                    try unsafe cancel.unsafeInvoke(on: tracking)
+                } catch {
+                    slot?.fail(error)
+                }
+                return
+            }
             let keyPath: AnyKeyPath?
             do {
                 keyPath = try unsafe changed.unsafeInvoke(on: tracking)
@@ -592,7 +606,13 @@ private struct ObservationRuntime: Sendable {
             }
             do {
                 try unsafe cancel.unsafeInvoke(on: tracking)
-                slot?.emitChange(kind: kind, triggers: .keyPath(keyPath), tracking: number)
+                // A sweep on another thread can replace the key path that a
+                // mutation recorded in the same tracking.
+                slot?.emitChange(
+                    kind: kind,
+                    triggers: ObservationTrackingSweep.isMark(keyPath) ? .conservative : .keyPath(keyPath),
+                    tracking: number
+                )
             } catch {
                 slot?.fail(error)
             }

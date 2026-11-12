@@ -780,7 +780,7 @@ final class ObservationScopeObserveTests {
         )
         defer { slot.cancel() }
 
-        let tracking = slot.armTracking()!
+        let tracking = slot.armTracking()!.number
         slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
         slot.emitChange(
             kind: .didSet,
@@ -804,7 +804,7 @@ final class ObservationScopeObserveTests {
         )
         defer { slot.cancel() }
 
-        let tracking = slot.armTracking()!
+        let tracking = slot.armTracking()!.number
         slot.emitChange(kind: .willSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
         slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: tracking)
 
@@ -815,7 +815,7 @@ final class ObservationScopeObserveTests {
     }
 
     @Test
-    func trackingReplacedTwiceDeliversItsEventWithoutInstalling() async {
+    func armingReportsATrackingReplacedBeforeItFired() {
         let slot = ObservationScopeSlot(
             options: .didSet,
             observationIsolation: nil,
@@ -823,27 +823,37 @@ final class ObservationScopeObserveTests {
             pipeline: ObservationScopeImplicitTrackingPipeline { _ in }
         )
         defer { slot.cancel() }
+        let triggers = ObservationEventTriggers.keyPath(\CounterModel.value)
 
-        let replacedTwice = slot.armTracking()!
-        let previous = slot.armTracking()!
-        _ = slot.armTracking()
+        let first = slot.armTracking()!
+        #expect(first.replacesUnfiredTracking == false)
 
-        slot.emitChange(
-            kind: .didSet,
-            triggers: .keyPath(\CounterModel.secondaryValue),
-            tracking: replacedTwice
-        )
-        let late = await slot.waitForChange()
-        #expect(late?.triggers.contains(\CounterModel.secondaryValue) == true)
-        #expect(late?.installsTracking == false)
+        // A late callback of an earlier tracking starts a pass while the
+        // armed one stays installed.
+        let second = slot.armTracking()!
+        #expect(second.replacesUnfiredTracking)
+        slot.emitChange(kind: .didSet, triggers: triggers, tracking: first.number)
+        let third = slot.armTracking()!
+        #expect(third.replacesUnfiredTracking)
 
-        slot.emitChange(kind: .didSet, triggers: .keyPath(\CounterModel.value), tracking: previous)
-        slot.emitChange(
-            kind: .didSet,
-            triggers: .keyPath(\CounterModel.secondaryValue),
-            tracking: replacedTwice
-        )
-        #expect(await slot.waitForChange()?.installsTracking == true)
+        slot.emitChange(kind: .didSet, triggers: triggers, tracking: third.number)
+        #expect(slot.armTracking()?.replacesUnfiredTracking == false)
+    }
+
+    @Test
+    func sweepReachesInstalledTrackingsAndNamesTheOneToKeep() {
+        let sweep = ObservationTrackingSweep()
+        let kept = Mutex<UInt64?>(nil)
+        withObservationTracking {
+            sweep.access()
+        } onChange: {
+            kept.withLock { $0 = ObservationTrackingSweep.keptTracking }
+        }
+
+        sweep.cancelTrackings(except: 7)
+
+        #expect(kept.withLock { $0 } == 7)
+        #expect(ObservationTrackingSweep.keptTracking == nil)
     }
 
     @Test
