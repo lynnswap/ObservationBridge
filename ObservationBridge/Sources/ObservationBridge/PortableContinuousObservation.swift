@@ -633,7 +633,7 @@ private enum ObservationRuntimePreparation {
                 genericArguments: [.type(Bool.self)],
                 valueABIs: [type: .opaque(named: type.name)]
             )),
-            in: type.image,
+            in: .image(type.image),
             loading: .loadedOnly
         )
         availableModes.withLock { $0.insert(mode) }
